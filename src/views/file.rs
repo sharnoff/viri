@@ -206,10 +206,10 @@ impl SignalHandler for FileView {
                 // entered via the bottom bar with a colon.
                 if k.code == KeyCode::Char(':') && k.mods == KeyModifiers::NONE {
                     return OutputSignal::SetBottomBar {
-                        prefix: ':',
+                        prefix: Some(':'),
                         value: String::new(),
                         width: 0,
-                        cursor_col: 1, // We set it to 1 because it starts from zero including the prefix
+                        cursor_col: Some(1), // We set it to 1 because it starts from zero including the prefix
                     };
                 }
             }
@@ -228,7 +228,7 @@ impl SignalHandler for FileView {
             // Otherwise, we'll just return the signal we got previously
             raise_to_bottom_bar(sig)
         } else if let Signal::BottomBarKey {
-            prefix: ':',
+            prefix: Some(':'),
             value,
             key,
             ..
@@ -364,18 +364,30 @@ impl FileView {
         }
 
         match key.code {
-            KeyCode::Esc | KeyCode::Backspace if cmd.is_empty() => todo!(), // How do we exit the bottom bar?
+            // If the user presses escape, we'll currently just return to whatever we were in
+            // before
+            //
+            // We won't clear the bottom bar - that can stay there until something else sets it
+            KeyCode::Esc => OutputSignal::LeaveBottomBar,
+
+            // Likewise, deleting the colon should exit the bottom bar
+            //
+            // This is a feature taken directly from Vim
+            KeyCode::Backspace if cmd.is_empty() => OutputSignal::Chain(vec![
+                OutputSignal::LeaveBottomBar,
+                OutputSignal::ClearBottomBar,
+            ]),
 
             KeyCode::Backspace => {
                 let len = cmd.len() - 1;
                 let new_cmd = String::from(&cmd[..len]);
 
                 OutputSignal::SetBottomBar {
-                    prefix: ':',
+                    prefix: Some(':'),
                     value: new_cmd,
                     width: len,
                     // We add one because the cursor column includes the prefix character
-                    cursor_col: len + 1,
+                    cursor_col: Some(len + 1),
                 }
             }
 
@@ -388,11 +400,11 @@ impl FileView {
                 let len = new_cmd.len();
 
                 let sig = OutputSignal::SetBottomBar {
-                    prefix: ':',
+                    prefix: Some(':'),
                     value: new_cmd,
                     width: len,
                     // We add one because the cursor column includes the prefix character
-                    cursor_col: len + 1,
+                    cursor_col: Some(len + 1),
                 };
 
                 log::trace!("views::file - {:?}", sig);
@@ -411,11 +423,10 @@ impl FileView {
                     let mut cmds_iter = cfg.keys.iter_all_prefix(&chars);
 
                     match cmds_iter.len() {
-                        0 => {
-                            panic!("Not a recognized command");
-                            // How do we exit the bottom bar?
-                            // OutputSignal::Chain(vec![OutputSignal::NoSuchCmd, todo!()])
-                        }
+                        0 => OutputSignal::Chain(vec![
+                            OutputSignal::LeaveBottomBar,
+                            OutputSignal::NoSuchCmd,
+                        ]),
 
                         1 => {
                             let (_, cmd) = cmds_iter.next().unwrap();
@@ -436,18 +447,28 @@ impl FileView {
     }
 
     fn handle_colon_cmd(&mut self, cmd: &Cmd<ColonCmd>) -> OutputSignal {
+        use crossterm::style::Colorize;
         use Cmd::{Cursor, Extra, Scroll, TryClose};
         use ExitKind::{NoSave, ReqSave};
-        use OutputSignal::{Chain, Close, SaveBottomBar};
+        use OutputSignal::{Chain, Close, LeaveBottomBar, SaveBottomBar, SetBottomBar};
 
         match cmd {
             TryClose(ReqSave) => {
                 if self.unsaved() {
-                    // Need a way of producing the error text
-                    todo!();
-                }
+                    const UNSAVED_ERR_MSG: &'static str =
+                        "No write since last change (use ! to override)";
 
-                Chain(vec![SaveBottomBar, Close])
+                    let set_err_msg = SetBottomBar {
+                        prefix: None,
+                        value: UNSAVED_ERR_MSG.red().to_string(),
+                        width: UNSAVED_ERR_MSG.len(),
+                        cursor_col: None,
+                    };
+
+                    Chain(vec![LeaveBottomBar, set_err_msg])
+                } else {
+                    Chain(vec![SaveBottomBar, Close])
+                }
             }
 
             TryClose(NoSave) => Chain(vec![SaveBottomBar, Close]),
@@ -456,15 +477,21 @@ impl FileView {
             // ^ But we're probably allowing cursor movement soon, just not scrolling.
             Cursor(_, _) | Scroll(_, _) => todo!(),
 
-            Extra(ColonCmd::Save) => {
-                if let Err(err_str) = self.try_save() {
-                    // Need a way of producing the error text
-                    todo!("Tried to save, got {:?}", err_str);
+            Extra(ColonCmd::Save) => match self.try_save() {
+                Err(err_str) => {
+                    let width = err_str.len();
+                    Chain(vec![
+                        LeaveBottomBar,
+                        SetBottomBar {
+                            prefix: None,
+                            value: err_str.red().to_string(),
+                            width,
+                            cursor_col: None,
+                        },
+                    ])
                 }
-
-                // How do we exit the bottom bar?
-                Chain(vec![SaveBottomBar, todo!()])
-            }
+                Ok(_) => Chain(vec![SaveBottomBar, LeaveBottomBar]),
+            },
 
             // TODO: There should be a better way of doing this
             Cmd::Chain(v) => Chain(v.iter().map(|c| self.handle_colon_cmd(c)).collect()),
@@ -476,7 +503,10 @@ impl FileView {
     }
 
     fn unsaved(&self) -> bool {
-        self.buffer.provider().unsaved()
+        log::trace!("checking unsaved");
+        let unsaved = self.buffer.provider().unsaved();
+        log::trace!("unsaved: {}", unsaved);
+        unsaved
     }
 }
 

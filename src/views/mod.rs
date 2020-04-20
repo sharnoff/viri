@@ -278,7 +278,7 @@ pub enum OutputSignal {
     NeedsRefresh(RefreshKind),
     SaveBottomBar,
     SetBottomBar {
-        prefix: char,
+        prefix: Option<char>,
         value: String,
         width: usize,
         // The column to place the cursor there. If the cursor should not be in the bottom bar,
@@ -286,8 +286,12 @@ pub enum OutputSignal {
         // `View::bottom_left_text`.
         //
         // Note that this column *does* include the prefix, and starts from 0.
-        cursor_col: usize,
+        //
+        // If this field is `None`, the input mode will not be changed
+        cursor_col: Option<usize>,
     },
+    LeaveBottomBar,
+    ClearBottomBar,
     Close,
     NoSuchCmd,
     WaitingForMore,

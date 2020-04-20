@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::SystemTime;
 
+use crate::text::diff;
 use crate::text::{ContentProvider, Diff, Lines, ReprKind};
 
 use lazy_static::lazy_static;
@@ -370,6 +371,17 @@ impl ContentProvider for Handle {
         ContentWriteGuard {
             guard: self.file.write().unwrap(),
         }
+    }
+
+    fn apply_diff(&mut self, diff: Diff) -> Result<(), diff::Error> {
+        let mut file = self.file.write().unwrap();
+        let res = file.content.apply_diff(diff.clone());
+        if res.is_ok() {
+            log::trace!("setting unsaved");
+            file.unsaved = true;
+            file.diffs.push((diff, Some(self.id.clone())));
+        }
+        res
     }
 
     fn refresh(&mut self) -> io::Result<Vec<Diff>> {

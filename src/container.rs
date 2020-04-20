@@ -37,7 +37,7 @@ pub struct Container {
     /// The keys in the hashmap are the starting characters at the bottom bar. The inputs are
     /// stored in the order they were used, so that the last element was the most recent ending
     /// value.
-    previous_bottom_bars: HashMap<char, Vec<String>>,
+    previous_bottom_bars: HashMap<Option<char>, Vec<String>>,
 }
 
 /// The current input method - either directly to views or through the bottom bar
@@ -56,8 +56,8 @@ pub enum InputMode {
     ///
     /// This corresponds to a certain subset of input methods in vi/vim: typically searching (with
     /// '/') or entering commands (with ':'). The prefix field gives the starting character of the
-    /// bottom bar. If this is not a character with a display width of one column, this *can*
-    /// affect displayed values on the same line.
+    /// bottom bar, if present.  If this is not a character with a display width of one column,
+    /// this *can* affect displayed values on the same line.
     ///
     /// ## Example value
     ///
@@ -69,11 +69,13 @@ pub enum InputMode {
     ///
     /// Note that this input mode is distinct from displaying to the bottom bar; the latter will be
     /// ignored (with warnings emitted) while this is true.
+    // ^ TODO: Update documentation. This was originally written for a version that did not have
+    // optional prefixes/cursor columns
     BottomBar {
-        prefix: char,
+        prefix: Option<char>,
         value: String,
         width: usize,
-        cursor_col: usize,
+        cursor_col: Option<usize>,
     },
 }
 
@@ -90,7 +92,7 @@ pub enum Signal<'a> {
     /// Represents a key input given while the input mode is `Normal`
     NormalKey(KeyEvent),
     BottomBarKey {
-        prefix: char,
+        prefix: Option<char>,
         value: &'a str,
         key: KeyEvent,
         cursor_col: usize,
@@ -123,22 +125,27 @@ impl Container {
 
         match signal {
             Sig::Nothing => (),
-            Sig::NeedsRefresh(RefreshKind::Cursor) => {
-                if let Some(p) = local.as_mut() {
-                    self.inner.refresh_cursor(p);
-                }
-            }
+
+            Sig::NeedsRefresh(RefreshKind::Cursor) => match self.input_mode {
+                InputMode::BottomBar {
+                    cursor_col: Some(_),
+                    ..
+                } => log::warn!(
+                    "{}:{}: cannot refresh cursor; current input mode is bottom bar",
+                    file!(),
+                    line!(),
+                ),
+                _ => self.update_cursor(),
+            },
             Sig::NeedsRefresh(RefreshKind::BottomText) => {
                 self.write_bottom_bar();
-                if let Some(p) = local.as_mut() {
-                    self.inner.refresh_cursor(p);
-                }
+                self.update_cursor();
             }
             Sig::NeedsRefresh(_) => {
                 if let Some(p) = local.as_mut() {
                     self.inner.refresh(p);
                     self.write_bottom_bar();
-                    self.inner.refresh_cursor(p);
+                    self.update_cursor();
                 }
             }
 
@@ -152,7 +159,11 @@ impl Container {
                     self.previous_bottom_bars.insert(*prefix, new_list);
                 }
                 _ => {
-                    log::warn!("Container::handle_view_output_exits - Attempted to save bottom bar when nothing is there");
+                    log::warn!(
+                        "{}:{} - Attempted to save bottom bar when nothing is there",
+                        file!(),
+                        line!()
+                    );
                 }
             },
 
@@ -168,7 +179,7 @@ impl Container {
                 // we'll need to resize the contents.
 
                 // Now we're set to replace the contents.
-                let max_width = cursor_col.max(width + 1);
+                let max_width = cursor_col.unwrap_or(0).max(width + 1);
                 let num_rows = (max_width - 1) / (self.size.width as usize) + 1;
                 // ^ Integer division rounding up
                 let previous_bottom_offset = self.bottom_offset();
@@ -212,6 +223,42 @@ impl Container {
                 self.update_cursor();
             }
 
+            Sig::LeaveBottomBar => match &mut self.input_mode {
+                InputMode::Normal
+                | InputMode::BottomBar {
+                    cursor_col: None, ..
+                } => log::warn!(
+                    "{}:{}: received `LeaveBottomBar` signal while already in `Normal` input mode",
+                    file!(),
+                    line!(),
+                ),
+                InputMode::BottomBar { cursor_col, .. } => {
+                    *cursor_col = None;
+                    self.update_cursor();
+                }
+            },
+
+            Sig::ClearBottomBar => match self.input_mode {
+                InputMode::Normal => log::warn!(
+                    "{}:{}: received `ClearBottomBar` signal when bottom bar is already clear",
+                    file!(),
+                    line!()
+                ),
+                InputMode::BottomBar {
+                    cursor_col: Some(_),
+                    ..
+                } => log::warn!(
+                    "{}:{}: cannot clear bottom bar; it is currently in use",
+                    file!(),
+                    line!()
+                ),
+                _ => {
+                    self.input_mode = InputMode::Normal;
+                    self.write_bottom_bar();
+                    self.update_cursor();
+                }
+            },
+
             // TODO: Ring the bell when we don't have a command?
             Sig::NoSuchCmd => {}
 
@@ -230,24 +277,27 @@ impl Container {
     /// Refreshes the cursor location, whether that is the bottom bar or in the inner `View`
     fn update_cursor(&mut self) {
         match self.input_mode {
-            InputMode::Normal => {
-                let mut painter = Painter::global(self.size);
-                if let Ok(offset) = self.bottom_offset().try_into() {
-                    if let Some(mut p) = painter.trim_bot(offset) {
-                        self.inner.refresh_cursor(&mut p);
-                    }
-                }
-            }
-            InputMode::BottomBar { cursor_col, .. } => {
+            InputMode::BottomBar {
+                cursor_col: Some(col),
+                ..
+            } => {
                 let start_height = self.size.height - self.bottom_offset() as u16;
-                let cursor_height = start_height + (cursor_col / self.size.width as usize) as u16;
-                let cursor_col = (cursor_col % self.size.width as usize) as u16;
+                let cursor_height = start_height + (col / self.size.width as usize) as u16;
+                let cursor_col = (col % self.size.width as usize) as u16;
 
                 io::stdout()
                     .queue(cursor::MoveTo(cursor_col, cursor_height))
                     .unwrap()
                     .flush()
                     .unwrap();
+            }
+            _ => {
+                let mut painter = Painter::global(self.size);
+                if let Ok(offset) = self.bottom_offset().try_into() {
+                    if let Some(mut p) = painter.trim_bot(offset) {
+                        self.inner.refresh_cursor(&mut p);
+                    }
+                }
             }
         }
     }
@@ -344,7 +394,9 @@ impl Container {
                 // To find those, search by `bottom_offset()`.
 
                 let mut bot_str = String::with_capacity(1 + value.len() + post_str.len());
-                bot_str.push(*prefix);
+                if let &Some(p) = prefix {
+                    bot_str.push(p);
+                }
                 bot_str.push_str(&value);
                 bot_str.push_str(post_str);
 
@@ -378,7 +430,7 @@ impl Container {
                         BottomBar {
                             prefix,
                             value,
-                            cursor_col,
+                            cursor_col: Some(cursor_col),
                             ..
                         } => Signal::BottomBarKey {
                             prefix: *prefix,
@@ -461,7 +513,7 @@ impl Container {
             &InputMode::BottomBar {
                 width, cursor_col, ..
             } => {
-                let max_width = cursor_col.max(width + 1);
+                let max_width = cursor_col.unwrap_or(0).max(width + 1);
                 (max_width - 1) / self.size.width as usize + 1
             }
             InputMode::Normal => 1,

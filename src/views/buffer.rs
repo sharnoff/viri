@@ -218,18 +218,21 @@ impl<P: ContentProvider> ViewBuffer<P> {
     pub fn insert(&mut self, s: &str) -> Option<RefreshKind> {
         let row = self.current_row();
         let col = self.current_col();
-        let mut content = self.provider.content_mut();
-        let byte_idx = content.byte_index(row, col);
-        let diff = content.insert_at_byte(byte_idx, s);
-        content.apply_diff(diff).unwrap();
+        let diff = {
+            // ^ What the heck, NLL?
+            // This should work but doesn't...
+            let content = self.provider.content_mut();
+            let byte_idx = content.byte_index(row, col);
+            content.insert_at_byte(byte_idx, s)
+        };
+        self.provider.apply_diff(diff).unwrap();
 
         // And now we double-check that our cursor is still allowed to be there
         // It could be the case that the string contained a newline
         //
         // TODO: It might be more correct to go to the next line - imagine pasting a newline...
         // This should be done via the shifted byte index from the diff.
-        let mut width = content.line(row).width();
-        drop(content);
+        let mut width = self.provider.line(row).width();
 
         if !self.allow_cursor_after {
             width = width.saturating_sub(1);
@@ -261,7 +264,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             return None;
         }
 
-        let mut content = self.provider.content_mut();
+        let content = self.provider.content_mut();
 
         // Convert the two pairs into byte indices
         let cur_byte_idx = content.byte_index(cur_row, cur_col);
@@ -277,7 +280,12 @@ impl<P: ContentProvider> ViewBuffer<P> {
 
         // apply the diff to the content and the old cursor index
         let new_cursor_idx = diff.shift_idx(cur_byte_idx);
-        content.apply_diff(diff).unwrap();
+
+        drop(content);
+
+        self.provider.apply_diff(diff).unwrap();
+
+        let content = self.provider.content();
 
         // get the new position of the cursor
         let (cur_row, cur_char) = content.line_pair_from_byte(new_cursor_idx);
