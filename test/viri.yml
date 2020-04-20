@@ -1,0 +1,2 @@
+log_file: "/home/max/Rust/viri/log"
+log_level: Trace

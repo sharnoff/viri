@@ -1,0 +1,32 @@
+name: viri
+version: "0.1"
+author: Max Sharnoff <viri@max.sharnoff.org>
+about: A vi-inspired text editor
+setting: TrailingVarArg
+
+args:
+    - config:
+        short: c
+        long: config-dir
+        help: Optionally sets the config directory to use. Defaults to "$HOME/.config/viri". The
+              main file is in "viri.yml", with view-dependent settings in "views.yml".
+        takes_value: true
+
+    - log:
+        short: l
+        long: log
+        help: Optionally enables logging to a file.
+        takes_value: true
+
+    - log-level:
+        long: log-level
+        help: Sets the level of logging output. Defaults to "Info" - i.e. excluding "Trace" and
+              "Debug" messages.
+        requires: log
+        takes_value: true
+        possible_values: ["Off", "Trace", "Debug", "Info", "Warn", "Error"]
+
+    - ARGS:
+        help: Sets the file(s) to open
+        index: 1
+        multiple: true
