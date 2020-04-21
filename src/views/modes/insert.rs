@@ -26,17 +26,22 @@ impl Mode<InsertCmd> for InsertMode {
         self.key_stack.push(key);
 
         let cfg = Config::global();
-        let mut cmds_iter = cfg.keys.iter_all_prefix(&self.key_stack);
+        let node = cfg.keys.find(&self.key_stack);
 
-        if cmds_iter.len() > 1 {
-            return ModeResult::NeedsMore;
-        } else if cmds_iter.len() == 0 && self.key_stack.len() > 1 {
-            self.key_stack.truncate(0);
-            return ModeResult::NoCommand;
-        } else if cmds_iter.len() == 1 {
-            let (_, cmd) = cmds_iter.next().unwrap();
-            self.key_stack.truncate(0);
-            return ModeResult::Cmd(cmd.clone());
+        match node {
+            None if !self.key_stack.is_empty() => {
+                self.key_stack.truncate(0);
+                return ModeResult::NoCommand;
+            }
+            Some(n) if n.size() == 1 => {
+                return ModeResult::Cmd(n.extract().clone());
+            }
+            Some(n) if n.size() > 1 => {
+                // ^ TODO: This isn't technically true... it could be possible to unwrap this
+                // value, but we'd need something to disambiguate.
+                return ModeResult::NeedsMore;
+            }
+            _ => (),
         }
 
         self.key_stack.truncate(0);

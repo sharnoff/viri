@@ -416,25 +416,31 @@ impl FileView {
                 let cfg = Config::global();
                 let chars: Vec<_> = cmd.chars().collect();
 
+                log::trace!("chars: {:?}", chars);
+                log::trace!("trie: {:?}", cfg.keys);
+
                 // First, we check to see if there's a direct match
                 if let Some(cmd) = cfg.keys.get(&chars) {
                     self.handle_colon_cmd(cmd)
                 } else {
-                    let mut cmds_iter = cfg.keys.iter_all_prefix(&chars);
+                    let node = cfg.keys.find(&chars);
+                    let no_such_command = OutputSignal::Chain(vec![
+                        OutputSignal::LeaveBottomBar,
+                        OutputSignal::NoSuchCmd,
+                    ]);
 
-                    match cmds_iter.len() {
-                        0 => OutputSignal::Chain(vec![
-                            OutputSignal::LeaveBottomBar,
-                            OutputSignal::NoSuchCmd,
-                        ]),
+                    match node {
+                        None => no_such_command,
+                        Some(n) if n.size() == 0 => no_such_command,
+                        Some(n) => match n.try_extract() {
+                            Some(cmd) => self.handle_colon_cmd(cmd),
 
-                        1 => {
-                            let (_, cmd) = cmds_iter.next().unwrap();
-                            self.handle_colon_cmd(cmd)
-                        }
-
-                        // This is an ambiguous case, so maybe we flash the bottom bar?
-                        _ => todo!(),
+                            // This is an ambiguous case, so maybe we flash the bottom bar?
+                            None => {
+                                log::trace!("faulty todo - node: {:?}", n);
+                                todo!()
+                            }
+                        },
                     }
                 }
             }

@@ -28,18 +28,22 @@ impl Mode<NormalCmd> for NormalMode {
         self.key_stack.push(key);
 
         let cfg = Config::global();
-        let mut cmds_iter = cfg.keys.iter_all_prefix(&self.key_stack);
+        let node = cfg.keys.find(&self.key_stack);
 
-        match cmds_iter.len() {
-            0 => {
+        match node {
+            None => {
                 self.key_stack.truncate(0);
                 ModeResult::NoCommand
             }
-            1 => {
-                let (_, cmd) = cmds_iter.next().unwrap();
+            Some(n) if n.size() == 0 => {
                 self.key_stack.truncate(0);
-                ModeResult::Cmd(cmd.clone())
+                ModeResult::NoCommand
             }
+            Some(n) if n.size() == 1 => {
+                self.key_stack.truncate(0);
+                ModeResult::Cmd(n.extract().clone())
+            }
+            // Some(n) if n.size > 1
             _ => ModeResult::NeedsMore,
         }
     }
