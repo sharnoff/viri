@@ -41,10 +41,10 @@ pub enum Node<K, T> {
         /// these children, it will be keyed with `None` in this list.
         ///
         /// As such, the following invariant holds: Any element in this list stored with `None` as
-        /// its first element in the pair will be a Leaf node, and so [`unwrap_leaf`] will be safe
+        /// its first element in the pair will be a Leaf node, and so [`extract`] will be safe
         /// to call.
         ///
-        /// [`unwrap_leaf`]: #method.unwrap_leaf
+        /// [`extract`]: #method.extract
         children: Vec<(Option<K>, Node<K, T>)>,
     },
 }
@@ -139,7 +139,7 @@ impl<K: Clone + Ord, T> Trie<K, T> {
         match self.find(key)? {
             Node::Leaf { value, .. } => Some(value),
             Node::List { children, .. } => {
-                Some(children.iter().find(|(k, _)| k.is_none())?.1.unwrap_leaf())
+                Some(children.iter().find(|(k, _)| k.is_none())?.1.extract())
             }
         }
     }
@@ -154,14 +154,37 @@ impl<K: Clone + Ord, T: Clone> Trie<K, T> {
 }
 
 impl<K: Clone + Ord, T> Node<K, T> {
-    /// Attempts to give the inner value from a `Leaf` node
+    /// Attempts to extract the Node's value
     ///
-    /// If the node is not a leaf, this function will panic
-    fn unwrap_leaf(&self) -> &T {
+    /// This is the fallible version of [`extract`].
+    ///
+    /// The semantics here are important; this will return a value in either of two cases:
+    /// 1. `self` is a leaf node
+    /// 2. `self` is a [`List`] node, but contains a leaf node at its level
+    ///
+    /// This method will always succeed if [`self.size()`] equals one - in that case the infallible
+    /// version may be safely used instead.
+    ///
+    /// [`List`]: #variant.List
+    /// [`self.size()`]: #method.size
+    /// [`extract`]: #method.extract
+    pub fn try_extract(&self) -> Option<&T> {
         match self {
-            Self::Leaf { value, .. } => value,
-            Self::List { .. } => panic!("tried to `unwrap_leaf` a non-leaf node"),
+            Self::Leaf { value, .. } => Some(value),
+            Self::List { children, .. } => match children.first() {
+                Some((None, leaf)) => Some(leaf.extract()),
+                _ => None,
+            },
         }
+    }
+
+    /// Extracts a node's value
+    ///
+    /// This is the infallible version of [`try_extract`]; the semantics are documented there.
+    ///
+    /// [`try_extract`]: #method.try_extract
+    pub fn extract(&self) -> &T {
+        self.try_extract().unwrap()
     }
 
     /// Returns an iterator over all children
