@@ -24,6 +24,7 @@ pub struct Trie<K, T> {
 unsafe impl<K: Send, T: Send> Send for Trie<K, T> {}
 
 #[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub enum Node<K, T> {
     Leaf {
         key: Vec<K>,
@@ -320,7 +321,7 @@ impl<K: Clone + Ord, T> Node<K, T> {
                 let pre = new_key.get(depth);
                 match children.binary_search_by_key(&pre, |(k, _)| k.as_ref()) {
                     Ok(idx) => {
-                        let ret = children[idx].1.insert(new_key, new_val, depth);
+                        let ret = children[idx].1.insert(new_key, new_val, depth + 1);
                         if ret.is_none() {
                             *size += 1;
                         }
@@ -430,9 +431,108 @@ impl<'a, K, T> Iterator for Iter<'a, K, T> {
 impl<'a, K, T> ExactSizeIterator for Iter<'a, K, T> {}
 
 /// Instead of deserializing the Trie directly, this converts it to a `Vec` first
-impl<K: Clone + Ord + Serialize, T: Debug + Clone + Serialize> Serialize for Trie<K, T> {
+impl<K: Clone + Ord + Serialize, T: Clone + Serialize> Serialize for Trie<K, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let v = self.clone_as_vec();
         Serialize::serialize(&v, serializer)
+    }
+}
+
+#[cfg(test)]
+#[rustfmt::skip]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_simple() {
+        let expected = Node::List {
+            size: 4,
+            children: vec![
+                (Some(0), Node::List {
+                    size: 2,
+                    children: vec![
+                        (None,    Node::Leaf { key: vec![0],    value: 'a' }),
+                        (Some(1), Node::Leaf { key: vec![0, 1], value: 'b' }),
+                    ],
+                }),
+                (Some(1), Node::List {
+                    size: 2,
+                    children: vec![
+                        (None,    Node::Leaf { key: vec![1],    value: 'c' }),
+                        (Some(1), Node::Leaf { key: vec![1, 1], value: 'd' }),
+                    ],
+                })
+            ],
+        };
+
+        let input: Vec<(Vec<u8>, char)> = vec![
+            (vec![0],    'a'),
+            (vec![0, 1], 'b'),
+            (vec![1],    'c'),
+            (vec![1, 1], 'd'),
+        ];
+
+        let trie = Trie::from_iter(input.into_iter());
+        assert_eq!(trie.inner, Some(expected))
+    }
+
+    #[test]
+    fn new_complex() {
+        let expected = Node::List {
+            size: 12,
+            children: vec![
+                (None, Node::Leaf { key: vec![], value: 'l' }),
+                (Some(0), Node::List {
+                    size: 3,
+                    children: vec![
+                        (Some(4), Node::List {
+                            size: 2,
+                            children: vec![
+                                (None,    Node::Leaf { key: vec![0,4  ], value: 'b' }),
+                                (Some(1), Node::Leaf { key: vec![0,4,1], value: 'a' }),
+                            ]
+                        }),
+                        (Some(8), Node::Leaf { key: vec![0,8,7], value: 'e' })
+                    ]
+                }),
+                (Some(1), Node::Leaf { key: vec![1, 4, 8], value: 'i' }),
+                (Some(4), Node::Leaf { key: vec![4, 7, 8], value: 'f' }),
+                (Some(6), Node::List {
+                    size: 3,
+                    children: vec![
+                        (None,    Node::Leaf { key: vec![6], value: 'j' }),
+                        (Some(3), Node::List {
+                            size: 2,
+                            children: vec![
+                                (None,    Node::Leaf { key: vec![6, 3   ], value: 'k' }),
+                                (Some(1), Node::Leaf { key: vec![6, 3, 1], value: 'd' }),
+                            ]
+                        }),
+                    ]
+                }),
+                (Some(7), Node::Leaf { key: vec![7, 9, 5], value: 'h' }),
+                (Some(8), Node::Leaf { key: vec![8      ], value: 'c' }),
+                (Some(9), Node::Leaf { key: vec![9, 6, 9], value: 'g' }),
+            ],
+        };
+
+        // Commented to the right is the list, but sorted
+        let input: Vec<(Vec<u8>, char)> = vec![
+            (vec![0, 4, 1], 'a'),  //  (vec![       ], 'l'),
+            (vec![0, 4   ], 'b'),  //  (vec![0, 4   ], 'b'),
+            (vec![8      ], 'c'),  //  (vec![0, 4, 1], 'a'),
+            (vec![6, 3, 1], 'd'),  //  (vec![0, 8, 7], 'e'),
+            (vec![0, 8, 7], 'e'),  //  (vec![1, 4, 8], 'i'),
+            (vec![4, 7, 8], 'f'),  //  (vec![4, 7, 8], 'f'),
+            (vec![9, 6, 9], 'g'),  //  (vec![6      ], 'j'),
+            (vec![7, 9, 5], 'h'),  //  (vec![6, 3   ], 'k'),
+            (vec![1, 4, 8], 'i'),  //  (vec![6, 3, 1], 'd'),
+            (vec![6      ], 'j'),  //  (vec![7, 9, 5], 'h'),
+            (vec![6, 3,  ], 'k'),  //  (vec![8      ], 'c'),
+            (vec![       ], 'l'),  //  (vec![9, 6, 9], 'g'),
+        ];
+
+        let trie = Trie::from_iter(input.into_iter());
+        assert_eq!(trie.inner, Some(expected))
     }
 }
