@@ -2,53 +2,71 @@
 //!
 //! Currently a work in progress
 
-use std::collections::{hash_map, HashMap};
 use std::fmt::{self, Debug};
-use std::hash::Hash;
-use std::{iter, mem, ptr, slice};
+use std::{mem, slice};
 
 use serde::{Serialize, Serializer};
 
 #[derive(Debug)]
-pub struct Trie<K: Debug + Clone + Eq + Hash, T: Debug> {
-    inner: Option<NodeKind<K, T>>,
+pub struct Trie<K, T> {
+    /// The actual structure of the trie. This value will be `None` if there are no nodes, and
+    /// `Some(..)` if there are any. It's an `Option` like this because `Node` has no way of
+    /// representing a lack of children (aside from an empty list, but that's a mediocre way of
+    /// doing it).
+    inner: Option<Node<K, T>>,
+
+    /// The cache should allow us to adjust the complexity of a few operations, namely reducing
+    /// them from O(n^2) to O(n)
+    // ^ TODO: Which ones?
     cache: Option<Cache<K, T>>,
 }
 
-unsafe impl<K: Debug + Clone + Eq + Hash + Send, T: Debug + Send> Send for Trie<K, T> {}
+unsafe impl<K: Send, T: Send> Send for Trie<K, T> {}
 
 #[derive(Debug)]
-pub struct Node<K: Debug + Clone + Eq + Hash, T: Debug> {
-    n_children: usize,
-    kind: NodeKind<K, T>,
+pub enum Node<K, T> {
+    Leaf {
+        key: Vec<K>,
+        value: T,
+    },
+    List {
+        /// The total number of all children of the current `Node`
+        size: usize,
+
+        /// The list of immediate children of the `Node`, with their keys
+        ///
+        /// Normally, elements in the list will be paired with the next value of `K` to distinguish
+        /// their key in the trie. If there is a leaf Node with a key equal to the common prefix of
+        /// these children, it will be keyed with `None` in this list.
+        ///
+        /// As such, the following invariant holds: Any element in this list stored with `None` as
+        /// its first element in the pair will be a Leaf node, and so [`unwrap_leaf`] will be safe
+        /// to call.
+        ///
+        /// [`unwrap_leaf`]: #method.unwrap_leaf
+        children: Vec<(Option<K>, Node<K, T>)>,
+    },
 }
 
-// This is just a guess - it should be benchmarked at some later date
-const MAX_NODE_LIST_SIZE: usize = 10;
-
-#[derive(Debug)]
-pub enum NodeKind<K: Debug + Clone + Eq + Hash, T: Debug> {
-    // These options are None when one value ends and no others exist
-    Map(HashMap<Option<K>, Node<K, T>>),
-    List(Vec<(Option<K>, Node<K, T>)>),
-    Leaf(Vec<K>, T),
-}
-
-struct Cache<K: Debug + Clone + Eq + Hash, T: Debug> {
+struct Cache<K, T> {
     prefix: Vec<K>,
 
     // Note that this reference must *always* be non-null
-    // We use a *const instead of NonNull because NonNull can be mistakenly used mutably, which
+    //
+    // This is a *const instead of NonNull because NonNull can be mistakenly used mutably, which
     // this should never be.
-    ptr: *const NodeKind<K, T>,
+    ptr: *const Node<K, T>,
 }
 
-impl<K: Debug + Clone + Eq + Hash + Debug, T: Debug> Debug for Cache<K, T> {
+impl<K: Debug, T: Debug> Debug for Cache<K, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // It *should* always be safe to dereference self.ptr, but we add this additional level of
         // checking just to ensure this is true when debugging.
         let ptr = match self.ptr.is_null() {
-            true => None,
+            true => {
+                log::error!("Trie cache pointer is null!");
+                None
+            }
             false => Some(unsafe { &*self.ptr }),
         };
 
@@ -60,9 +78,10 @@ impl<K: Debug + Clone + Eq + Hash + Debug, T: Debug> Debug for Cache<K, T> {
     }
 }
 
-impl<K: Debug + Clone + Eq + Hash, T: Debug> Trie<K, T> {
+impl<K: Clone + Ord, T> Trie<K, T> {
+    /// Creates a `Trie` from an iterator of key-value pairs by repeated insertion
     pub fn from_iter<I: Iterator<Item = (Vec<K>, T)>>(mut iter: I) -> Self {
-        let (key, item) = match iter.next() {
+        let (key, value) = match iter.next() {
             None => {
                 return Trie {
                     inner: None,
@@ -72,7 +91,7 @@ impl<K: Debug + Clone + Eq + Hash, T: Debug> Trie<K, T> {
             Some(pair) => pair,
         };
 
-        let mut node = NodeKind::Leaf(key, item);
+        let mut node = Node::Leaf { key, value };
 
         for (k, i) in iter {
             node.insert(k, i, 0);
@@ -84,77 +103,111 @@ impl<K: Debug + Clone + Eq + Hash, T: Debug> Trie<K, T> {
         }
     }
 
-    // Panics if key.is_empty()
-    pub fn insert(&mut self, key: Vec<K>, item: T) -> Option<T> {
-        if key.is_empty() {
-            panic!("Trie keys must have length ≥ 1");
-        }
-
+    /// Inserts the given key-value pair into the trie, returning the value previously at the key
+    ///
+    /// If there was not a value at the key previously, this will return `None`.
+    pub fn insert(&mut self, key: Vec<K>, value: T) -> Option<T> {
         match self.inner.as_mut() {
             None => {
-                self.inner = Some(NodeKind::Leaf(key, item));
+                self.inner = Some(Node::Leaf { key, value });
                 None
             }
-            Some(n) => n.insert(key, item, 0),
+            Some(n) => n.insert(key, value, 0),
         }
     }
 
-    pub fn find(&self, key: &[K]) -> Option<&NodeKind<K, T>> {
+    /// Produces an iterator over all key-value pairs whose keys start with the given prefix
+    ///
+    /// This iterator is fully lazy, so the only cost of initializing is finding the root node.
+    pub fn iter_all_prefix<'a>(&'a self, key: &[K]) -> Iter<'a, K, T> {
+        self.find(key).map(Node::iter).unwrap_or_else(Iter::empty)
+    }
+
+    /// Searches for a `Node` with the given key prefix, returning it if it exists
+    pub fn find(&self, key: &[K]) -> Option<&Node<K, T>> {
         self.inner.as_ref()?.find(key, 0)
     }
 
-    pub fn iter_all_prefix<'a>(
-        &'a self,
-        key: &[K],
-    ) -> Box<dyn 'a + ExactSizeIterator<Item = (&'a [K], &'a T)>> {
-        type I<'b, K, T> = Box<dyn 'b + ExactSizeIterator<Item = (&'b [K], &'b T)>>;
-        self.find(key)
-            .map(|node| Box::new(node.children_iter()) as I<'a, K, T>)
-            .unwrap_or_else(|| Box::new(iter::empty()) as I<'a, K, T>)
-    }
-
+    /// Retrieves the value corresponding to the given key
+    ///
+    /// If the given key corresponds to the *unique prefix* of a different key, the value for
+    /// that key will be returned instead of `None`.
+    ///
+    /// If there is no unique value defined for the given key, this function will return `None`.
     pub fn get<'a>(&'a self, key: &[K]) -> Option<&'a T> {
         match self.find(key)? {
-            NodeKind::Leaf(_, t) => Some(t),
-            NodeKind::List(v) => Some(v.iter().find(|(k, _)| k.is_none())?.1.kind.unwrap_leaf()),
-            NodeKind::Map(m) => Some(m.get(&None)?.kind.unwrap_leaf()),
+            Node::Leaf { value, .. } => Some(value),
+            Node::List { children, .. } => {
+                Some(children.iter().find(|(k, _)| k.is_none())?.1.unwrap_leaf())
+            }
         }
     }
+}
 
+impl<K: Clone + Ord, T: Clone> Trie<K, T> {
     fn clone_as_vec(&self) -> Vec<(Vec<K>, T)> {
-        todo!()
+        self.iter_all_prefix(&[])
+            .map(|(key, val)| (key.into(), val.clone()))
+            .collect()
     }
 }
 
-impl<K: Debug + Clone + Eq + Hash, T: Debug> Node<K, T> {
-    fn leaf(key: Vec<K>, val: T) -> Self {
-        Node {
-            n_children: 1,
-            kind: NodeKind::Leaf(key, val),
-        }
-    }
-}
-
-impl<K: Debug + Clone + Eq + Hash, T: Debug> NodeKind<K, T> {
+impl<K: Clone + Ord, T> Node<K, T> {
+    /// Attempts to give the inner value from a `Leaf` node
+    ///
+    /// If the node is not a leaf, this function will panic
     fn unwrap_leaf(&self) -> &T {
         match self {
-            Self::Leaf(_, t) => t,
-            _ => panic!("Tried to `unwrap_leaf` a non-leaf node"),
+            Self::Leaf { value, .. } => value,
+            Self::List { .. } => panic!("tried to `unwrap_leaf` a non-leaf node"),
         }
     }
 
-    fn children_iter(&self) -> NodeChildrenIter<K, T> {
-        let size = self.count_children();
-
-        NodeChildrenIter {
-            size,
-            stack: vec![NodeKindIter::Node(Some(self))],
+    /// Returns an iterator over all children
+    // ^ TODO: Clarify that it's recursive (kinda) -- it only yields leaves
+    pub fn iter(&self) -> Iter<K, T> {
+        Iter {
+            size: self.size(),
+            inner: InnerIter::Single(self),
         }
     }
 
-    // This function is only intended ofr use inside `insert`. It has been extracted here so that
-    // the body of `insert` may be more readable. This function has the requirement that it *MUST*
-    // not panic, due to where it is used inside `insert`.
+    /// Returns the total number of leaf nodes reachable from this `Node`
+    ///
+    /// This function takes O(1).
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Leaf { .. } => 1,
+            Self::List { size, .. } => *size,
+        }
+    }
+
+    fn find(&self, prefix: &[K], depth: usize) -> Option<&Self> {
+        let p = prefix.first();
+        if p.is_none() {
+            // If the key is empty, we found a node! we'll return this one
+            return Some(self);
+        }
+
+        match self {
+            Node::Leaf { key, .. } => match key.len() >= depth && &key[depth..] != prefix {
+                true => Some(self),
+                false => None,
+            },
+            Node::List { children, .. } => {
+                // Search the list for the first value in the prefix
+                let idx = children
+                    .binary_search_by_key(&p, |(k, _)| k.as_ref())
+                    .ok()?;
+
+                children[idx].1.find(&prefix[1..], depth + 1)
+            }
+        }
+    }
+
+    /// A helper function for use inside `insert`.
+    ///
+    /// It is extracted as a separate function so that `insert` may be more readable.
     fn join(
         mut old_key: Vec<K>,
         mut old_val: T,
@@ -164,7 +217,13 @@ impl<K: Debug + Clone + Eq + Hash, T: Debug> NodeKind<K, T> {
     ) -> (Self, Option<T>) {
         // If the new key is equal to the old one, we just replace it
         if old_key[depth..] == new_key[depth..] {
-            return (NodeKind::Leaf(new_key, new_val), Some(old_val));
+            return (
+                Node::Leaf {
+                    key: new_key,
+                    value: new_val,
+                },
+                Some(old_val),
+            );
         }
 
         // Otherwise, we need to create a new list. This will effectively be of type
@@ -199,181 +258,168 @@ impl<K: Debug + Clone + Eq + Hash, T: Debug> NodeKind<K, T> {
 
         let old_key_cloned = old_key.clone();
 
-        let old_node = Node {
-            n_children: 1,
-            kind: NodeKind::Leaf(old_key, old_val),
+        // We need to store whether `old_key` goes first for two reasons:
+        // 1. To maintain the ordering in the list
+        // 2. To get around the borrow-checker; we can't make this comparison later
+        let old_key_first = old_k.is_none() || &old_key[depth..] < &new_key[depth..];
+
+        let old_node = Node::Leaf {
+            key: old_key,
+            value: old_val,
         };
 
-        let new_node = Node {
-            n_children: 1,
-            kind: NodeKind::Leaf(new_key, new_val),
+        let new_node = Node::Leaf {
+            key: new_key,
+            value: new_val,
         };
 
         // We're going to wrap this in nodes `count` times to fill up the list
-        let mut replace_node = NodeKind::List(vec![(old_k, old_node), (new_k, new_node)]);
+        let list = match old_key_first {
+            true => vec![(old_k, old_node), (new_k, new_node)],
+            false => vec![(new_k, new_node), (old_k, old_node)],
+        };
+        let mut replace_node = Node::List {
+            size: 2,
+            children: list,
+        };
 
         // At each step, we wrap replace_node with the values from the two keys that are equal. In
         // most cases, this will not be *any* values, but we need to be able to handle the cases
         // that *do* include some.
         for k in old_key_cloned.into_iter().skip(depth).take(count).rev() {
-            let n = Node {
-                n_children: 2,
-                kind: replace_node,
-            };
-
-            replace_node = NodeKind::List(vec![(Some(k), n)]);
+            replace_node = Node::List {
+                size: 2,
+                children: vec![(Some(k), replace_node)],
+            }
         }
 
         (replace_node, None)
     }
 
-    fn insert(&mut self, key: Vec<K>, val: T, depth: usize) -> Option<T> {
-        // A helper function to simplify the recursion. This handles all of the logic aroun calling
-        // `insert` on the *Node* below.
-        let recurse =
-            |node: &mut Node<K, T>, prefix: &Option<K>, key: Vec<K>, val: T, depth: usize| {
-                // we only want to increase the depth if there *is* a prefix - there won't be in cases
-                // where the node for a certain value is stored as the `None` entry in a Vec/Map
-                let d = match prefix.is_some() {
-                    true => depth + 1,
-                    false => depth,
+    fn insert(&mut self, new_key: Vec<K>, new_val: T, depth: usize) -> Option<T> {
+        match self {
+            Node::Leaf { .. } => {
+                // we'll take ownership over the contents of `self` by swapping in a filler value
+                let repl = Self::List {
+                    size: 0,
+                    children: Vec::new(),
                 };
 
-                let ret = node.kind.insert(key, val, d);
+                let (key, val) = match mem::replace(self, repl) {
+                    Node::Leaf { key, value } => (key, value),
+                    _ => unreachable!(),
+                };
 
-                // If we don't get a value back, we didn't replace anything. I.e. we added something,
-                // so we should increment the number of children
-                if ret.is_none() {
-                    node.n_children += 1;
-                }
+                // we'll join these together
+                let (this, ret) = Self::join(key, val, new_key, new_val, depth);
+                *self = this;
                 ret
-            };
+            }
 
-        let replace = move |this: Self, _: ()| -> (Self, Option<T>) {
-            match this {
-                NodeKind::Leaf(old_key, old_val) => Self::join(old_key, old_val, key, val, depth),
-                NodeKind::Map(mut m) => {
-                    // try to find a node with the prefix new_key
-                    let pre = key.get(depth).cloned();
-                    let ret = match m.get_mut(&pre) {
-                        Some(node) => recurse(node, &pre, key, val, depth),
-                        None => {
-                            m.insert(pre, Node::leaf(key, val));
-                            None
+            Node::List { children, size } => {
+                let pre = new_key.get(depth);
+                match children.binary_search_by_key(&pre, |(k, _)| k.as_ref()) {
+                    Ok(idx) => {
+                        let ret = children[idx].1.insert(new_key, new_val, depth);
+                        if ret.is_none() {
+                            *size += 1;
                         }
-                    };
+                        ret
+                    }
 
-                    (NodeKind::Map(m), ret)
+                    Err(idx) => {
+                        let pre_cloned = pre.cloned();
+
+                        let new_leaf = Node::Leaf {
+                            key: new_key,
+                            value: new_val,
+                        };
+
+                        children.insert(idx, (pre_cloned, new_leaf));
+                        *size += 1;
+                        None
+                    }
                 }
-                NodeKind::List(mut v) => {
-                    let pre = key.get(depth).cloned();
-                    let ret = match v.iter_mut().find(|(k, _)| k == &pre) {
-                        Some((_, node)) => recurse(node, &pre, key, val, depth),
-                        None => {
-                            v.push((pre, Node::leaf(key, val)));
-                            None
-                        }
+            }
+        }
+    }
+}
+
+/// An iterator over the children of a `Node`.
+#[derive(Debug)]
+pub struct Iter<'a, K, T> {
+    size: usize,
+    inner: InnerIter<'a, K, T>,
+}
+
+#[derive(Debug)]
+enum InnerIter<'a, K, T> {
+    Single(&'a Node<K, T>),
+    Stack(Vec<slice::Iter<'a, (Option<K>, Node<K, T>)>>),
+}
+
+impl<'a, K, T> Iter<'a, K, T> {
+    /// Produces an empty iterator
+    fn empty() -> Self {
+        Self {
+            size: 0,
+            inner: InnerIter::Stack(Vec::new()),
+        }
+    }
+}
+
+impl<'a, K, T> InnerIter<'a, K, T> {
+    fn unwrap_stack(&mut self) -> &mut Vec<slice::Iter<'a, (Option<K>, Node<K, T>)>> {
+        match self {
+            Self::Stack(stack) => stack,
+            _ => panic!("Attempted to `unwrap_stack` an InnerIter that was not a stack"),
+        }
+    }
+}
+
+impl<'a, K, T> Iterator for Iter<'a, K, T> {
+    type Item = (&'a [K], &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let stack = match &mut self.inner {
+            InnerIter::Stack(stack) => stack,
+
+            // Iterators are typically constructed from a single node, so we need to handle that
+            // here.
+            InnerIter::Single(node) => match node {
+                Node::Leaf { key, value } => {
+                    *self = Self::empty();
+                    return Some((key, value));
+                }
+                Node::List { children, size } => {
+                    *self = Self {
+                        size: *size,
+                        inner: InnerIter::Stack(vec![children.iter()]),
                     };
 
-                    if v.len() < MAX_NODE_LIST_SIZE {
-                        (NodeKind::List(v), ret)
-                    } else {
-                        (NodeKind::Map(v.into_iter().collect()), ret)
+                    self.inner.unwrap_stack()
+                }
+            },
+        };
+
+        let mut cur_iter = stack.pop()?;
+        let item = loop {
+            match cur_iter.next() {
+                None => cur_iter = stack.pop()?,
+                Some((_, node)) => {
+                    stack.push(cur_iter);
+                    match node {
+                        Node::Leaf { key, value } => break (key.as_ref(), value),
+                        Node::List { children, .. } => {
+                            cur_iter = children.iter();
+                        }
                     }
                 }
             }
         };
 
-        unsafe { replace_with(self, (), replace) }
-    }
-
-    fn find(&self, key: &[K], depth: usize) -> Option<&Self> {
-        // If the key is empty, we found a node! we'll return this one.
-        if key.len() <= depth {
-            return Some(self);
-        }
-
-        let k = Some(&key[depth]);
-
-        match self {
-            NodeKind::Leaf(ks, _) => {
-                if ks.len() <= depth || ks[depth..] != key[depth..] {
-                    return None;
-                } else {
-                    Some(self)
-                }
-            }
-            NodeKind::List(v) => {
-                // Search the list for the first value in the prefix
-                v.iter()
-                    .find(|(c, _)| c.as_ref() == k)?
-                    .1
-                    .kind
-                    .find(key, depth + 1)
-            }
-            NodeKind::Map(m) => m.get(&k.cloned())?.kind.find(key, depth + 1),
-        }
-    }
-
-    fn count_children(&self) -> usize {
-        match self {
-            NodeKind::Leaf(_, _) => 1,
-            NodeKind::Map(m) => m.iter().map(|(_, node)| node.n_children).sum(),
-            NodeKind::List(v) => v.iter().map(|(_, node)| node.n_children).sum(),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct NodeChildrenIter<'a, K: Debug + Clone + Eq + Hash, T: Debug> {
-    size: usize,
-    stack: Vec<NodeKindIter<'a, K, T>>,
-}
-
-#[derive(Debug)]
-enum NodeKindIter<'a, K: Debug + Clone + Eq + Hash, T: Debug> {
-    Map(hash_map::Iter<'a, Option<K>, Node<K, T>>),
-    List(slice::Iter<'a, (Option<K>, Node<K, T>)>),
-    Node(Option<&'a NodeKind<K, T>>),
-}
-
-impl<'a, K: 'a + Debug + Clone + Eq + Hash, T: 'a + Debug> Iterator for NodeChildrenIter<'a, K, T> {
-    type Item = (&'a [K], &'a T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // FIXME: The correctness of this function hasn't been verified - one dead simple bug has
-        // been fixed already, so there may be more.
-
-        let mut cur_iter = Some(self.stack.pop()?);
-
-        // This will be set by the loop - cur_iter is Some when item is None
-        let mut item: Option<Self::Item> = None;
-        while item.is_none() {
-            let mut cur = cur_iter.take().unwrap();
-
-            let next_node_opt = match &mut cur {
-                NodeKindIter::Map(m) => m.next().map(|(_, n)| &n.kind),
-                NodeKindIter::List(v) => v.next().map(|(_, n)| &n.kind),
-                &mut NodeKindIter::Node(n) => n,
-            };
-
-            if let Some(node) = next_node_opt {
-                match node {
-                    NodeKind::Leaf(ks, t) => item = Some((&ks, &t)),
-                    NodeKind::Map(m) => {
-                        self.stack.push(cur);
-                        cur_iter = Some(NodeKindIter::Map(m.iter()))
-                    }
-                    NodeKind::List(v) => {
-                        self.stack.push(cur);
-                        cur_iter = Some(NodeKindIter::List(v.iter()))
-                    }
-                }
-            }
-        }
-
         self.size -= 1;
-        item
+        Some(item)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -381,41 +427,12 @@ impl<'a, K: 'a + Debug + Clone + Eq + Hash, T: 'a + Debug> Iterator for NodeChil
     }
 }
 
-impl<'a, K: 'a + Debug + Clone + Eq + Hash, T: 'a + Debug> ExactSizeIterator
-    for NodeChildrenIter<'a, K, T>
-{
-}
+impl<'a, K, T> ExactSizeIterator for Iter<'a, K, T> {}
 
 /// Instead of deserializing the Trie directly, this converts it to a `Vec` first
-impl<K: Debug + Clone + Eq + Hash + Serialize, T: Debug + Clone + Serialize> Serialize
-    for Trie<K, T>
-{
+impl<K: Clone + Ord + Serialize, T: Debug + Clone + Serialize> Serialize for Trie<K, T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let v = self.clone_as_vec();
         Serialize::serialize(&v, serializer)
     }
-}
-
-/// A helper function inspired by [RFC#1736]: "`core::mem::replace_with` for temporarily moving out
-/// of ownership".
-///
-/// The actual function is partially taken from [this commit], adapted for ergonomics based on the
-/// idea of [this comment].
-///
-/// There are certain safety concerns listed in the discusion of the RFC - primarily that the
-/// program should abort on panic inside `replace_with`. I've instead made this an unsafe function
-/// with the requirement that the passed function *MUST NOT PANIC*. If this is not obeyed, the
-/// moved value may be dropped twice during unwinding.
-///
-/// [RFC#1736]: https://github.com/rust-lang/rfcs/pull/1736
-/// [this commit]: https://github.com/rust-lang/rust/pull/36186/commits/ab9cb7fa2af5d17ba08f49c798565c513a905e3c
-/// [this comment]: https://github.com/rust-lang/rfcs/pull/1736#issuecomment-292969474
-unsafe fn replace_with<T, A, R, F>(val: &mut T, arg: A, replace: F) -> R
-where
-    F: FnOnce(T, A) -> (T, R),
-{
-    let old = ptr::read(&*val);
-    let (new, ret) = replace(old, arg);
-    std::ptr::write(val, new);
-    ret
 }
