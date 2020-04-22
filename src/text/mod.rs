@@ -120,7 +120,7 @@ pub enum ReprKind {
 /// The default implementations should not be overrident; for the most part, the default
 /// implementations are actually the only sensible ones permitted.
 ///
-/// [`buffer`]: ../views/buffer/struct.ViewBuffer.html
+/// [buffer]: ../views/buffer/struct.ViewBuffer.html
 /// [`Lines`]: struct.Lines.html
 pub trait ContentProvider: Sized {
     // FIXME: We need some way of providing reentrant locks and (possibly) upgrading locks
@@ -286,7 +286,7 @@ pub trait ContentProvider: Sized {
     /// This function will panic with a subtraction overflow if the end of the range is an exclusive
     /// bound equal to zero or will panic if the end of the range is greater than the total number
     /// of lines.
-    fn iter<'a, R: RangeBounds<usize>>(&'a self, range: R) -> Iter<Self> {
+    fn iter<R: RangeBounds<usize>>(&self, range: R) -> Iter<Self> {
         let content = self.content();
         let start = match range.start_bound() {
             Bound::Included(&b) => b,

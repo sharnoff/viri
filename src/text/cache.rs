@@ -30,8 +30,8 @@ impl Clone for Cache {
 
 impl Cache {
     pub(super) fn new(lines: &[InternalLine], newline_len: usize) -> Self {
-        if lines.len() == 0 {
-            panic!("Attempted to create a cache with lines.len() = 0");
+        if lines.is_empty() {
+            panic!("Attempted to create a cache with no lines");
         }
 
         Cache {

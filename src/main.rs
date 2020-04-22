@@ -1,4 +1,5 @@
 #![feature(generic_associated_types)]
+#![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
 #![feature(never_type)]
 #![deny(unused_must_use)]
 #![deny(unused_imports)]
@@ -8,7 +9,7 @@
 #![deny(private_in_public)]
 #![deny(mutable_borrow_reservation_conflict)]
 #![allow(unused_parens)]
-#![deny(clippy::perf)]
+#![warn(clippy::perf)]
 #![allow(clippy::style)] // Periodically disable to get other suggestions
 #![allow(clippy::redundant_closure_call)] // https://github.com/rust-lang/rust-clippy/issues/3354
 #![deny(clippy::len_zero)]

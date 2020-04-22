@@ -336,7 +336,7 @@ impl File {
         };
 
         let mut f = fs::File::create(path)?;
-        f.write(&self.content.collect_all(true))?;
+        f.write_all(&self.content.collect_all(true))?;
         f.flush()?;
         Ok(())
     }
@@ -387,7 +387,7 @@ impl ContentProvider for Handle {
         if res.is_ok() {
             log::trace!("setting unsaved");
             file.unsaved = true;
-            file.diffs.push((diff, Some(self.id.clone())));
+            file.diffs.push((diff, Some(self.id)));
         }
         res
     }
