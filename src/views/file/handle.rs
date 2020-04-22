@@ -347,6 +347,14 @@ impl ContentProvider for Handle {
     type DerefMut<'a> = ContentWriteGuard<'a>;
     type RefreshError = io::Error;
 
+    fn lock(&self) {
+        self.file.lock();
+    }
+
+    fn unlock(&self) {
+        self.file.unlock();
+    }
+
     /// Provides immutable access to the content of the file
     ///
     /// This function will panic if the lock on the file has been poisoned, and will block on

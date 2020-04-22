@@ -134,6 +134,15 @@ pub trait ContentProvider: Sized {
     /// An error type resulting from attempting to refresh the content
     type RefreshError: Error;
 
+    /// Locks the content, preventing write locks from being acquired from outside the current
+    /// thread.
+    ///
+    /// This must be callable multiple times from the same thread.
+    fn lock(&self);
+
+    /// Unlocks the content from a corresponding call to `lock`
+    fn unlock(&self);
+
     /// Gives immutable access to the inner `Lines`
     ///
     /// Calls to this method must not block on other calls to `get`, but they may block on
@@ -320,6 +329,9 @@ impl ContentProvider for Lines {
     type Deref<'a> = &'a Self;
     type DerefMut<'a> = &'a mut Self;
     type RefreshError = !;
+
+    fn lock(&self) {}
+    fn unlock(&self) {}
 
     fn content(&self) -> &Self {
         self

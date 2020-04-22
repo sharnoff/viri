@@ -180,6 +180,8 @@ impl<P: ContentProvider> ViewBuffer<P> {
     where
         F: FnMut(&mut Self, &E) -> Option<RefreshKind>,
     {
+        self.provider.lock();
+
         use Cmd::{Chain, Cursor, Extra, Scroll, TryClose};
 
         let refresh = match cmd {
@@ -196,6 +198,8 @@ impl<P: ContentProvider> ViewBuffer<P> {
                 .max()
                 .unwrap_or(None),
         };
+
+        self.provider.unlock();
 
         self.needs_refresh = self.needs_refresh.max(refresh);
         self.needs_refresh
@@ -216,6 +220,8 @@ impl<P: ContentProvider> ViewBuffer<P> {
     }
 
     pub fn insert(&mut self, s: &str) -> Option<RefreshKind> {
+        self.provider.lock();
+
         let row = self.current_row();
         let col = self.current_col();
         let diff = {
@@ -244,10 +250,14 @@ impl<P: ContentProvider> ViewBuffer<P> {
             self.virtual_col = self.current_col();
         }
 
+        self.provider.unlock();
+
         Some(RefreshKind::Full)
     }
 
     pub fn delete_movement(&mut self, movement: Movement) -> Option<RefreshKind> {
+        self.provider.lock();
+
         let cur_row = self.current_row();
         let cur_col = self.current_col();
 
@@ -293,6 +303,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         let cur_col = content.line(cur_row).width_idx_from_char(cur_char);
 
         drop(content);
+        self.provider.unlock();
 
         // and move the cursor into place
         self.virtual_col = cur_col;
