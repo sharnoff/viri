@@ -214,7 +214,7 @@ impl<K: Clone + Ord, T> Node<K, T> {
         }
 
         match self {
-            Node::Leaf { key, .. } => match key.len() >= depth && &key[depth..] != prefix {
+            Node::Leaf { key, .. } => match key.len() >= depth && &key[depth..] == prefix {
                 true => Some(self),
                 false => None,
             },
@@ -466,6 +466,27 @@ impl<K: Clone + Ord + Serialize, T: Clone + Serialize> Serialize for Trie<K, T> 
 mod tests {
     use super::*;
 
+    // A helper function so that we can use the same "complex" trie in multiple places
+    fn generate_complex() -> Trie<u8, char> {
+        // Commented to the right is the list, but sorted
+        let input: Vec<(Vec<u8>, char)> = vec![
+            (vec![0, 4, 1], 'a'),  //  (vec![       ], 'l'),
+            (vec![0, 4   ], 'b'),  //  (vec![0, 4   ], 'b'),
+            (vec![8      ], 'c'),  //  (vec![0, 4, 1], 'a'),
+            (vec![6, 3, 1], 'd'),  //  (vec![0, 8, 7], 'e'),
+            (vec![0, 8, 7], 'e'),  //  (vec![1, 4, 8], 'i'),
+            (vec![4, 7, 8], 'f'),  //  (vec![4, 7, 8], 'f'),
+            (vec![9, 6, 9], 'g'),  //  (vec![6      ], 'j'),
+            (vec![7, 9, 5], 'h'),  //  (vec![6, 3   ], 'k'),
+            (vec![1, 4, 8], 'i'),  //  (vec![6, 3, 1], 'd'),
+            (vec![6      ], 'j'),  //  (vec![7, 9, 5], 'h'),
+            (vec![6, 3,  ], 'k'),  //  (vec![8      ], 'c'),
+            (vec![       ], 'l'),  //  (vec![9, 6, 9], 'g'),
+        ];
+
+        Trie::from_iter(input.into_iter())
+    }
+
     #[test]
     fn new_simple() {
         let expected = Node::List {
@@ -539,23 +560,28 @@ mod tests {
             ],
         };
 
-        // Commented to the right is the list, but sorted
-        let input: Vec<(Vec<u8>, char)> = vec![
-            (vec![0, 4, 1], 'a'),  //  (vec![       ], 'l'),
-            (vec![0, 4   ], 'b'),  //  (vec![0, 4   ], 'b'),
-            (vec![8      ], 'c'),  //  (vec![0, 4, 1], 'a'),
-            (vec![6, 3, 1], 'd'),  //  (vec![0, 8, 7], 'e'),
-            (vec![0, 8, 7], 'e'),  //  (vec![1, 4, 8], 'i'),
-            (vec![4, 7, 8], 'f'),  //  (vec![4, 7, 8], 'f'),
-            (vec![9, 6, 9], 'g'),  //  (vec![6      ], 'j'),
-            (vec![7, 9, 5], 'h'),  //  (vec![6, 3   ], 'k'),
-            (vec![1, 4, 8], 'i'),  //  (vec![6, 3, 1], 'd'),
-            (vec![6      ], 'j'),  //  (vec![7, 9, 5], 'h'),
-            (vec![6, 3,  ], 'k'),  //  (vec![8      ], 'c'),
-            (vec![       ], 'l'),  //  (vec![9, 6, 9], 'g'),
+        let trie = generate_complex();
+        assert_eq!(trie.inner, Some(expected))
+    }
+
+    #[test]
+    fn find_simple() {
+        let trie = generate_complex();
+
+        let finds: Vec<(Vec<u8>, Option<Node<u8,char>>)> = vec![
+            /*
+            (vec![6], Some(Node::List {
+            })),
+            */
+            (vec![8, 0], None),
         ];
 
-        let trie = Trie::from_iter(input.into_iter());
-        assert_eq!(trie.inner, Some(expected))
+        for (i, (key, node)) in finds.iter().enumerate() {
+            let found = trie.find(&key);
+            if found != node.as_ref() {
+                println!("Failed at iteration {}:", i);
+                assert_eq!(node.as_ref(), found);
+            }
+        }
     }
 }
