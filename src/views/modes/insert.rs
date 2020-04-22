@@ -29,11 +29,12 @@ impl Mode<InsertCmd> for InsertMode {
         let node = cfg.keys.find(&self.key_stack);
 
         match node {
-            None if !self.key_stack.is_empty() => {
+            None if self.key_stack.len() > 1 => {
                 self.key_stack.truncate(0);
                 return ModeResult::NoCommand;
             }
             Some(n) if n.size() == 1 => {
+                self.key_stack.truncate(0);
                 return ModeResult::Cmd(n.extract().clone());
             }
             Some(n) if n.size() > 1 => {
