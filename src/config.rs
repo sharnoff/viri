@@ -50,7 +50,7 @@ macro_rules! static_config {
             static $global;
             @Builder = $builder;
             $config_vis struct $config {
-                $($field: $field_ty = $value,)*
+                $($field_vis $field: $field_ty = $value,)*
             }
 
             impl ConfigPart {
