@@ -13,7 +13,9 @@ clap = { version = "2.33", features = ["yaml"] }
 crossterm = { git = "https://github.com/sharnoff/crossterm.git", features = ["serde"] }
 lazy_static = "1.4"
 libc = "0.2"
+lock_api = "0.3"
 log = { version = "0.4", features = ["serde"] }
+parking_lot = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
 uuid = { version = "0.8", features = ["v4"] }

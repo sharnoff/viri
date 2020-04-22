@@ -1,4 +1,5 @@
 mod handle;
+mod lock;
 
 use crate::config::prelude::*;
 use crate::container::Signal;
