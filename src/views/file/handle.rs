@@ -18,19 +18,22 @@ use std::io::{self, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::text::diff;
 use crate::text::{ContentProvider, Diff, Lines, ReprKind};
 
+use super::lock::{Lock, ReadGuard, WriteGuard};
+
 use lazy_static::lazy_static;
+use parking_lot::RwLock;
 
 lazy_static! {
     /// A global registry to store all of the files that have been opened during this session
     ///
     /// The files are keyed by their absolute, canonicalized paths (if available)
-    static ref REGISTRY: RwLock<HashMap<Locator, Arc<RwLock<File>>>> = RwLock::new(HashMap::new());
+    static ref REGISTRY: RwLock<HashMap<Locator, Arc<Lock<File>>>> = RwLock::new(HashMap::new());
 }
 
 const EXTERN_HANDLE_ID: HandleId = HandleId(0);
@@ -40,10 +43,10 @@ static NEXT_LOCAL_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A wrapper type for a handle on a file
 ///
-/// All methods are defined on this type (instead of the inner [`Arc<RwLock<File>>`]) so that direct
+/// All methods are defined on this type (instead of the inner [`Arc<Lock<File>>`]) so that direct
 /// file management can be limited to this module.
 ///
-/// [`Arc<RwLock<File>>`]: struct.File.html
+/// [`Arc<Lock<File>>`]: struct.File.html
 // TODO: We'll need to keep track of which diffs have been seen by the handle yet and which
 // haven't.
 #[derive(Debug)]
@@ -52,7 +55,7 @@ pub struct Handle {
     ///
     /// When the containing `Handle` is dropped, the `n_handles` field of the file will be
     /// decremented.
-    file: Arc<RwLock<File>>,
+    file: Arc<Lock<File>>,
 
     /// A unique identifier to track changes by
     id: HandleId,
@@ -157,7 +160,7 @@ pub struct LocalId(u64);
 /// [`Handle`]: struct.Handle.html
 /// [`Lines`]: ../../text/struct.Lines.html
 pub struct ContentReadGuard<'a> {
-    guard: RwLockReadGuard<'a, File>,
+    guard: ReadGuard<'a, File>,
 }
 
 /// Provides a way of mutably borrowing the file's content
@@ -170,7 +173,7 @@ pub struct ContentReadGuard<'a> {
 /// [`Handle`]: struct.Handle.html
 /// [`Lines`]: ../../text/struct.Lines.html
 pub struct ContentWriteGuard<'a> {
-    guard: RwLockWriteGuard<'a, File>,
+    guard: WriteGuard<'a, File>,
 }
 
 /// This represents the class of errors that may result from attempting to write the contents of a
@@ -227,7 +230,7 @@ impl Handle {
         let locator = Locator::Local(id);
         let handle_id = gen_handle_id();
 
-        if let Some(arc_handle) = REGISTRY.read().unwrap().get(&locator) {
+        if let Some(arc_handle) = REGISTRY.read().get(&locator) {
             return Handle {
                 file: arc_handle.clone(),
                 id: handle_id,
@@ -241,7 +244,7 @@ impl Handle {
         const REPR_KIND: ReprKind = ReprKind::Utf8;
 
         Handle {
-            file: Arc::new(RwLock::new(File {
+            file: Arc::new(Lock::new(File {
                 locator,
                 content: Lines::from_bytes(&[], TABSTOP, REPR_KIND),
                 n_handles: 1,
@@ -262,7 +265,7 @@ impl Handle {
         let id = gen_handle_id();
         let locator = Locator::Path(path.clone());
 
-        if let Some(arc_handle) = REGISTRY.read().unwrap().get(&locator) {
+        if let Some(arc_handle) = REGISTRY.read().get(&locator) {
             return Ok(Handle {
                 file: arc_handle.clone(),
                 id,
@@ -273,20 +276,17 @@ impl Handle {
         file.n_handles = 1;
 
         let handle = Handle {
-            file: Arc::new(RwLock::new(file)),
+            file: Arc::new(Lock::new(file)),
             id,
         };
 
-        REGISTRY
-            .write()
-            .unwrap()
-            .insert(locator, handle.file.clone());
+        REGISTRY.write().insert(locator, handle.file.clone());
         Ok(handle)
     }
 
     /// Returns whether the underlying file currently has unsaved changes
     pub fn unsaved(&self) -> bool {
-        let guard = self.file.read().unwrap();
+        let guard = self.file.read();
         guard.unsaved
     }
 
@@ -301,7 +301,7 @@ impl Handle {
     ///
     /// [`WriteError`]: enum.WriteError.html
     pub fn write(&self) -> Result<(), WriteError> {
-        let mut guard = self.file.write().unwrap();
+        let mut guard = self.file.write();
         guard.write()
     }
 }
@@ -356,7 +356,7 @@ impl ContentProvider for Handle {
     /// [`ContentReadGuard`]: struct.ContentReadGuard.html
     fn content(&self) -> ContentReadGuard {
         ContentReadGuard {
-            guard: self.file.read().unwrap(),
+            guard: self.file.read(),
         }
     }
 
@@ -369,12 +369,12 @@ impl ContentProvider for Handle {
     /// [`ContentWriteGuard`]: struct.ContentWriteGuard.html
     fn content_mut(&mut self) -> ContentWriteGuard {
         ContentWriteGuard {
-            guard: self.file.write().unwrap(),
+            guard: self.file.write(),
         }
     }
 
     fn apply_diff(&mut self, diff: Diff) -> Result<(), diff::Error> {
-        let mut file = self.file.write().unwrap();
+        let mut file = self.file.write();
         let res = file.content.apply_diff(diff.clone());
         if res.is_ok() {
             log::trace!("setting unsaved");
@@ -391,24 +391,7 @@ impl ContentProvider for Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        let mut file_guard = match self.file.write() {
-            Ok(g) => g,
-            // Because this is a destructor, we *really* don't want to double panic. If the lock was
-            // already poisoned, we'll just return early; failing to run this destructor only results
-            // in a logic error.
-            Err(e) => {
-                // I'm not even sure we should be logging *this* - it could also panic.
-                log::error!(
-                    "Attempted to drop `Handle` while `file` is poisoned: {:?}",
-                    e
-                );
-
-                // Perhaps something better would be to give it with `runtime::add_exit_msg`, but
-                // then we don't guarantee that the user will ever see this (what if the panic is
-                // silently ignored?)
-                return;
-            }
-        };
+        let mut file_guard = self.file.write();
 
         // Decrement the counter, like we said we would
         // -> For more info, see documentation for Handle.file and File.n_handles
