@@ -1,18 +1,17 @@
 // TODO: Module-level documentation
 
-use serde::Deserialize;
+use std::fmt::{self, Debug, Formatter};
+
+use serde::{Deserialize, Serialize};
 
 use crate::config::prelude::*;
 use crate::event::KeyEvent;
-use crate::trie::Trie;
-use crate::views::{self, Cmd, CursorStyle};
+use crate::views::{Cmd, CursorStyle, Movement};
 
 use super::{Mode, ModeResult};
 
-#[derive(Debug)]
 pub struct NormalMode {
-    key_stack: Vec<KeyEvent>,
-    // TODO: We'll need to keep track of numbers/movements/etc so can
+    parsers: Option<Parsers>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,28 +22,55 @@ pub enum NormalCmd {
     ChangeMode(String),
 }
 
+impl Debug for NormalMode {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        enum OpaqueOption {
+            Some,
+            None,
+        }
+
+        impl Debug for OpaqueOption {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                match self {
+                    Self::Some => f.write_str("Some(...)"),
+                    Self::None => f.write_str("None"),
+                }
+            }
+        }
+
+        fn opaque<T>(opt: Option<T>) -> OpaqueOption {
+            match opt {
+                Some(_) => OpaqueOption::Some,
+                None => OpaqueOption::None,
+            }
+        }
+
+        f.debug_struct("NormalMode")
+            .field("parsers", &opaque(self.parsers.as_ref()))
+            .finish()
+    }
+}
+
 impl Mode<NormalCmd> for NormalMode {
     fn try_handle(&mut self, key: KeyEvent) -> ModeResult<NormalCmd> {
-        self.key_stack.push(key);
-
-        let cfg = Config::global();
-        let node = cfg.keys.find(&self.key_stack);
-
-        match node {
+        let parsers = match &mut self.parsers {
+            Some(ps) => ps,
             None => {
-                self.key_stack.truncate(0);
+                self.parsers = Some(Parsers::default());
+                self.parsers.as_mut().unwrap()
+            }
+        };
+
+        match parsers.add(key) {
+            ParseResult::NeedsMore => ModeResult::NeedsMore,
+            ParseResult::Success(_, cmd) => {
+                self.parsers = None;
+                ModeResult::Cmd(cmd)
+            }
+            ParseResult::Failed => {
+                self.parsers = None;
                 ModeResult::NoCommand
             }
-            Some(n) if n.size() == 0 => {
-                self.key_stack.truncate(0);
-                ModeResult::NoCommand
-            }
-            Some(n) if n.size() == 1 => {
-                self.key_stack.truncate(0);
-                ModeResult::Cmd(n.extract().clone())
-            }
-            // Some(n) if n.size > 1
-            _ => ModeResult::NeedsMore,
         }
     }
 
@@ -55,91 +81,233 @@ impl Mode<NormalCmd> for NormalMode {
 
 impl NormalMode {
     pub fn new() -> Self {
-        Self {
-            key_stack: Vec::with_capacity(1),
-        }
+        Self { parsers: None }
     }
 
     pub fn currently_waiting(&self) -> bool {
-        !self.key_stack.is_empty()
+        self.parsers.is_some()
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Config stuff                                                                                   //
-////////////////////////////////////////////////////////////////////////////////////////////////////
+trait ParseState {
+    type Output;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Builder {
-    keys: Option<Vec<(Vec<KeyEvent>, Cmd<NormalCmd>)>>,
+    fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output>;
+
+    fn max_priority(&self) -> Option<Priority>;
 }
 
-static_config! {
-    static GLOBAL;
-    @Builder = Builder;
-    pub struct Config {
-        pub keys: Trie<KeyEvent, Cmd<NormalCmd>> = default_keybindings(),
-    }
+#[derive(Clone)]
+enum ParseResult<T> {
+    Success(Priority, T),
+    NeedsMore,
+    Failed,
+}
 
-    impl ConfigPart {
-        fn update(this: &mut Self, builder: Builder) {
-            if let Some(ks) = builder.keys {
-                ks.into_iter().for_each(|(key,cmd)| drop(this.keys.insert(key, cmd)));
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum Priority {
+    Error,
+    UserDefined,
+    Builtin,
+}
+
+impl<T> ParseResult<T> {
+    fn needs_more(&self) -> bool {
+        match self {
+            Self::NeedsMore => true,
+            _ => false,
+        }
+    }
+}
+
+struct Parsers {
+    inner: Vec<Box<dyn ParseState<Output = Cmd<NormalCmd>>>>,
+}
+
+impl Default for Parsers {
+    fn default() -> Self {
+        Self {
+            inner: vec![Box::new(MovementParser::default())],
+        }
+    }
+}
+
+impl ParseState for Parsers {
+    type Output = Cmd<NormalCmd>;
+
+    fn add(&mut self, key: KeyEvent) -> ParseResult<Cmd<NormalCmd>> {
+        // Set up a helper type
+        enum SearchResult {
+            Single(Priority, Cmd<NormalCmd>),
+            Conflict(Priority),
+            Nothing,
+        }
+
+        use SearchResult::*;
+
+        impl SearchResult {
+            fn priority(&self) -> Option<Priority> {
+                match self {
+                    Single(p, _) | Conflict(p) => Some(*p),
+                    Nothing => None,
+                }
             }
         }
+
+        // The actual body of the function
+
+        let mut found = Nothing;
+        let mut max_possible: Option<Priority> = None;
+        let mut next_set: Vec<Box<dyn ParseState<Output = Cmd<NormalCmd>>>> =
+            Vec::with_capacity(self.inner.len());
+        let mut needs_more = false;
+
+        for mut parser in self.inner.drain(..) {
+            match parser.add(key) {
+                ParseResult::NeedsMore => {
+                    needs_more = true;
+                    max_possible = max_possible.max(parser.max_priority());
+                }
+                ParseResult::Failed => (),
+                ParseResult::Success(priority, cmd) => match found {
+                    Nothing => found = Single(priority, cmd),
+
+                    Conflict(p) | Single(p, _) if p < priority => found = Single(priority, cmd),
+                    Conflict(p) | Single(p, _) if p > priority => (),
+
+                    // p == priority
+                    Single(p, _) => found = Conflict(p),
+                    Conflict(_) => (),
+                },
+            }
+        }
+
+        if max_possible.is_none() && found.priority().is_none() {
+            return ParseResult::Failed;
+        } else if max_possible >= found.priority() {
+            // this is a weird case :(
+            return ParseResult::Success(Priority::Error, todo!());
+        }
+
+        match found {
+            Single(priority, cmd) => ParseResult::Success(priority, cmd),
+            Conflict(_) => {
+                return ParseResult::Success(Priority::Error, todo!());
+            }
+            Nothing => match needs_more {
+                true => {
+                    self.inner = next_set;
+                    ParseResult::NeedsMore
+                }
+                false => ParseResult::Failed,
+            },
+        }
+    }
+
+    fn max_priority(&self) -> Option<Priority> {
+        self.inner
+            .iter()
+            .map(|p| p.max_priority())
+            .max()
+            .unwrap_or(None)
     }
 }
 
-impl From<Builder> for Config {
-    fn from(builder: Builder) -> Self {
-        Self {
-            keys: builder
+enum MovementParser {
+    Simple(Priority, Movement),
+    Nothing,
+    Failed,
+}
+
+impl Default for MovementParser {
+    fn default() -> Self {
+        Self::Nothing
+    }
+}
+
+impl ParseState for MovementParser {
+    type Output = Cmd<NormalCmd>;
+
+    fn add(&mut self, key: KeyEvent) -> ParseResult<Cmd<NormalCmd>> {
+        match self {
+            Self::Failed | Self::Simple(_, _) => {
+                log::warn!("Warning: adding to MovementParser that has already finished.");
+                ParseResult::Success(Priority::Error, todo!());
+            }
+            Self::Nothing => (),
+        }
+
+        let cfg = move_config::Config::global();
+        let (priority, movement) = match cfg.keys.get(&key) {
+            Some(&(p, m)) => (p, m),
+            None => {
+                *self = Self::Failed;
+                return ParseResult::Failed;
+            }
+        };
+
+        *self = Self::Simple(priority, movement);
+        // TODO: This should just return the movement, using a secondary wrapping "numerical"
+        // parser to handle the rest
+        ParseResult::Success(priority, Cmd::Cursor(movement, None))
+    }
+
+    fn max_priority(&self) -> Option<Priority> {
+        match self {
+            Self::Simple(priority, _) => Some(*priority),
+            Self::Failed => None,
+            Self::Nothing => move_config::Config::global()
                 .keys
-                .map(|ks| Trie::from_iter(ks.into_iter()))
-                .unwrap_or_else(default_keybindings),
+                .values()
+                .map(|(p, _)| *p)
+                .max(),
         }
     }
 }
 
-#[rustfmt::skip]
-fn default_keybindings() -> Trie<KeyEvent, Cmd<NormalCmd>> {
-    use crate::event::{KeyCode::Esc, KeyModifiers as Mods};
-    use views::CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart};
-    use views::HorizontalMove::{Const,LineBoundary, UntilFst, UntilSnd};
-    use views::Movement::{Down, Left, Right, Up};
+mod move_config {
+    use super::Priority;
+    use crate::config::prelude::*;
+    use crate::event::KeyEvent;
+    use crate::views::Movement;
+    use std::collections::HashMap;
 
-    let keys = vec![
-        // (mostly) meaningless for now
-        (vec![KeyEvent { code: Esc, mods: Mods::NONE }], Cmd::Extra(NormalCmd::ExitMode)),
-        // Standard movmeent
-        (vec![KeyEvent::none('k')], Cmd::Cursor(Up, None)),
-        (vec![KeyEvent::none('j')], Cmd::Cursor(Down, None)),
-        (vec![KeyEvent::none('h')], Cmd::Cursor(Left(Const, false), None)),
-        (vec![KeyEvent::none('l')], Cmd::Cursor(Right(Const, false), None)),
+    static_config! {
+        static GLOBAL;
+        pub struct Builder;
+        pub struct Config {
+            pub(super) keys: HashMap<KeyEvent, (Priority, Movement)> = default_keybindings(),
+        }
+    }
 
-        // Switching to insert mode
-        (vec![KeyEvent::none('i')], Cmd::Extra(NormalCmd::ChangeMode("insert".into()))),
-        (vec![KeyEvent::none('a')], Cmd::Chain(vec![
-                Cmd::Extra(NormalCmd::ChangeMode("insert".into())),
-                Cmd::Cursor(Right(Const, false), None)
-        ])),
-        (vec![KeyEvent::none('A')], Cmd::Chain(vec![
-                Cmd::Extra(NormalCmd::ChangeMode("insert".into())),
-                Cmd::Cursor(Right(LineBoundary, false), None)
-        ])),
+    #[rustfmt::skip]
+    fn default_keybindings() -> HashMap<KeyEvent, (Priority, Movement)> {
+        use crate::views::CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart};
+        use crate::views::HorizontalMove::{Const,LineBoundary, UntilFst, UntilSnd};
+        use crate::views::Movement::{Down, Left, Right, Up};
 
-        // More advanced movements - these map to (essentially) what they are in other editors
-        (vec![KeyEvent::none('b')], Cmd::Cursor(Left(UntilFst(WordEnd), true), None)),
-        (vec![KeyEvent::none('B')], Cmd::Cursor(Left(UntilFst(BigWordEnd), true), None)),
-        (vec![KeyEvent::none('w')], Cmd::Cursor(Right(UntilSnd(WordStart), true), None)),
-        (vec![KeyEvent::none('W')], Cmd::Cursor(Right(UntilSnd(BigWordStart), true), None)),
-        (vec![KeyEvent::none('e')], Cmd::Cursor(Right(UntilFst(WordEnd), true), None)),
-        (vec![KeyEvent::none('E')], Cmd::Cursor(Right(UntilFst(BigWordEnd), true), None)),
-        (vec![KeyEvent::none('0')], Cmd::Cursor(Left(LineBoundary, true), None)),
-        (vec![KeyEvent::none('$')], Cmd::Cursor(Right(LineBoundary, true), None)),
+        use super::Priority::Builtin;
 
-        // Switching to 'command mode' (not sure what this should really be called)
-    ];
+        let keys = vec![
+            // Directional movement
+            (KeyEvent::none('k'), (Builtin, Up)),
+            (KeyEvent::none('j'), (Builtin, Down)),
+            (KeyEvent::none('h'), (Builtin, Left(Const, false))),
+            (KeyEvent::none('l'), (Builtin, Right(Const, false))),
 
-    Trie::from_iter(keys.into_iter())
+            // By words
+            (KeyEvent::none('b'), (Builtin, Left(UntilFst(WordEnd), true))),
+            (KeyEvent::none('B'), (Builtin, Left(UntilFst(BigWordEnd), true))),
+            (KeyEvent::none('w'), (Builtin, Right(UntilSnd(WordStart), true))),
+            (KeyEvent::none('W'), (Builtin, Right(UntilSnd(BigWordStart), true))),
+            (KeyEvent::none('e'), (Builtin, Right(UntilFst(WordEnd), true))),
+            (KeyEvent::none('E'), (Builtin, Right(UntilFst(BigWordEnd), true))),
+
+            // Relative to the line beginning/end
+            (KeyEvent::none('0'), (Builtin, Left(LineBoundary, true))),
+            (KeyEvent::none('$'), (Builtin, Right(LineBoundary, true))),
+        ];
+
+        keys.into_iter().collect()
+    }
 }
