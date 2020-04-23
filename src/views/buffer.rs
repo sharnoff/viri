@@ -5,7 +5,7 @@
 
 use std::mem;
 use std::num::NonZeroUsize;
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 use std::sync::Mutex;
 
 use crate::config::prelude::*;
@@ -318,6 +318,48 @@ impl<P: ContentProvider> ViewBuffer<P> {
         Some(RefreshKind::Full)
     }
 
+    pub fn delete_lines(&mut self, line_range: RangeInclusive<usize>) -> Option<RefreshKind> {
+        if line_range.start() > line_range.end() {
+            // if line_range.is_empty() { // <- Unstable feature `range_is_empty`
+            return None;
+        }
+
+        self.provider.lock();
+        let content = self.provider.content();
+
+        let start_byte = content.byte_index(*line_range.start(), 0);
+        let end_byte = if *line_range.end() != content.num_lines() {
+            content.byte_index(line_range.end() + 1, 0)
+        } else {
+            content.total_bytes()
+        };
+
+        let old_row = self.current_row();
+
+        let diff = content.delete_byte_range(start_byte..end_byte);
+        drop(content);
+
+        self.provider.apply_diff(diff).unwrap();
+
+        let content = self.provider.content();
+
+        let new_row = {
+            if old_row <= *line_range.start() {
+                old_row.min(content.num_lines())
+            } else {
+                // We add one here because the range is inclusive
+                old_row.saturating_sub(line_range.end() - line_range.start() + 1)
+            }
+        };
+
+        drop(content);
+        self.provider.unlock();
+
+        self.move_cursor_row_unchecked(new_row);
+        self.try_move_virtual_cursor();
+        Some(RefreshKind::Full)
+    }
+
     pub fn set_allow_after(&mut self, allow: bool) -> Option<RefreshKind> {
         self.allow_cursor_after = allow;
 
@@ -366,7 +408,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
     /// This is used in muliple places, but primarily serves as a way to reduce the amount of
     /// repetition in various types of cursor movements and deletion patterns.
     #[rustfmt::skip]
-    fn simulate_movement(
+    pub fn simulate_movement(
         &self,
         movement: Movement,
         amount: usize,
