@@ -21,19 +21,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::lock::{ArcLock, ReadGuard, RwLock, WriteGuard};
 use crate::text::diff;
 use crate::text::{ContentProvider, Diff, Lines, ReprKind};
 
-use super::lock::{Lock, ReadGuard, WriteGuard};
-
 use lazy_static::lazy_static;
-use parking_lot::RwLock;
 
 lazy_static! {
     /// A global registry to store all of the files that have been opened during this session
     ///
     /// The files are keyed by their absolute, canonicalized paths (if available)
-    static ref REGISTRY: RwLock<HashMap<Locator, Arc<Lock<File>>>> = RwLock::new(HashMap::new());
+    static ref REGISTRY: RwLock<HashMap<Locator, ArcLock<File>>> = RwLock::new(HashMap::new());
 }
 
 const EXTERN_HANDLE_ID: HandleId = HandleId(0);
@@ -43,10 +41,10 @@ static NEXT_LOCAL_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A wrapper type for a handle on a file
 ///
-/// All methods are defined on this type (instead of the inner [`Arc<Lock<File>>`]) so that direct
+/// All methods are defined on this type (instead of the inner [`ArcLock<File>`]) so that direct
 /// file management can be limited to this module.
 ///
-/// [`Arc<Lock<File>>`]: struct.File.html
+/// [`ArcLock<File>`]: struct.File.html
 // TODO: We'll need to keep track of which diffs have been seen by the handle yet and which
 // haven't.
 #[derive(Debug)]
@@ -55,7 +53,7 @@ pub struct Handle {
     ///
     /// When the containing `Handle` is dropped, the `n_handles` field of the file will be
     /// decremented.
-    file: Arc<Lock<File>>,
+    file: ArcLock<File>,
 
     /// A unique identifier to track changes by
     id: HandleId,
@@ -244,7 +242,7 @@ impl Handle {
         const REPR_KIND: ReprKind = ReprKind::Utf8;
 
         Handle {
-            file: Arc::new(Lock::new(File {
+            file: ArcLock::new(File {
                 locator,
                 content: Lines::from_bytes(&[], TABSTOP, REPR_KIND),
                 n_handles: 1,
@@ -252,7 +250,7 @@ impl Handle {
                 next_diff_id: 0,
                 diffs: Vec::new(),
                 last_write: SystemTime::now(),
-            })),
+            }),
             id: handle_id,
         }
     }
@@ -276,7 +274,7 @@ impl Handle {
         file.n_handles = 1;
 
         let handle = Handle {
-            file: Arc::new(Lock::new(file)),
+            file: ArcLock::new(file),
             id,
         };
 
@@ -300,7 +298,7 @@ impl Handle {
     /// This function will panic if the internal lock on the file has been poisoned.
     ///
     /// [`WriteError`]: enum.WriteError.html
-    pub fn write(&self) -> Result<(), WriteError> {
+    pub fn write(&mut self) -> Result<(), WriteError> {
         let mut guard = self.file.write();
         guard.write()
     }
@@ -338,6 +336,7 @@ impl File {
         let mut f = fs::File::create(path)?;
         f.write_all(&self.content.collect_all(true))?;
         f.flush()?;
+        self.unsaved = false;
         Ok(())
     }
 }

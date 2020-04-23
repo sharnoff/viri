@@ -1,5 +1,4 @@
 mod handle;
-mod lock;
 
 use crate::config::prelude::*;
 use crate::container::Signal;
@@ -506,7 +505,10 @@ impl FileView {
     }
 
     fn try_save(&mut self) -> Result<(), String> {
-        self.buffer.provider().write().map_err(|e| e.to_string())
+        self.buffer
+            .provider_mut()
+            .write()
+            .map_err(|e| e.to_string())
     }
 
     fn unsaved(&self) -> bool {

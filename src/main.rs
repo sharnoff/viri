@@ -26,6 +26,7 @@ mod config;
 
 mod container;
 mod event;
+mod lock;
 mod logger;
 mod runtime;
 mod text;

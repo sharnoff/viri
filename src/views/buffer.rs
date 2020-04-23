@@ -139,6 +139,11 @@ impl<P: ContentProvider> ViewBuffer<P> {
         &self.provider
     }
 
+    /// Gives mutable access to the content provider for this buffer
+    pub fn provider_mut(&mut self) -> &mut P {
+        &mut self.provider
+    }
+
     /// Returns the on-screen position of the cursor *within the buffer*
     pub fn cursor_pos(&self) -> TermCoord {
         self.cursor
