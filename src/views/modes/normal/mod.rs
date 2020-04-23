@@ -14,10 +14,12 @@ use crate::views::{self, Cmd, CursorStyle, Movement};
 
 use super::{Mode, ModeResult};
 
-use combinators::{numerical, wrap};
+use combinators::{numerical, set, wrap};
 
+/// The type responsible for handling inputs while in "normal" mode
 pub struct NormalMode {
-    parsers: Option<Parsers>,
+    /// The ongoing set of parsers that might be able to consume the next key input
+    parsers: Option<combinators::Set<Cmd<NormalCmd>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +29,90 @@ pub enum NormalCmd {
     // * "insert" => FileView
     ChangeMode(String),
     Delete(Movement, usize),
+}
+
+trait ParseState {
+    type Output;
+
+    fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output>;
+    fn max_priority(&self) -> Option<Priority>;
+}
+
+#[derive(Clone)]
+enum ParseResult<T> {
+    Success(Priority, T),
+    NeedsMore,
+    Failed,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum Priority {
+    Error,
+    UserDefined,
+    Builtin,
+}
+
+impl NormalMode {
+    pub fn new() -> Self {
+        Self { parsers: None }
+    }
+
+    pub fn currently_waiting(&self) -> bool {
+        self.parsers.is_some()
+    }
+
+    fn reset_parsers(&mut self) {
+        let movement = wrap(numerical(movement::Parser::default()), |(n, m)| {
+            Cmd::Cursor(m, n)
+        });
+
+        let delete = wrap(
+            numerical(delete::Parser::default()),
+            |(n_outer, (n_inner, m))| {
+                // FIXME: This could fail if the numbers are big enough - it *really* shoudn't do
+                // that
+                Cmd::Extra(NormalCmd::Delete(m, n_outer.unwrap_or(1) * n_inner))
+            },
+        );
+
+        self.parsers = Some(set(vec![
+            Box::new(movement),
+            Box::new(Misc::default()),
+            Box::new(delete),
+        ]));
+    }
+}
+
+impl Mode<NormalCmd> for NormalMode {
+    fn try_handle(&mut self, key: KeyEvent) -> ModeResult<NormalCmd> {
+        use combinators::SetResult::{FinishConflict, PartialConflict, Success};
+
+        if self.parsers.is_none() {
+            self.reset_parsers();
+        }
+
+        let parsers = self.parsers.as_mut().unwrap();
+
+        match parsers.add(key) {
+            ParseResult::NeedsMore => ModeResult::NeedsMore,
+            ParseResult::Success(_, set_res) => match set_res {
+                Success(cmd) => {
+                    self.parsers = None;
+                    ModeResult::Cmd(cmd)
+                }
+                PartialConflict(_) => todo!(),
+                FinishConflict => todo!(),
+            },
+            ParseResult::Failed => {
+                self.parsers = None;
+                ModeResult::NoCommand
+            }
+        }
+    }
+
+    fn cursor_style(&self) -> CursorStyle {
+        CursorStyle { allow_after: false }
+    }
 }
 
 impl Debug for NormalMode {
@@ -55,187 +141,6 @@ impl Debug for NormalMode {
         f.debug_struct("NormalMode")
             .field("parsers", &opaque(self.parsers.as_ref()))
             .finish()
-    }
-}
-
-impl Mode<NormalCmd> for NormalMode {
-    fn try_handle(&mut self, key: KeyEvent) -> ModeResult<NormalCmd> {
-        let parsers = match &mut self.parsers {
-            Some(ps) => ps,
-            None => {
-                self.parsers = Some(Parsers::default());
-                self.parsers.as_mut().unwrap()
-            }
-        };
-
-        match parsers.add(key) {
-            ParseResult::NeedsMore => ModeResult::NeedsMore,
-            ParseResult::Success(_, cmd) => {
-                self.parsers = None;
-                ModeResult::Cmd(cmd)
-            }
-            ParseResult::Failed => {
-                self.parsers = None;
-                ModeResult::NoCommand
-            }
-        }
-    }
-
-    fn cursor_style(&self) -> CursorStyle {
-        CursorStyle { allow_after: false }
-    }
-}
-
-impl NormalMode {
-    pub fn new() -> Self {
-        Self { parsers: None }
-    }
-
-    pub fn currently_waiting(&self) -> bool {
-        self.parsers.is_some()
-    }
-}
-
-trait ParseState {
-    type Output;
-
-    fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output>;
-
-    fn max_priority(&self) -> Option<Priority>;
-}
-
-#[derive(Clone)]
-enum ParseResult<T> {
-    Success(Priority, T),
-    NeedsMore,
-    Failed,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-enum Priority {
-    Error,
-    UserDefined,
-    Builtin,
-}
-
-impl<T> ParseResult<T> {
-    fn needs_more(&self) -> bool {
-        match self {
-            Self::NeedsMore => true,
-            _ => false,
-        }
-    }
-}
-
-/// The core set of all normal mode commands available
-struct Parsers {
-    inner: Vec<Box<dyn ParseState<Output = Cmd<NormalCmd>>>>,
-}
-
-impl Default for Parsers {
-    fn default() -> Self {
-        let movement = wrap(numerical(movement::Parser::default()), |(n, m)| {
-            Cmd::Cursor(m, n)
-        });
-
-        let delete = wrap(
-            numerical(delete::Parser::default()),
-            |(n_outer, (n_inner, m))| {
-                // FIXME: This could fail if the numbers are big enough - it *really* shoudn't do
-                // that
-                Cmd::Extra(NormalCmd::Delete(m, n_outer.unwrap_or(1) * n_inner))
-            },
-        );
-
-        Self {
-            inner: vec![
-                Box::new(movement),
-                Box::new(Misc::default()),
-                Box::new(delete),
-            ],
-        }
-    }
-}
-
-impl ParseState for Parsers {
-    type Output = Cmd<NormalCmd>;
-
-    fn add(&mut self, key: KeyEvent) -> ParseResult<Cmd<NormalCmd>> {
-        // Set up a helper type
-        enum SearchResult {
-            Single(Priority, Cmd<NormalCmd>),
-            Conflict(Priority),
-            Nothing,
-        }
-
-        use SearchResult::*;
-
-        impl SearchResult {
-            fn priority(&self) -> Option<Priority> {
-                match self {
-                    Single(p, _) | Conflict(p) => Some(*p),
-                    Nothing => None,
-                }
-            }
-        }
-
-        // The actual body of the function
-
-        let mut found = Nothing;
-        let mut max_possible: Option<Priority> = None;
-        let mut next_set: Vec<Box<dyn ParseState<Output = Cmd<NormalCmd>>>> =
-            Vec::with_capacity(self.inner.len());
-        let mut needs_more = false;
-
-        for mut parser in self.inner.drain(..) {
-            match parser.add(key) {
-                ParseResult::NeedsMore => {
-                    needs_more = true;
-                    max_possible = max_possible.max(parser.max_priority());
-                    next_set.push(parser);
-                }
-                ParseResult::Failed => (),
-                ParseResult::Success(priority, cmd) => match found {
-                    Nothing => found = Single(priority, cmd),
-
-                    Conflict(p) | Single(p, _) if p < priority => found = Single(priority, cmd),
-                    Conflict(p) | Single(p, _) if p > priority => (),
-
-                    // p == priority
-                    Single(p, _) => found = Conflict(p),
-                    Conflict(_) => (),
-                },
-            }
-        }
-
-        if max_possible.is_none() && found.priority().is_none() {
-            return ParseResult::Failed;
-        } else if max_possible >= found.priority() && found.priority().is_some() {
-            // this is a weird case :(
-            return ParseResult::Success(Priority::Error, todo!());
-        }
-
-        match found {
-            Single(priority, cmd) => ParseResult::Success(priority, cmd),
-            Conflict(_) => {
-                return ParseResult::Success(Priority::Error, todo!());
-            }
-            Nothing => match needs_more {
-                true => {
-                    self.inner = next_set;
-                    ParseResult::NeedsMore
-                }
-                false => ParseResult::Failed,
-            },
-        }
-    }
-
-    fn max_priority(&self) -> Option<Priority> {
-        self.inner
-            .iter()
-            .map(|p| p.max_priority())
-            .max()
-            .unwrap_or(None)
     }
 }
 
