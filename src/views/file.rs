@@ -183,6 +183,7 @@ impl ConcreteView for FileView {
 }
 
 impl SignalHandler for FileView {
+    #[rustfmt::skip]
     fn try_handle(&mut self, signal: Signal) -> OutputSignal {
         // A simple function that takes any refreshes for just the cursor and raises them to
         // refresh the BottomText. This is because we want to display the location in the file in
@@ -219,22 +220,15 @@ impl SignalHandler for FileView {
                 ModeSwitch::Insert(m) => Self::handle_insert(&mut self.buffer, m, k),
             };
 
-            log::trace!("new mode: {:?}, sig: {:?}", new_mode, sig);
-
             if let Some(m) = new_mode {
                 self.mode = m;
             }
 
             // Otherwise, we'll just return the signal we got previously
             raise_to_bottom_bar(sig)
-        } else if let Signal::BottomBarKey {
-            prefix: Some(':'),
-            value,
-            key,
-            ..
-        } = signal
-        {
-            //    A few things to note here: ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+        } else if let Signal::BottomBarKey { prefix: Some(':'), value, key, ..  } = signal {
+            //    A few things to note here: ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
             // We're currently ignoring two fields: `cursor_col` and `previous_inputs`. These are
             // ignored for the time being because we aren't *yet* supporting changing between going
             // in/out of insert/normal mode when typing in the bottom bar. What we're doing for now
@@ -259,7 +253,6 @@ impl FileView {
         use OutputSignal::{NoSuchCmd, WaitingForMore};
 
         let res = mode.try_handle(key);
-        log::trace!("handled normal: {:?}", res);
         match res {
             NeedsMore => (None, WaitingForMore),
             NoCommand => (None, NoSuchCmd),
@@ -267,7 +260,6 @@ impl FileView {
                 let mut new_mode: Option<ModeSwitch> = None;
 
                 let refresh: Option<RefreshKind> = buf.execute_cmd(&c, &mut |buf, cmd| {
-                    log::trace!("handle_normal_cmd: {:?}", cmd);
                     Self::handle_normal_cmd(buf, cmd, &mut new_mode)
                 });
 
@@ -427,7 +419,6 @@ impl FileView {
                     cursor_col: Some(len + 1),
                 };
 
-                log::trace!("views::file - {:?}", sig);
                 sig
             }
 
@@ -435,9 +426,6 @@ impl FileView {
             KeyCode::Enter => {
                 let cfg = Config::global();
                 let chars: Vec<_> = cmd.chars().collect();
-
-                log::trace!("chars: {:?}", chars);
-                log::trace!("trie: {:?}", cfg.keys);
 
                 // First, we check to see if there's a direct match
                 if let Some(cmd) = cfg.keys.get(&chars) {
@@ -457,8 +445,19 @@ impl FileView {
 
                             // This is an ambiguous case, so maybe we flash the bottom bar?
                             None => {
-                                log::trace!("faulty todo - node: {:?}", n);
-                                todo!()
+                                use crossterm::style::Colorize;
+                                const AMBIGUOUS_COMMAND_ERR_MSG: &'static str =
+                                    "Ambiguous command usage";
+
+                                OutputSignal::Chain(vec![
+                                    OutputSignal::LeaveBottomBar,
+                                    OutputSignal::SetBottomBar {
+                                        prefix: None,
+                                        value: AMBIGUOUS_COMMAND_ERR_MSG.red().to_string(),
+                                        width: AMBIGUOUS_COMMAND_ERR_MSG.len(),
+                                        cursor_col: None,
+                                    },
+                                ])
                             }
                         },
                     }
@@ -532,9 +531,7 @@ impl FileView {
     }
 
     fn unsaved(&self) -> bool {
-        log::trace!("checking unsaved");
         let unsaved = self.buffer.provider().unsaved();
-        log::trace!("unsaved: {}", unsaved);
         unsaved
     }
 }

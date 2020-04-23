@@ -175,10 +175,7 @@ fn main() {
         log::info!("viri::main - Editor initialized successfully. Starting events loop");
 
         for event in runtime::EventsLoop {
-            // log::debug!("viri::main - Received event: {:?}", &event);
-
             let signal = container.handle_rt_event(event);
-            // log::trace!("viri::main - Container response signal: {:?}", &signal);
             match signal {
                 Some(Signal::Exit) => {
                     log::info!("viri::main - Received exit signal from `Container`. Returning");

@@ -448,7 +448,7 @@ impl Container {
                     Mouse(m) => Signal::Mouse(m),
                 };
 
-                log::trace!("viri::container - giving inner signal: {:?}", signal);
+                log::debug!("viri::container - giving inner signal: {:?}", signal);
 
                 self.inner.try_handle(signal)
             }

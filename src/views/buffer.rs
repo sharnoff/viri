@@ -59,14 +59,6 @@ pub struct ViewBuffer<P: ContentProvider> {
 
 impl<P: ContentProvider> View for ViewBuffer<P> {
     fn refresh(&mut self, painter: &Painter) {
-        log::trace!("refreshing viewbuffer");
-        log::trace!(
-            "top_row: {}, left_col: {}, cursor: {:?}",
-            self.top_row,
-            self.left_col,
-            self.cursor
-        );
-
         // If we don't need to redraw, just return
         if self.needs_refresh.is_none() && self.pos == Some(painter.abs_pos()) {
             return;
@@ -102,9 +94,6 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
     }
 
     fn resize(&mut self, size: TermSize) -> OutputSignal {
-        log::trace!("resizing viewbuffer");
-        log::trace!("new size: {:?}", size);
-
         if size == self.size {
             OutputSignal::Nothing
         } else {
@@ -211,8 +200,6 @@ impl<P: ContentProvider> ViewBuffer<P> {
     }
 
     fn move_cursor(&mut self, movement: Movement, amount: usize) -> Option<RefreshKind> {
-        log::trace!("moving! {:?} x{}", movement, amount);
-
         let (new_row, new_virt_col) = self.simulate_movement(movement, amount, true)?;
         self.virtual_col = new_virt_col;
 
@@ -916,8 +903,6 @@ impl<P: ContentProvider> ViewBuffer<P> {
     fn move_cursor_column_unchecked(&mut self, col: usize) -> Option<RefreshKind> {
         let cursor_col = self.cursor.col as usize;
         let current_col = self.current_col(); // self.left_col + cursor_col
-
-        log::trace!("Moving unchecked to column {}", col);
 
         if current_col == col {
             return None;

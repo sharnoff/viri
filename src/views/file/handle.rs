@@ -244,7 +244,7 @@ impl Handle {
         Handle {
             file: ArcLock::new(File {
                 locator,
-                content: Lines::from_bytes(&[], TABSTOP, REPR_KIND),
+                content: Lines::empty(TABSTOP, REPR_KIND),
                 n_handles: 1,
                 unsaved: false,
                 next_diff_id: 0,

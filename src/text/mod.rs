@@ -420,20 +420,10 @@ impl Lines {
         }
     }
 
-    /// Produces a set of lines from the input list of bytes
-    #[deprecated = "`from_arc` should be used in favor of `from_bytes`"]
-    pub fn from_bytes(bytes: &[u8], tabstop: usize, repr_kind: ReprKind) -> Lines {
-        let (lines, newline) = match repr_kind {
-            ReprKind::Utf8 => {
-                let newline = utf8::detect_newline(bytes).unwrap_or(utf8::DEFAULT_NEWLINE);
-
-                let lines: Vec<_> = utf8::LineIter::new(bytes)
-                    .map(|bs| InternalLine::from_bytes(bs, tabstop, repr_kind))
-                    .collect();
-
-                (lines, newline)
-            }
-        };
+    /// Produces an empty `Lines`
+    pub fn empty(tabstop: usize, repr_kind: ReprKind) -> Lines {
+        let newline = utf8::DEFAULT_NEWLINE;
+        let lines = vec![InternalLine::from_bytes(&[], tabstop, repr_kind)];
 
         let cache = Cache::new(&lines, newline.len());
 
