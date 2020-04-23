@@ -347,11 +347,11 @@ impl ContentProvider for Handle {
     type DerefMut<'a> = ContentWriteGuard<'a>;
     type RefreshError = io::Error;
 
-    fn lock(&self) {
+    fn lock(&mut self) {
         self.file.lock();
     }
 
-    fn unlock(&self) {
+    fn unlock(&mut self) {
         self.file.unlock();
     }
 

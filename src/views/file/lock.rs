@@ -34,15 +34,51 @@ pub type RwLockWriteGuard<'a, T> = lock_api::RwLockWriteGuard<'a, RawRwLock, T>;
 /// All calls to `lock` must be matched by an accompanying `unlock`. Failure to do so *will* result
 /// in deadlocks.
 ///
+/// It should also be noted that **this lock is easy to use incorrectly**. It is entirely possible
+/// to attempt to acquire a write lock while there is already a read lock in use by the current
+/// thread. To mitigate this, the following pattern is recommended:
+///
+/// ```
+/// # use self::*;
+/// # use std::sync::Arc;
+/// // A generic wrapper. We'll write it generically here so that you can specialize it for
+/// // individual types
+/// struct Wrapper<T> {
+///     data: Arc<Lock<T>>,
+/// }
+///
+/// impl<T> Wrapper<T> {
+///     // `lock` and `unlock` take mutable references, so that the borrowing rules enforce that
+///     // no functions further up the stack can hold read locks
+///     fn lock(&mut self) { self.data.lock() }
+///     fn unlock(&mut self) { self.data.unlock() }
+///
+///     // The same restriction as for `lock` and `unlock` applies here as well
+///     fn write(&mut self) -> WriteGuard<T> { self.data.write() }
+///
+///     // Read access is the only immutable action allowed
+///     fn read(&self) -> ReadGuard<T> { self.data.read() }
+/// }
+/// ```
+/// This cannot be done at the type level because it would otherwise be impossible to share write
+/// access between threads.
+//  ^ TODO: Maybe change this type to be the wrapper itself?
+///
 /// [locking]: #method.lock
 /// [unlocking]: #method.unlock
 /// [read locks]: #method.read
 /// [write locks]: #method.write
 /// [`lock`]: #method.lock
 pub struct Lock<T> {
-    /// The number
+    /// The number of current write locks (or locks by the `lock` method)
+    ///
+    /// This field may only be written by the thread whose id is equal to that given by `owner`.
     count: UnsafeCell<usize>,
+
+    /// The thread that owns the write locks above
     owner: Mutex<Option<ThreadId>>,
+
+    /// A raw mutex for waiting on write locks
     raw_mux: RawMutex,
     inner: RwLock<T>,
 }

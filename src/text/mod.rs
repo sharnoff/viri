@@ -138,10 +138,10 @@ pub trait ContentProvider: Sized {
     /// thread.
     ///
     /// This must be callable multiple times from the same thread.
-    fn lock(&self);
+    fn lock(&mut self);
 
     /// Unlocks the content from a corresponding call to `lock`
-    fn unlock(&self);
+    fn unlock(&mut self);
 
     /// Gives immutable access to the inner `Lines`
     ///
@@ -330,8 +330,8 @@ impl ContentProvider for Lines {
     type DerefMut<'a> = &'a mut Self;
     type RefreshError = !;
 
-    fn lock(&self) {}
-    fn unlock(&self) {}
+    fn lock(&mut self) {}
+    fn unlock(&mut self) {}
 
     fn content(&self) -> &Self {
         self
