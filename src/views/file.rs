@@ -290,6 +290,7 @@ impl FileView {
         cmd: &NormalCmd,
         new_mode: &mut Option<ModeSwitch>,
     ) -> Option<RefreshKind> {
+        use super::HorizontalMove::{UntilFst, UntilSnd};
         use super::Movement::{Down, Left, Right, Up};
 
         match cmd {
@@ -310,6 +311,9 @@ impl FileView {
                 }
             },
             &NormalCmd::Delete(movement, amount) => match movement {
+                Right(UntilFst(pred), cross) => {
+                    buf.delete_movement(Right(UntilSnd(pred), cross), amount, true)
+                }
                 Left(_, _) | Right(_, _) => buf.delete_movement(movement, amount, true),
                 Up | Down => {
                     // the '?' implies that if we don't move, we won't delete anything
