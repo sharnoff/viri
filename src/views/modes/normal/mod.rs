@@ -1,4 +1,7 @@
 // TODO: Module-level documentation
+mod combinators;
+mod delete;
+mod movement;
 
 use std::fmt::{self, Debug, Formatter};
 
@@ -6,9 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::prelude::*;
 use crate::event::KeyEvent;
-use crate::views::{Cmd, CursorStyle, Movement};
+use crate::trie::Trie;
+use crate::views::{self, Cmd, CursorStyle, Movement};
 
 use super::{Mode, ModeResult};
+
+use combinators::{numerical, wrap};
 
 pub struct NormalMode {
     parsers: Option<Parsers>,
@@ -20,6 +26,7 @@ pub enum NormalCmd {
     // The available modes are:
     // * "insert" => FileView
     ChangeMode(String),
+    Delete(Movement, usize),
 }
 
 impl Debug for NormalMode {
@@ -120,14 +127,32 @@ impl<T> ParseResult<T> {
     }
 }
 
+/// The core set of all normal mode commands available
 struct Parsers {
     inner: Vec<Box<dyn ParseState<Output = Cmd<NormalCmd>>>>,
 }
 
 impl Default for Parsers {
     fn default() -> Self {
+        let movement = wrap(numerical(movement::Parser::default()), |(n, m)| {
+            Cmd::Cursor(m, n)
+        });
+
+        let delete = wrap(
+            numerical(delete::Parser::default()),
+            |(n_outer, (n_inner, m))| {
+                // FIXME: This could fail if the numbers are big enough - it *really* shoudn't do
+                // that
+                Cmd::Extra(NormalCmd::Delete(m, n_outer.unwrap_or(1) * n_inner))
+            },
+        );
+
         Self {
-            inner: vec![Box::new(MovementParser::default())],
+            inner: vec![
+                Box::new(movement),
+                Box::new(Misc::default()),
+                Box::new(delete),
+            ],
         }
     }
 }
@@ -167,6 +192,7 @@ impl ParseState for Parsers {
                 ParseResult::NeedsMore => {
                     needs_more = true;
                     max_possible = max_possible.max(parser.max_priority());
+                    next_set.push(parser);
                 }
                 ParseResult::Failed => (),
                 ParseResult::Success(priority, cmd) => match found {
@@ -184,7 +210,7 @@ impl ParseState for Parsers {
 
         if max_possible.is_none() && found.priority().is_none() {
             return ParseResult::Failed;
-        } else if max_possible >= found.priority() {
+        } else if max_possible >= found.priority() && found.priority().is_some() {
             // this is a weird case :(
             return ParseResult::Success(Priority::Error, todo!());
         }
@@ -213,101 +239,106 @@ impl ParseState for Parsers {
     }
 }
 
-enum MovementParser {
-    Simple(Priority, Movement),
-    Nothing,
-    Failed,
+/// A parser for the miscellaneous singleton commands
+#[derive(Default)]
+struct Misc {
+    stack: Vec<KeyEvent>,
 }
 
-impl Default for MovementParser {
-    fn default() -> Self {
-        Self::Nothing
-    }
-}
-
-impl ParseState for MovementParser {
+impl ParseState for Misc {
     type Output = Cmd<NormalCmd>;
 
-    fn add(&mut self, key: KeyEvent) -> ParseResult<Cmd<NormalCmd>> {
-        match self {
-            Self::Failed | Self::Simple(_, _) => {
-                log::warn!("Warning: adding to MovementParser that has already finished.");
-                ParseResult::Success(Priority::Error, todo!());
-            }
-            Self::Nothing => (),
-        }
+    fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output> {
+        self.stack.push(key);
 
-        let cfg = move_config::Config::global();
-        let (priority, movement) = match cfg.keys.get(&key) {
-            Some(&(p, m)) => (p, m),
+        let cfg = Config::global();
+        let node = cfg.keys.find(&self.stack);
+
+        match node {
             None => {
-                *self = Self::Failed;
-                return ParseResult::Failed;
+                self.stack.truncate(0);
+                ParseResult::Failed
             }
-        };
-
-        *self = Self::Simple(priority, movement);
-        // TODO: This should just return the movement, using a secondary wrapping "numerical"
-        // parser to handle the rest
-        ParseResult::Success(priority, Cmd::Cursor(movement, None))
+            Some(n) if n.size() == 0 => {
+                self.stack.truncate(0);
+                ParseResult::Failed
+            }
+            Some(n) if n.size() == 1 => {
+                self.stack.truncate(0);
+                ParseResult::Success(Priority::Builtin, n.extract().clone())
+            }
+            // Some(n) if n.size > 1
+            _ => ParseResult::NeedsMore,
+        }
     }
 
     fn max_priority(&self) -> Option<Priority> {
-        match self {
-            Self::Simple(priority, _) => Some(*priority),
-            Self::Failed => None,
-            Self::Nothing => move_config::Config::global()
-                .keys
-                .values()
-                .map(|(p, _)| *p)
-                .max(),
+        if Config::global().keys.find(&self.stack)?.size() == 0 {
+            None
+        } else {
+            Some(Priority::Builtin)
         }
     }
 }
 
-mod move_config {
-    use super::Priority;
-    use crate::config::prelude::*;
-    use crate::event::KeyEvent;
-    use crate::views::Movement;
-    use std::collections::HashMap;
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Config stuff                                                                                   //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    static_config! {
-        static GLOBAL;
-        pub struct Builder;
-        pub struct Config {
-            pub(super) keys: HashMap<KeyEvent, (Priority, Movement)> = default_keybindings(),
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Builder {
+    keys: Option<Vec<(Vec<KeyEvent>, Cmd<NormalCmd>)>>,
+}
+
+static_config! {
+    static GLOBAL;
+    @Builder = Builder;
+    pub struct Config {
+        pub keys: Trie<KeyEvent, Cmd<NormalCmd>> = default_keybindings(),
+    }
+
+    impl ConfigPart {
+        fn update(this: &mut Self, builder: Builder) {
+            if let Some(ks) = builder.keys {
+                ks.into_iter().for_each(|(key,cmd)| drop(this.keys.insert(key, cmd)));
+            }
         }
     }
+}
 
-    #[rustfmt::skip]
-    fn default_keybindings() -> HashMap<KeyEvent, (Priority, Movement)> {
-        use crate::views::CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart};
-        use crate::views::HorizontalMove::{Const,LineBoundary, UntilFst, UntilSnd};
-        use crate::views::Movement::{Down, Left, Right, Up};
-
-        use super::Priority::Builtin;
-
-        let keys = vec![
-            // Directional movement
-            (KeyEvent::none('k'), (Builtin, Up)),
-            (KeyEvent::none('j'), (Builtin, Down)),
-            (KeyEvent::none('h'), (Builtin, Left(Const, false))),
-            (KeyEvent::none('l'), (Builtin, Right(Const, false))),
-
-            // By words
-            (KeyEvent::none('b'), (Builtin, Left(UntilFst(WordEnd), true))),
-            (KeyEvent::none('B'), (Builtin, Left(UntilFst(BigWordEnd), true))),
-            (KeyEvent::none('w'), (Builtin, Right(UntilSnd(WordStart), true))),
-            (KeyEvent::none('W'), (Builtin, Right(UntilSnd(BigWordStart), true))),
-            (KeyEvent::none('e'), (Builtin, Right(UntilFst(WordEnd), true))),
-            (KeyEvent::none('E'), (Builtin, Right(UntilFst(BigWordEnd), true))),
-
-            // Relative to the line beginning/end
-            (KeyEvent::none('0'), (Builtin, Left(LineBoundary, true))),
-            (KeyEvent::none('$'), (Builtin, Right(LineBoundary, true))),
-        ];
-
-        keys.into_iter().collect()
+impl From<Builder> for Config {
+    fn from(builder: Builder) -> Self {
+        Self {
+            keys: builder
+                .keys
+                .map(|ks| Trie::from_iter(ks.into_iter()))
+                .unwrap_or_else(default_keybindings),
+        }
     }
+}
+
+#[rustfmt::skip]
+fn default_keybindings() -> Trie<KeyEvent, Cmd<NormalCmd>> {
+    use crate::event::{KeyCode::Esc, KeyModifiers as Mods};
+    use views::HorizontalMove::{Const, LineBoundary};
+    use views::Movement::Right;
+
+    let keys = vec![
+        // (mostly) meaningless for now - this will be available once colon "normal" mode will be
+        // allowed to switch back to colon "insert" mode
+        (vec![KeyEvent { code: Esc, mods: Mods::NONE }], Cmd::Extra(NormalCmd::ExitMode)),
+
+        // Switching to insert mode
+        (vec![KeyEvent::none('i')], Cmd::Extra(NormalCmd::ChangeMode("insert".into()))),
+        (vec![KeyEvent::none('a')], Cmd::Chain(vec![
+                Cmd::Extra(NormalCmd::ChangeMode("insert".into())),
+                Cmd::Cursor(Right(Const, false), None)
+        ])),
+        (vec![KeyEvent::none('A')], Cmd::Chain(vec![
+                Cmd::Extra(NormalCmd::ChangeMode("insert".into())),
+                Cmd::Cursor(Right(LineBoundary, false), None)
+        ])),
+    ];
+
+    Trie::from_iter(keys.into_iter())
 }

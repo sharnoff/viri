@@ -255,7 +255,12 @@ impl<P: ContentProvider> ViewBuffer<P> {
         Some(RefreshKind::Full)
     }
 
-    pub fn delete_movement(&mut self, movement: Movement) -> Option<RefreshKind> {
+    pub fn delete_movement(
+        &mut self,
+        movement: Movement,
+        amount: usize,
+        weak_fail: bool,
+    ) -> Option<RefreshKind> {
         self.provider.lock();
 
         let cur_row = self.current_row();
@@ -264,7 +269,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         // temporarily enable `allow_cursor_after` so that we can do proper deletion
         let old_allow_after = mem::replace(&mut self.allow_cursor_after, true);
 
-        let (new_row, new_char) = self.simulate_movement(movement, 1, true)?;
+        let (new_row, new_char) = self.simulate_movement(movement, amount, weak_fail)?;
         let new_col = self.provider.line(new_row).width_idx_from_char(new_char);
 
         // re-enable whetever `allow_cursor_after` we had before

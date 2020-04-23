@@ -305,6 +305,9 @@ impl FileView {
                     );
                 }
             },
+            &NormalCmd::Delete(movement, amount) => {
+                return buf.delete_movement(movement, amount, true)
+            }
         }
 
         None
@@ -355,7 +358,7 @@ impl FileView {
                 let mut b = [0_u8; 4];
                 buf.insert(c.encode_utf8(&mut b))
             }
-            InsertCmd::Delete(movement) => buf.delete_movement(*movement),
+            InsertCmd::Delete(movement) => buf.delete_movement(*movement, 1, true),
         }
     }
 
