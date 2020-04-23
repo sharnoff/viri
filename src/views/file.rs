@@ -289,12 +289,16 @@ impl FileView {
         cmd: &NormalCmd,
         new_mode: &mut Option<ModeSwitch>,
     ) -> Option<RefreshKind> {
+        use super::HorizontalMove::{UntilFst, UntilSnd};
+        use super::Movement::{Down, Left, Right, Up};
+
         match cmd {
-            NormalCmd::ExitMode => (),
+            NormalCmd::ExitMode => None,
             NormalCmd::ChangeMode(s) => match s.as_ref() {
                 "insert" => {
                     *new_mode = Some(ModeSwitch::Insert(InsertMode::new()));
                     buf.set_allow_after(new_mode.as_ref().unwrap().cursor_style().allow_after);
+                    None
                 }
                 _ => {
                     log::warn!(
@@ -302,11 +306,27 @@ impl FileView {
                         "views::file::FileView::handle_normal_cmd",
                         s
                     );
+                    None
+                }
+            },
+            &NormalCmd::Delete(movement, amount) => match movement {
+                Right(UntilFst(pred), cross) => {
+                    buf.delete_movement(Right(UntilSnd(pred), cross), amount, true)
+                }
+                Left(_, _) | Right(_, _) => buf.delete_movement(movement, amount, true),
+                Up | Down => {
+                    // the '?' implies that if we don't move, we won't delete anything
+                    let (new_row, _) = buf.simulate_movement(movement, amount, true)?;
+                    let old_row = buf.current_row();
+
+                    if new_row > old_row {
+                        buf.delete_lines(old_row..=new_row)
+                    } else {
+                        buf.delete_lines(new_row..=old_row)
+                    }
                 }
             },
         }
-
-        None
     }
 
     fn handle_insert(
@@ -354,7 +374,7 @@ impl FileView {
                 let mut b = [0_u8; 4];
                 buf.insert(c.encode_utf8(&mut b))
             }
-            InsertCmd::Delete(movement) => buf.delete_movement(*movement),
+            InsertCmd::Delete(movement) => buf.delete_movement(*movement, 1, true),
         }
     }
 
