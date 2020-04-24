@@ -1,4 +1,5 @@
 #![feature(generic_associated_types)]
+#![feature(specialization)]
 #![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
 #![feature(never_type)]
 #![deny(unused_must_use)]
@@ -21,6 +22,18 @@ extern crate log;
 extern crate serde;
 extern crate uuid;
 
+/// A crate-wide prelude for ensuring that certain items are correctly overriden
+mod prelude {
+    pub use crate::config::{Build, ConfigPart, Configurable};
+    pub use crate::utils::{
+        Monad, Never,
+        Seq::{self, Many, One},
+        XFrom, XInto,
+    };
+    pub use serde::{Deserialize, Serialize};
+    pub use std::ops::{Deref, DerefMut};
+}
+
 #[macro_use]
 mod config;
 
@@ -29,10 +42,10 @@ mod event;
 mod lock;
 mod logger;
 mod mode;
-mod never;
 mod runtime;
 mod text;
 mod trie;
+mod utils;
 mod views;
 
 use std::env;
