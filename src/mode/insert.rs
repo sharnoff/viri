@@ -2,27 +2,19 @@
 
 use serde::Deserialize;
 
+use super::{Cmd, CursorStyle, Error, HorizMove, Mode, Movement};
 use crate::config::prelude::*;
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::never::Never;
 use crate::trie::Trie;
-use crate::views::{self, Cmd, CursorStyle, HorizontalMove, Movement};
-
-use super::{Mode, ModeResult};
 
 #[derive(Debug)]
 pub struct InsertMode {
     key_stack: Vec<KeyEvent>,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum InsertCmd {
-    InsertChar(char),
-    Delete(Movement),
-    ExitMode,
-}
-
-impl Mode<InsertCmd> for InsertMode {
-    fn try_handle(&mut self, key: KeyEvent) -> ModeResult<InsertCmd> {
+impl Mode<Never> for InsertMode {
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Cmd<Never>, Error> {
         self.key_stack.push(key);
 
         let cfg = Config::global();
@@ -31,16 +23,16 @@ impl Mode<InsertCmd> for InsertMode {
         match node {
             None if self.key_stack.len() > 1 => {
                 self.key_stack.truncate(0);
-                return ModeResult::NoCommand;
+                return Err(Error::NoSuchCommand);
             }
             Some(n) if n.size() == 1 => {
                 self.key_stack.truncate(0);
-                return ModeResult::Cmd(n.extract().clone());
+                return Ok(n.extract().clone());
             }
             Some(n) if n.size() > 1 => {
                 // ^ TODO: This isn't technically true... it could be possible to unwrap this
                 // value, but we'd need something to disambiguate.
-                return ModeResult::NeedsMore;
+                return Err(Error::NeedsMore);
             }
             _ => (),
         }
@@ -52,17 +44,21 @@ impl Mode<InsertCmd> for InsertMode {
         // breaks, deleting, etc. are provided by the commands)
         if key.mods == KeyModifiers::NONE {
             if let (KeyCode::Char(c), true) = (key.code, key.mods == KeyModifiers::NONE) {
-                let insert = Cmd::Extra(InsertCmd::InsertChar(c));
-                let shift = Cmd::Cursor(Movement::Right(HorizontalMove::Const, false), None);
-                return ModeResult::Cmd(Cmd::Chain(vec![insert, shift]));
+                let insert = Cmd::Insert(c.to_string());
+                let shift = Cmd::Cursor(Movement::Right(HorizMove::Const), 1);
+                return Ok(Cmd::Chain(vec![insert, shift]));
             }
         }
 
-        ModeResult::NoCommand
+        Err(Error::NoSuchCommand)
     }
 
     fn cursor_style(&self) -> CursorStyle {
         CursorStyle { allow_after: true }
+    }
+
+    fn expecting_input(&self) -> bool {
+        !self.key_stack.is_empty()
     }
 }
 
@@ -72,22 +68,18 @@ impl InsertMode {
             key_stack: Vec::with_capacity(1),
         }
     }
-
-    pub fn currently_waiting(&self) -> bool {
-        !self.key_stack.is_empty()
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Builder {
-    keys: Option<Vec<(Vec<KeyEvent>, Cmd<InsertCmd>)>>,
+    keys: Option<Vec<(Vec<KeyEvent>, Cmd<Never>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     pub struct Config {
-        pub keys: Trie<KeyEvent, Cmd<InsertCmd>> = default_keybindings(),
+        pub keys: Trie<KeyEvent, Cmd<Never>> = default_keybindings(),
     }
 
     impl ConfigPart {
@@ -111,30 +103,53 @@ impl From<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<KeyEvent, Cmd<InsertCmd>> {
-    use crate::event::KeyCode::{Esc, Enter, Backspace, Delete};
+fn default_keybindings() -> Trie<KeyEvent, Cmd<Never>> {
+    use super::CharPredicate::WordEnd;
+    use super::Cmd::{Chain, Cursor, Delete, ExitMode, Insert};
+    use super::DeleteKind::ByMovement;
+    use super::HorizMove::{Const, UntilFst};
+    use super::Movement::{Left, LeftCross, RightCross};
+    use crate::event::KeyCode::{Backspace, Delete as Del, Enter, Esc};
     use crate::event::KeyModifiers as Mods;
-    use views::HorizontalMove::{Const, UntilFst};
-    use views::Movement::{Left, Right};
-    use views::CharPredicate::WordEnd;
 
     let keys = vec![
         (vec![KeyEvent::ctrl('w')],
-            Cmd::Extra(InsertCmd::Delete(Left(UntilFst(WordEnd), true)))),
-        (vec![KeyEvent { code: Esc, mods: Mods::NONE }],
-            Cmd::Chain(vec![
-                Cmd::Cursor(Left(Const, false), Some(1)),
-                Cmd::Extra(InsertCmd::ExitMode),
+            Delete(ByMovement {
+                movement: LeftCross(UntilFst(WordEnd)),
+                amount: 1,
+                from_inclusive: false,
+                to_inclusive: true,
+            })),
+        (vec![KeyEvent {
+                code: Esc,
+                mods: Mods::NONE,
+            }],
+            Chain(vec![
+                Cursor(Left(Const), 1),
+                ExitMode
             ])),
-        (vec![KeyEvent { code: Enter, mods: Mods::NONE }],
-            Cmd::Chain(vec![
-                Cmd::Extra(InsertCmd::InsertChar('\n')),
-                Cmd::Cursor(Right(Const, true), Some(1)),
+        (vec![KeyEvent {
+                code: Enter,
+                mods: Mods::NONE,
+            }],
+            Chain(vec![
+                Insert('\n'.to_string()),
+                Cursor(RightCross(Const), 1)
             ])),
         (vec![KeyEvent { code: Backspace, mods: Mods::NONE }],
-                Cmd::Extra(InsertCmd::Delete(Left(Const, true)))),
-        (vec![KeyEvent { code: Delete, mods: Mods::NONE }],
-                Cmd::Extra(InsertCmd::Delete(Right(Const, true)))),
+            Delete(ByMovement {
+                movement: LeftCross(Const),
+                amount: 1,
+                from_inclusive: false,
+                to_inclusive: true,
+            })),
+        (vec![KeyEvent { code: Del, mods: Mods::NONE }],
+            Delete(ByMovement {
+                movement: RightCross(Const),
+                amount: 1,
+                from_inclusive: true,
+                to_inclusive: false,
+            })),
     ];
 
     Trie::from_iter(keys.into_iter())

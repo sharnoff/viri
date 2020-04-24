@@ -28,8 +28,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::container;
+use crate::mode;
 use crate::runtime::{Painter, TermSize};
-// mod modes;
 
 //-/////////////////////////////////////////////////////////////////////////-//
 // Header 0: Imports                                                         //
@@ -46,7 +46,6 @@ use crate::runtime::{Painter, TermSize};
 // Builtin modules:
 mod buffer;
 mod file;
-mod modes;
 
 // mod your_mod;
 
@@ -195,82 +194,6 @@ pub trait SignalHandler {
     fn try_handle(&mut self, signal: container::Signal) -> OutputSignal;
 }
 
-/// The possible types of instructions that can be given to Views
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Cmd<E> {
-    /// A cursor movement, given by the direction and an optional quantity
-    ///
-    /// If not given, the amount to move defaults to 1. If the cursor movement goes off-screen, the
-    /// behavior will be determined by the configuration.
-    Cursor(Movement, Option<usize>),
-
-    /// A scroll movement, given by the direction and an optional quantity
-    ///
-    /// If not given, the amount to scroll defaults to 1.
-    Scroll(Direction, Option<usize>),
-
-    /// A request to close the *current view*
-    TryClose(ExitKind),
-
-    /*
-    /// A request to exit the *entire* editor
-    TryExit(ExitKind),
-    */
-    /// Any other commands that may be used, though not directly accounted for
-    Extra(E),
-
-    /// A set of commands to be executed in sequence
-    Chain(Vec<Cmd<E>>),
-}
-
-// `None` defaults to HorizontalMove::Const(1)
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum Movement {
-    Up,
-    Down,
-    // Horizontal movement + whether it can cross lines
-    Left(HorizontalMove, bool),
-    Right(HorizontalMove, bool),
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum HorizontalMove {
-    // A constant movement of 1 to either the left or the right
-    Const,
-    LineBoundary,
-    // `UntilFst` and `UntilSnd` are slightly different; given a match on the pair (a,b), the
-    // second indicates that the movement should be all the way to `b`, whereas the first is only
-    // to `a`.
-    UntilFst(CharPredicate),
-    UntilSnd(CharPredicate),
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum CharPredicate {
-    // Stops at the end of a word
-    WordEnd,
-    WordStart,
-    BigWordEnd,
-    BigWordStart,
-}
-
-/// Represents a logical direction on the screen
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-/// The ways in which we can change the contents of a buffer
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WriteKind {
-    InsertAtCursor(String),
-    // InsertBelow(String),
-    // InsertAbove(String),
-}
-
 /// Distinct from `runtime::Signal` or a `container::Signal`, this communicates between a `View`
 /// and its parent, eventually leading up to the host `Container`.
 #[derive(Clone, Debug)]
@@ -309,6 +232,19 @@ pub enum RefreshKind {
     Full,
 }
 
+/// A general command that may be passed to a `View`
+pub type Cmd<T> = mode::Cmd<MetaCmd<T>>;
+
+/// Commands for manipulating the current
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MetaCmd<T> {
+    /// A request to close the current view
+    TryClose(ExitKind),
+
+    /// Any custom operation relevant only to that particular view
+    Custom(T),
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ExitKind {
     ReqSave,
@@ -319,11 +255,6 @@ pub enum ExitKind {
 #[derive(Clone, Debug)]
 pub enum ExitSignal {
     Nothing,
-}
-
-#[derive(Copy, Clone, Debug)]
-pub struct CursorStyle {
-    pub allow_after: bool,
 }
 
 impl OutputSignal {
@@ -339,72 +270,6 @@ impl OutputSignal {
             Self::WaitingForMore => true,
             Self::Chain(v) => v.iter().any(Self::waiting_for_more),
             _ => false,
-        }
-    }
-}
-
-impl<E> Cmd<E> {
-    fn from<T: Into<E>>(cmd: Cmd<T>) -> Self {
-        use Cmd::*;
-
-        match cmd {
-            Cursor(d, n) => Cursor(d, n),
-            Scroll(d, n) => Scroll(d, n),
-            TryClose(k) => TryClose(k),
-            Extra(t) => Extra(t.into()),
-            Chain(v) => Chain(v.into_iter().map(Self::from).collect()),
-        }
-    }
-
-    fn into<T: From<E>>(self) -> Cmd<T> {
-        Cmd::from(self)
-    }
-}
-
-// `None` symbolizes an invalid character. Note that line breaks always give the character '\n'
-impl From<CharPredicate> for fn(Option<char>, Option<char>) -> bool {
-    fn from(pred: CharPredicate) -> Self {
-        use CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart};
-
-        return match pred {
-            WordEnd => word_end,
-            WordStart => word_start,
-            BigWordEnd => big_word_end,
-            BigWordStart => big_word_start,
-        };
-
-        // Returns true if the character is part of a word.
-        // TODO: Allow this to be customized
-        fn word(c: Option<char>) -> bool {
-            match c {
-                Some(c) => c.is_alphanumeric() || c == '_',
-                None => false,
-            }
-        }
-
-        fn whitespace(c: Option<char>) -> bool {
-            match c {
-                // TODO: When more whitespace is *actually* added, this should be updated
-                None | Some(' ') | Some('\t') | Some('\n') => true,
-                _ => false,
-            }
-        }
-
-        // returns true iff fst is part of a word and snd is not
-        fn word_end(fst: Option<char>, snd: Option<char>) -> bool {
-            (word(fst) && !word(snd)) || (!whitespace(fst) && whitespace(snd))
-        }
-
-        fn word_start(fst: Option<char>, snd: Option<char>) -> bool {
-            (!word(fst) && word(snd)) || (whitespace(fst) && !whitespace(snd))
-        }
-
-        fn big_word_end(fst: Option<char>, snd: Option<char>) -> bool {
-            !whitespace(fst) && whitespace(snd)
-        }
-
-        fn big_word_start(fst: Option<char>, snd: Option<char>) -> bool {
-            whitespace(fst) && !whitespace(snd)
         }
     }
 }

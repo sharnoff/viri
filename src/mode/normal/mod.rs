@@ -1,7 +1,7 @@
 // TODO: Module-level documentation
-mod combinators;
-mod delete;
-mod movement;
+pub mod combinators;
+pub mod delete;
+pub mod movement;
 
 use std::fmt::{self, Debug, Formatter};
 
@@ -9,29 +9,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::prelude::*;
 use crate::event::KeyEvent;
+use crate::never::Never;
 use crate::trie::Trie;
-use crate::views::{self, Cmd, CursorStyle, Movement};
 
-use super::{Mode, ModeResult};
+use super::{Cmd, CursorStyle, Error, Mode};
 
 use combinators::{numerical, set, wrap};
 
 /// The type responsible for handling inputs while in "normal" mode
 pub struct NormalMode {
     /// The ongoing set of parsers that might be able to consume the next key input
-    parsers: Option<combinators::Set<Cmd<NormalCmd>>>,
+    parsers: Option<combinators::Set<Cmd<Never>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum NormalCmd {
-    ExitMode,
-    // The available modes are:
-    // * "insert" => FileView
-    ChangeMode(String),
-    Delete(Movement, usize),
-}
-
-trait ParseState {
+pub trait ParseState {
     type Output;
 
     fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output>;
@@ -39,14 +30,14 @@ trait ParseState {
 }
 
 #[derive(Clone)]
-enum ParseResult<T> {
+pub enum ParseResult<T> {
     Success(Priority, T),
     NeedsMore,
     Failed,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-enum Priority {
+pub enum Priority {
     Error,
     UserDefined,
     Builtin,
@@ -57,34 +48,21 @@ impl NormalMode {
         Self { parsers: None }
     }
 
-    pub fn currently_waiting(&self) -> bool {
-        self.parsers.is_some()
-    }
-
     fn reset_parsers(&mut self) {
-        let movement = wrap(numerical(movement::Parser::default()), |(n, m)| {
-            Cmd::Cursor(m, n)
+        let movement = wrap(numerical(movement::Parser::new()), |(n, m)| {
+            Cmd::Cursor(m, n.unwrap_or(1))
         });
-
-        let delete = wrap(
-            numerical(delete::Parser::default()),
-            |(n_outer, (n_inner, m))| {
-                // FIXME: This could fail if the numbers are big enough - it *really* shoudn't do
-                // that
-                Cmd::Extra(NormalCmd::Delete(m, n_outer.unwrap_or(1) * n_inner))
-            },
-        );
 
         self.parsers = Some(set(vec![
             Box::new(movement),
-            Box::new(Misc::default()),
-            Box::new(delete),
+            Box::new(Misc::new()),
+            Box::new(delete::Parser::new()),
         ]));
     }
 }
 
-impl Mode<NormalCmd> for NormalMode {
-    fn try_handle(&mut self, key: KeyEvent) -> ModeResult<NormalCmd> {
+impl Mode<Never> for NormalMode {
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Cmd<Never>, Error> {
         use combinators::SetResult::{FinishConflict, PartialConflict, Success};
 
         if self.parsers.is_none() {
@@ -94,24 +72,28 @@ impl Mode<NormalCmd> for NormalMode {
         let parsers = self.parsers.as_mut().unwrap();
 
         match parsers.add(key) {
-            ParseResult::NeedsMore => ModeResult::NeedsMore,
+            ParseResult::NeedsMore => Err(Error::NeedsMore),
             ParseResult::Success(_, set_res) => match set_res {
                 Success(cmd) => {
                     self.parsers = None;
-                    ModeResult::Cmd(cmd)
+                    Ok(cmd)
                 }
                 PartialConflict(_) => todo!(),
                 FinishConflict => todo!(),
             },
             ParseResult::Failed => {
                 self.parsers = None;
-                ModeResult::NoCommand
+                Err(Error::NoSuchCommand)
             }
         }
     }
 
     fn cursor_style(&self) -> CursorStyle {
         CursorStyle { allow_after: false }
+    }
+
+    fn expecting_input(&self) -> bool {
+        self.parsers.is_some()
     }
 }
 
@@ -150,8 +132,14 @@ struct Misc {
     stack: Vec<KeyEvent>,
 }
 
+impl Misc {
+    fn new() -> Self {
+        Self { stack: Vec::new() }
+    }
+}
+
 impl ParseState for Misc {
-    type Output = Cmd<NormalCmd>;
+    type Output = Cmd<Never>;
 
     fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output> {
         self.stack.push(key);
@@ -192,14 +180,14 @@ impl ParseState for Misc {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Builder {
-    keys: Option<Vec<(Vec<KeyEvent>, Cmd<NormalCmd>)>>,
+    keys: Option<Vec<(Vec<KeyEvent>, Cmd<Never>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     pub struct Config {
-        pub keys: Trie<KeyEvent, Cmd<NormalCmd>> = default_keybindings(),
+        pub keys: Trie<KeyEvent, Cmd<Never>> = default_keybindings(),
     }
 
     impl ConfigPart {
@@ -223,26 +211,33 @@ impl From<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<KeyEvent, Cmd<NormalCmd>> {
+fn default_keybindings() -> Trie<KeyEvent, Cmd<Never>> {
+    use super::Cmd::{Chain, ChangeMode, Cursor, ExitMode};
+    use super::HorizMove::{Const, LineBoundary};
+    use super::ModeKind;
+    use super::Movement::Right;
     use crate::event::{KeyCode::Esc, KeyModifiers as Mods};
-    use views::HorizontalMove::{Const, LineBoundary};
-    use views::Movement::Right;
 
     let keys = vec![
         // (mostly) meaningless for now - this will be available once colon "normal" mode will be
         // allowed to switch back to colon "insert" mode
-        (vec![KeyEvent { code: Esc, mods: Mods::NONE }], Cmd::Extra(NormalCmd::ExitMode)),
+        (vec![KeyEvent { code: Esc, mods: Mods::NONE }],
+            ExitMode,
+        ),
 
         // Switching to insert mode
-        (vec![KeyEvent::none('i')], Cmd::Extra(NormalCmd::ChangeMode("insert".into()))),
-        (vec![KeyEvent::none('a')], Cmd::Chain(vec![
-                Cmd::Extra(NormalCmd::ChangeMode("insert".into())),
-                Cmd::Cursor(Right(Const, false), None)
-        ])),
-        (vec![KeyEvent::none('A')], Cmd::Chain(vec![
-                Cmd::Extra(NormalCmd::ChangeMode("insert".into())),
-                Cmd::Cursor(Right(LineBoundary, false), None)
-        ])),
+        (vec![KeyEvent::none('i')],
+            ChangeMode(ModeKind::Insert)),
+        (vec![KeyEvent::none('a')],
+            Chain(vec![
+                ChangeMode(ModeKind::Insert),
+                Cursor(Right(Const), 1)
+            ])),
+        (vec![KeyEvent::none('A')],
+            Chain(vec![
+                ChangeMode(ModeKind::Insert),
+                Cursor(Right(LineBoundary), 1),
+            ])),
     ];
 
     Trie::from_iter(keys.into_iter())

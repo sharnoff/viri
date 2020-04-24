@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::config::prelude::*;
 use crate::event::KeyEvent;
-use crate::views::Movement;
+use crate::mode::Movement;
 
 use super::ParseResult::{Failed, Success};
 use super::{ParseResult, ParseState, Priority};
@@ -13,12 +13,12 @@ use super::{ParseResult, ParseState, Priority};
 ///
 /// This parser by itself does not return a `Cmd`; it simply returns the movement so that whatever
 /// is using may manipulate the movement as desired.
-pub(super) enum Parser {
+pub enum Parser {
     Nothing,
 }
 
-impl Default for Parser {
-    fn default() -> Self {
+impl Parser {
+    pub fn new() -> Self {
         Self::Nothing
     }
 }
@@ -56,15 +56,15 @@ static_config! {
     static GLOBAL;
     pub struct Builder;
     pub struct Config {
-        pub(super) keys: HashMap<KeyEvent, (Priority, Movement)> = default_keybindings(),
+        pub keys: HashMap<KeyEvent, (Priority, Movement)> = default_keybindings(),
     }
 }
 
 #[rustfmt::skip]
 fn default_keybindings() -> HashMap<KeyEvent, (Priority, Movement)> {
-    use crate::views::CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart};
-    use crate::views::HorizontalMove::{Const,LineBoundary, UntilFst, UntilSnd};
-    use crate::views::Movement::{Down, Left, Right, Up};
+    use crate::mode::CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart};
+    use crate::mode::HorizMove::{Const,LineBoundary, UntilFst, UntilSnd};
+    use crate::mode::Movement::{Down, Left, Right, Up, LeftCross, RightCross};
 
     use super::Priority::Builtin;
 
@@ -72,20 +72,20 @@ fn default_keybindings() -> HashMap<KeyEvent, (Priority, Movement)> {
         // Directional movement
         (KeyEvent::none('k'), (Builtin, Up)),
         (KeyEvent::none('j'), (Builtin, Down)),
-        (KeyEvent::none('h'), (Builtin, Left(Const, false))),
-        (KeyEvent::none('l'), (Builtin, Right(Const, false))),
+        (KeyEvent::none('h'), (Builtin, Left(Const))),
+        (KeyEvent::none('l'), (Builtin, Right(Const))),
 
         // By words
-        (KeyEvent::none('b'), (Builtin, Left(UntilFst(WordEnd), true))),
-        (KeyEvent::none('B'), (Builtin, Left(UntilFst(BigWordEnd), true))),
-        (KeyEvent::none('w'), (Builtin, Right(UntilSnd(WordStart), true))),
-        (KeyEvent::none('W'), (Builtin, Right(UntilSnd(BigWordStart), true))),
-        (KeyEvent::none('e'), (Builtin, Right(UntilFst(WordEnd), true))),
-        (KeyEvent::none('E'), (Builtin, Right(UntilFst(BigWordEnd), true))),
+        (KeyEvent::none('b'), (Builtin, LeftCross(UntilFst(WordEnd)))),
+        (KeyEvent::none('B'), (Builtin, LeftCross(UntilFst(BigWordEnd)))),
+        (KeyEvent::none('w'), (Builtin, RightCross(UntilSnd(WordStart)))),
+        (KeyEvent::none('W'), (Builtin, RightCross(UntilSnd(BigWordStart)))),
+        (KeyEvent::none('e'), (Builtin, RightCross(UntilFst(WordEnd)))),
+        (KeyEvent::none('E'), (Builtin, RightCross(UntilFst(BigWordEnd)))),
 
         // Relative to the line beginning/end
-        (KeyEvent::none('0'), (Builtin, Left(LineBoundary, true))),
-        (KeyEvent::none('$'), (Builtin, Right(LineBoundary, true))),
+        (KeyEvent::none('0'), (Builtin, LeftCross(LineBoundary))),
+        (KeyEvent::none('$'), (Builtin, RightCross(LineBoundary))),
     ];
 
     keys.into_iter().collect()

@@ -1,5 +1,3 @@
-mod handle;
-
 use crate::config::prelude::*;
 use crate::container::Signal;
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -7,53 +5,29 @@ use crate::runtime::{Painter, TermSize};
 use crate::trie::Trie;
 
 use super::buffer::ViewBuffer;
-use super::modes::{
-    insert::{InsertCmd, InsertMode},
-    normal::{NormalCmd, NormalMode},
-    Mode, ModeResult,
-};
 use super::{
-    Cmd, ConcreteView, ConstructedView, CursorStyle, ExitKind, OutputSignal, RefreshKind,
-    SignalHandler, View, ViewKind,
+    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, View,
+    ViewKind,
 };
+use crate::mode::Cmd;
+
+mod handle;
+mod modes;
 
 use handle::{gen_local_id, Handle};
-
-const INSERT_NAME: Option<(&'static str, usize)> = Some(("-- INSERT --", 12));
-const NORMAL_NAME: Option<(&'static str, usize)> = /* Some(("-- NORMAL --", 12)) */ None;
+use modes::Modes;
 
 #[derive(Debug)]
 pub struct FileView {
     buffer: ViewBuffer<Handle>,
-    mode: ModeSwitch,
+    mode: Modes,
 }
 
-#[derive(Debug)]
-enum ModeSwitch {
-    Normal(NormalMode),
-    Insert(InsertMode),
-}
+type FileCmd = Cmd<MetaCmd<FileMeta>>;
 
-impl ModeSwitch {
-    fn cursor_style(&self) -> CursorStyle {
-        match self {
-            Self::Normal(m) => m.cursor_style(),
-            Self::Insert(m) => m.cursor_style(),
-        }
-    }
-
-    fn currently_waiting(&self) -> bool {
-        match self {
-            Self::Normal(m) => m.currently_waiting(),
-            Self::Insert(m) => m.currently_waiting(),
-        }
-    }
-}
-
-impl Default for ModeSwitch {
-    fn default() -> Self {
-        Self::Normal(NormalMode::new())
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum FileMeta {
+    Save,
 }
 
 impl View for FileView {
@@ -66,10 +40,7 @@ impl View for FileView {
     }
 
     fn bottom_left_text(&mut self) -> Option<(String, usize)> {
-        let text = match self.mode {
-            ModeSwitch::Normal(_) => NORMAL_NAME,
-            ModeSwitch::Insert(_) => INSERT_NAME,
-        };
+        let text = self.mode.try_name_with_width();
 
         text.map(|(s, w)| (String::from(s), w))
     }
@@ -141,7 +112,7 @@ impl ConstructedView for FileView {
         if args.is_empty() {
             return Self {
                 buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
-                mode: ModeSwitch::default(),
+                mode: Modes::default(),
             };
         }
 
@@ -164,14 +135,14 @@ impl ConstructedView for FileView {
                 log::error!("Failed to open file {}: {}", path, e);
                 return Self {
                     buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
-                    mode: ModeSwitch::default(),
+                    mode: Modes::default(),
                 };
             }
         };
 
         Self {
             buffer: ViewBuffer::new(size, file),
-            mode: ModeSwitch::default(),
+            mode: Modes::default(),
         }
     }
 }
@@ -200,7 +171,7 @@ impl SignalHandler for FileView {
         }
 
         if let Signal::NormalKey(k) = signal {
-            if !self.mode.currently_waiting() {
+            if !self.mode.expecting_input() {
                 // We'll take our opportuntity to see if we can change to some other mode
                 //
                 // Currently, the only other type we'll allow is "command" mode, where text is
@@ -215,14 +186,7 @@ impl SignalHandler for FileView {
                 }
             }
 
-            let (new_mode, sig) = match &mut self.mode {
-                ModeSwitch::Normal(m) => Self::handle_normal(&mut self.buffer, m, k),
-                ModeSwitch::Insert(m) => Self::handle_insert(&mut self.buffer, m, k),
-            };
-
-            if let Some(m) = new_mode {
-                self.mode = m;
-            }
+            let sig = self.mode.handle(&mut self.buffer, k);
 
             // Otherwise, we'll just return the signal we got previously
             raise_to_bottom_bar(sig)
@@ -244,19 +208,22 @@ impl SignalHandler for FileView {
 }
 
 impl FileView {
+    /*
     fn handle_normal(
         buf: &mut ViewBuffer<Handle>,
         mode: &mut NormalMode,
         key: KeyEvent,
     ) -> (Option<ModeSwitch>, OutputSignal) {
-        use ModeResult::{NeedsMore, NoCommand};
+        use ModeError::{NeedsMore, NoSuchCommand};
         use OutputSignal::{NoSuchCmd, WaitingForMore};
 
         let res = mode.try_handle(key);
         match res {
-            NeedsMore => (None, WaitingForMore),
-            NoCommand => (None, NoSuchCmd),
-            ModeResult::Cmd(c) => {
+            Err(NeedsMore) => (None, WaitingForMore),
+            Err(NoSuchCommand) => (None, NoSuchCmd),
+            Ok(c) => {
+                todo!()
+                /*
                 let mut new_mode: Option<ModeSwitch> = None;
 
                 let refresh: Option<RefreshKind> = buf.execute_cmd(&c, &mut |buf, cmd| {
@@ -272,18 +239,19 @@ impl FileView {
                 };
 
                 (new_mode, sig)
+                */
             }
         }
     }
 
     fn handle_normal_cmd(
         buf: &mut ViewBuffer<Handle>,
-        cmd: &NormalCmd,
+        cmd: &Cmd,
         new_mode: &mut Option<ModeSwitch>,
     ) -> Option<RefreshKind> {
-        use super::HorizontalMove::{UntilFst, UntilSnd};
-        use super::Movement::{Down, Left, Right, Up};
+        todo!()
 
+        /*
         match cmd {
             NormalCmd::ExitMode => None,
             NormalCmd::ChangeMode(s) => match s.as_ref() {
@@ -319,6 +287,7 @@ impl FileView {
                 }
             },
         }
+        */
     }
 
     fn handle_insert(
@@ -326,9 +295,9 @@ impl FileView {
         mode: &mut InsertMode,
         key: KeyEvent,
     ) -> (Option<ModeSwitch>, OutputSignal) {
-        use ModeResult::{NeedsMore, NoCommand};
-        use OutputSignal::{NoSuchCmd, WaitingForMore};
+        todo!()
 
+        /*
         match mode.try_handle(key) {
             NeedsMore => (None, WaitingForMore),
             NoCommand => (None, NoSuchCmd),
@@ -349,13 +318,16 @@ impl FileView {
                 (new_mode, sig)
             }
         }
+        */
     }
 
     fn handle_insert_cmd(
         buf: &mut ViewBuffer<Handle>,
-        cmd: &InsertCmd,
+        cmd: &Cmd,
         new_mode: &mut Option<ModeSwitch>,
     ) -> Option<RefreshKind> {
+        todo!()
+        /*
         match cmd {
             InsertCmd::ExitMode => {
                 *new_mode = Some(ModeSwitch::Normal(NormalMode::new()));
@@ -368,7 +340,9 @@ impl FileView {
             }
             InsertCmd::Delete(movement) => buf.delete_movement(*movement, 1, true),
         }
+        */
     }
+    */
 
     fn handle_colon_key(&mut self, cmd: &str, key: KeyEvent) -> OutputSignal {
         if key.mods != KeyModifiers::NONE {
@@ -471,7 +445,9 @@ impl FileView {
         }
     }
 
-    fn handle_colon_cmd(&mut self, cmd: &Cmd<ColonCmd>) -> OutputSignal {
+    fn handle_colon_cmd(&mut self, cmd: &FileCmd) -> OutputSignal {
+        todo!()
+        /*
         use crossterm::style::Colorize;
         use Cmd::{Cursor, Extra, Scroll, TryClose};
         use ExitKind::{NoSave, ReqSave};
@@ -521,6 +497,7 @@ impl FileView {
             // TODO: There should be a better way of doing this
             Cmd::Chain(v) => Chain(v.iter().map(|c| self.handle_colon_cmd(c)).collect()),
         }
+        */
     }
 
     fn try_save(&mut self) -> Result<(), String> {
@@ -549,14 +526,14 @@ enum ColonCmd {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Builder {
-    keys: Option<Vec<(String, Cmd<ColonCmd>)>>,
+    keys: Option<Vec<(String, FileCmd)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     struct Config {
-        pub keys: Trie<char, Cmd<ColonCmd>> = default_keybindings(),
+        pub keys: Trie<char, FileCmd> = default_keybindings(),
     }
 
     impl ConfigPart {
@@ -585,17 +562,17 @@ impl From<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<char, Cmd<ColonCmd>> {
-    // use crate::event::{KeyCode::Esc, KeyModifiers as Mods};
-    use Cmd::{TryClose, Chain, Extra};
-    use ExitKind::{ReqSave, NoSave};
-    use ColonCmd::Save;
+fn default_keybindings() -> Trie<char, FileCmd> {
+    use Cmd::{Chain, Other};
+    use super::MetaCmd::{TryClose, Custom};
+    use super::ExitKind::{ReqSave, NoSave};
+    use FileMeta::Save;
 
     let keys = vec![
-        ("q", TryClose(ReqSave)),
-        ("q!", TryClose(NoSave)),
-        ("w", Extra(Save)),
-        ("wq", Chain(vec![Extra(Save), TryClose(ReqSave)])),
+        ("q", Other(TryClose(ReqSave))),
+        ("q!", Other(TryClose(NoSave))),
+        ("w", Other(Custom(Save))),
+        ("wq", Chain(vec![Other(Custom(Save)), Other(TryClose(ReqSave))])),
     ];
 
     Trie::from_iter(keys.into_iter().map(|(key,cmd)| (key.chars().collect(), cmd)))

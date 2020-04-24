@@ -2,8 +2,8 @@
 #![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
 #![feature(never_type)]
 #![deny(unused_must_use)]
-#![deny(unused_imports)]
-#![deny(unused_variables)]
+// #![deny(unused_imports)]
+// #![deny(unused_variables)]
 // #![deny(dead_code)]
 // #![deny(deprecated)]
 #![deny(private_in_public)]
@@ -28,6 +28,8 @@ mod container;
 mod event;
 mod lock;
 mod logger;
+mod mode;
+mod never;
 mod runtime;
 mod text;
 mod trie;

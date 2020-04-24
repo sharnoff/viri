@@ -1,11 +1,11 @@
 //! Parser combinators for managing input in "normal" mode
 
-use crate::event::{KeyCode, KeyEvent, KeyModifiers as Mods};
-
 use super::ParseResult::{Failed, NeedsMore, Success};
 use super::{ParseResult, ParseState, Priority};
+use crate::event::{KeyCode, KeyEvent, KeyModifiers as Mods};
+use std::mem;
 
-pub(super) fn numerical<P: ParseState>(parser: P) -> Numerical<P> {
+pub fn numerical<P: ParseState>(parser: P) -> Numerical<P> {
     Numerical {
         number: None,
         started_parser: false,
@@ -13,12 +13,25 @@ pub(super) fn numerical<P: ParseState>(parser: P) -> Numerical<P> {
     }
 }
 
-pub(super) fn wrap<P: ParseState, T>(parser: P, func: fn(P::Output) -> T) -> Wrap<P, T> {
+pub fn wrap<P: ParseState, T>(parser: P, func: fn(P::Output) -> T) -> Wrap<P, T> {
     Wrap { parser, func }
 }
 
-pub(super) fn set<T>(parsers: Vec<Box<dyn ParseState<Output = T>>>) -> Set<T> {
+pub fn set<T>(parsers: Vec<Box<dyn ParseState<Output = T>>>) -> Set<T> {
     Set { parsers }
+}
+
+pub fn single(key: KeyEvent, priority: Priority) -> Single {
+    Single { key, priority }
+}
+
+pub fn chain<P: ParseState, Q: ParseState>(fst: P, snd: Q, priority: Priority) -> Chain<P, Q> {
+    Chain {
+        fst,
+        snd,
+        fst_val: None,
+        priority,
+    }
 }
 
 /// A parser that (optionally) prefixes another parser by a numer
@@ -26,7 +39,7 @@ pub(super) fn set<T>(parsers: Vec<Box<dyn ParseState<Output = T>>>) -> Set<T> {
 /// This is used in contexts like movements to allow the logic for the parser itself to be handled
 /// separately from the number of repetitions.
 #[derive(Default)]
-pub(super) struct Numerical<P: ParseState> {
+pub struct Numerical<P: ParseState> {
     number: Option<usize>,
     started_parser: bool,
     parser: P,
@@ -87,7 +100,7 @@ impl<P: ParseState> ParseState for Numerical<P> {
 }
 
 /// A parser that wraps the output of `P` by applying the function `F`
-pub(super) struct Wrap<P: ParseState, T> {
+pub struct Wrap<P: ParseState, T> {
     parser: P,
     func: fn(P::Output) -> T,
 }
@@ -111,14 +124,14 @@ impl<P: ParseState, T> ParseState for Wrap<P, T> {
 /// A parser that matches over any parser in the set
 ///
 /// The `ParseState` output type for a `Set` is a `SetResult<T>`, which
-pub(super) struct Set<T> {
+pub struct Set<T> {
     parsers: Vec<Box<dyn ParseState<Output = T>>>,
 }
 
 /// The parsing output type of [`Set`]
 ///
 /// [`Set`]: struct.Set.html
-pub(super) enum SetResult<T> {
+pub enum SetResult<T> {
     /// A successful parse; there were no priority conflicts in producing this value
     Success(T),
 
@@ -216,5 +229,65 @@ impl<T> ParseState for Set<T> {
             .map(|p| p.max_priority())
             .max()
             .unwrap_or(None)
+    }
+}
+
+/// A parser that matches exactly on a single key event
+pub struct Single {
+    key: KeyEvent,
+    priority: Priority,
+}
+
+impl ParseState for Single {
+    type Output = KeyEvent;
+
+    fn add(&mut self, key: KeyEvent) -> ParseResult<KeyEvent> {
+        if key == self.key {
+            Success(self.priority, key)
+        } else {
+            Failed
+        }
+    }
+
+    fn max_priority(&self) -> Option<Priority> {
+        Some(self.priority)
+    }
+}
+
+pub struct Chain<P: ParseState, Q: ParseState> {
+    fst: P,
+    snd: Q,
+    fst_val: Option<P::Output>,
+    priority: Priority,
+}
+
+impl<P: ParseState, Q: ParseState> ParseState for Chain<P, Q> {
+    type Output = (P::Output, Q::Output);
+
+    fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output> {
+        if self.fst_val.is_none() {
+            // attempt to parse with the first one
+            match self.fst.add(key) {
+                Success(_, fst_val) => {
+                    self.fst_val = Some(fst_val);
+                    return NeedsMore;
+                }
+                Failed => return Failed,
+                NeedsMore => return NeedsMore,
+            }
+        }
+
+        match self.snd.add(key) {
+            Success(_, snd_val) => {
+                let fst_val = mem::replace(&mut self.fst_val, None).unwrap();
+                Success(self.priority, (fst_val, snd_val))
+            }
+            Failed => Failed,
+            NeedsMore => NeedsMore,
+        }
+    }
+
+    fn max_priority(&self) -> Option<Priority> {
+        Some(self.priority)
     }
 }

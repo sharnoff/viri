@@ -9,10 +9,11 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::Mutex;
 
 use crate::config::prelude::*;
+use crate::mode::{CharPredicate, Cmd, Direction, Movement};
 use crate::runtime::{Painter, TermCoord, TermSize};
 use crate::text::{ContentProvider, Line};
 
-use super::{CharPredicate, Cmd, Direction, Movement, OutputSignal, RefreshKind, View};
+use super::{MetaCmd, OutputSignal, RefreshKind, View};
 
 /// A basic `View` with utilities for extending it
 ///
@@ -170,22 +171,29 @@ impl<P: ContentProvider> ViewBuffer<P> {
     }
 
     /// Executes the given command, returning what kind of refresh is needed, if any
-    pub fn execute_cmd<F, E>(&mut self, cmd: &Cmd<E>, callback: &mut F) -> Option<RefreshKind>
+    pub fn execute_cmd<F, T>(
+        &mut self,
+        cmd: &Cmd<MetaCmd<T>>,
+        callback: &mut F,
+    ) -> Option<RefreshKind>
     where
-        F: FnMut(&mut Self, &E) -> Option<RefreshKind>,
+        F: FnMut(&mut Self, &T) -> Option<RefreshKind>,
     {
         self.provider.lock();
 
-        use Cmd::{Chain, Cursor, Extra, Scroll, TryClose};
+        use Cmd::{Chain, ChangeMode, Cursor, Delete, EnterMode, ExitMode, Insert, Other, Scroll};
+        use MetaCmd::{Custom, TryClose};
 
         let refresh = match cmd {
-            &Cursor(m, n) => self.move_cursor(m, n.unwrap_or(1)),
-            &Scroll(d, n) => self.scroll(d, n.unwrap_or(1)),
+            &Cursor(m, n) => self.move_cursor(m, n),
+            &Scroll(d, n) => self.scroll(d, n),
+
+            Delete(_) | Insert(_) | EnterMode(_) | ChangeMode(_) | ExitMode => todo!(),
 
             // There isn't anything that the buffer needs to do directly to close - this should be
             // handled by the caller, if there are any requirements.
-            TryClose(_) => None,
-            Extra(e) => callback(self, e),
+            Other(TryClose(_)) => None,
+            Other(Custom(t)) => callback(self, t),
             Chain(v) => v
                 .iter()
                 .map(|c| self.execute_cmd(c, callback))
@@ -406,9 +414,9 @@ impl<P: ContentProvider> ViewBuffer<P> {
         amount: usize,
         weak_fail: bool,
     ) -> Option<(usize, usize)> {
-        use super::{
-            HorizontalMove::{Const, LineBoundary, UntilFst, UntilSnd},
-            Movement::{Down, Left, Right, Up},
+        use crate::mode::{
+            HorizMove::{Const, LineBoundary, UntilFst, UntilSnd},
+            Movement::{Down, Left, Right, Up, LeftCross, RightCross},
         };
 
         let amount = match NonZeroUsize::new(amount) {
@@ -419,24 +427,27 @@ impl<P: ContentProvider> ViewBuffer<P> {
         match movement {
             Up => self.sim_move_up(amount, weak_fail),
             Down => self.sim_move_down(amount, weak_fail),
-            Left(horiz, cross) => match (horiz, cross) {
-                (LineBoundary, _) => self.sim_move_bol(),
-                (Const, false) => self.sim_move_left(amount, weak_fail),
-                (Const, true) => self.sim_move_left_cross(amount, weak_fail),
-                (UntilFst(pred), false) => self.sim_move_left_pred(pred, amount, true),
-                (UntilSnd(pred), false) => self.sim_move_left_pred(pred, amount, false),
-                (UntilFst(pred), true) => self.sim_move_left_pred_cross(pred, amount, true),
-                (UntilSnd(pred), true) => self.sim_move_left_pred_cross(pred, amount, false),
-            },
-            Right(horiz, cross) => match (horiz, cross) {
-                (LineBoundary, _) => self.sim_move_eol(),
-                (Const, false) => self.sim_move_right(amount, weak_fail),
-                (Const, true) => self.sim_move_right_cross(amount, weak_fail),
-                (UntilFst(pred), false) => self.sim_move_right_pred(pred, amount, true),
-                (UntilSnd(pred), false) => self.sim_move_right_pred(pred, amount, false),
-                (UntilFst(pred), true) => self.sim_move_right_pred_cross(pred, amount, true),
-                (UntilSnd(pred), true) => self.sim_move_right_pred_cross(pred, amount, false),
-            },
+
+            Left(LineBoundary) | LeftCross(LineBoundary) => self.sim_move_bol(),
+            Right(LineBoundary) | RightCross(LineBoundary) => self.sim_move_eol(),
+
+            Left(Const) => self.sim_move_left(amount, weak_fail),
+            LeftCross(Const) => self.sim_move_left_cross(amount, weak_fail),
+
+            Left(UntilFst(pred)) => self.sim_move_left_pred(pred, amount, true),
+            Left(UntilSnd(pred)) => self.sim_move_left_pred(pred, amount, false),
+            LeftCross(UntilFst(pred)) => self.sim_move_left_pred_cross(pred, amount, true),
+            LeftCross(UntilSnd(pred)) => self.sim_move_left_pred_cross(pred, amount, false),
+
+            Right(Const) => self.sim_move_right(amount, weak_fail),
+            Right(UntilFst(pred)) => self.sim_move_right_pred(pred, amount, true),
+            Right(UntilSnd(pred)) => self.sim_move_right_pred(pred, amount, false),
+
+            RightCross(Const) => self.sim_move_right_cross(amount, weak_fail),
+            RightCross(UntilFst(pred)) => self.sim_move_right_pred_cross(pred, amount, true),
+            RightCross(UntilSnd(pred)) => self.sim_move_right_pred_cross(pred, amount, false),
+
+            _ => todo!(),
         }
     }
 
