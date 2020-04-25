@@ -49,10 +49,6 @@ impl<T> Default for Mode<T> {
 }
 
 impl<T: 'static> Mode<T> {
-    pub fn new() -> Self {
-        Self { parsers: None }
-    }
-
     fn reset_parsers(&mut self) {
         let movement = wrap(numerical(movement::Parser::new()), |(n, m)| {
             One(Cmd::Cursor(m, n.unwrap_or(1)))

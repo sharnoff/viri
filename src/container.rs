@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use crossterm::{cursor, style, QueueableCommand};
 
 use crate::event::{KeyEvent, MouseEvent};
-use crate::prelude::*;
+// use crate::prelude::*;
 use crate::runtime::{self as rt, Painter, TermSize};
 use crate::views::{self, ConcreteView, RefreshKind, ViewKind};
 
@@ -535,14 +535,3 @@ impl Container {
         }
     }
 }
-
-/*
-impl<'a> Signal<'a> {
-    fn is_nothing(&self) -> bool {
-        match self {
-            Self::Nothing => true,
-            _ => false,
-        }
-    }
-}
-*/

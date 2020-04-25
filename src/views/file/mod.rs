@@ -2,14 +2,13 @@ use crossterm::style::Colorize;
 
 use super::buffer::ViewBuffer;
 use super::{
-    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, View as _,
-    ViewKind,
+    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, ViewKind,
 };
 use crate::config::prelude::*;
 use crate::container::Signal;
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::mode::handler::{self as mode_handler, Executor, Handler as ModeHandler};
-use crate::mode::{normal::Mode as NormalMode, Cmd, ModeSet};
+use crate::mode::{normal::Mode as NormalMode, ModeSet};
 use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
 use crate::trie::Trie;
@@ -270,142 +269,6 @@ impl View {
         OutputSignal::Chain(chain)
     }
 
-    /*
-    fn handle_normal(
-        buf: &mut ViewBuffer<Handle>,
-        mode: &mut NormalMode,
-        key: KeyEvent,
-    ) -> (Option<ModeSwitch>, OutputSignal) {
-        use ModeError::{NeedsMore, NoSuchCommand};
-        use OutputSignal::{NoSuchCmd, WaitingForMore};
-
-        let res = mode.try_handle(key);
-        match res {
-            Err(NeedsMore) => (None, WaitingForMore),
-            Err(NoSuchCommand) => (None, NoSuchCmd),
-            Ok(c) => {
-                todo!()
-                /*
-                let mut new_mode: Option<ModeSwitch> = None;
-
-                let refresh: Option<RefreshKind> = buf.execute_cmd(&c, &mut |buf, cmd| {
-                    Self::handle_normal_cmd(buf, cmd, &mut new_mode)
-                });
-
-                // TODO: When we actually start handling files, this will need to be done better.
-                let sig = match c {
-                    Cmd::TryClose(_) => OutputSignal::Close,
-                    _ => refresh
-                        .map(OutputSignal::NeedsRefresh)
-                        .unwrap_or(OutputSignal::Nothing),
-                };
-
-                (new_mode, sig)
-                */
-            }
-        }
-    }
-
-    fn handle_normal_cmd(
-        buf: &mut ViewBuffer<Handle>,
-        cmd: &Cmd,
-        new_mode: &mut Option<ModeSwitch>,
-    ) -> Option<RefreshKind> {
-        todo!()
-
-        /*
-        match cmd {
-            NormalCmd::ExitMode => None,
-            NormalCmd::ChangeMode(s) => match s.as_ref() {
-                "insert" => {
-                    *new_mode = Some(ModeSwitch::Insert(InsertMode::new()));
-                    buf.set_allow_after(new_mode.as_ref().unwrap().cursor_style().allow_after);
-                    None
-                }
-                _ => {
-                    log::warn!(
-                        "{}: Tried to switch to mode {}, which is not known",
-                        "views::file::FileView::handle_normal_cmd",
-                        s
-                    );
-                    None
-                }
-            },
-            &NormalCmd::Delete(movement, amount) => match movement {
-                Right(UntilFst(pred), cross) => {
-                    buf.delete_movement(Right(UntilSnd(pred), cross), amount, true)
-                }
-                Left(_, _) | Right(_, _) => buf.delete_movement(movement, amount, true),
-                Up | Down => {
-                    // the '?' implies that if we don't move, we won't delete anything
-                    let (new_row, _) = buf.simulate_movement(movement, amount, true)?;
-                    let old_row = buf.current_row();
-
-                    if new_row > old_row {
-                        buf.delete_lines(old_row..=new_row)
-                    } else {
-                        buf.delete_lines(new_row..=old_row)
-                    }
-                }
-            },
-        }
-        */
-    }
-
-    fn handle_insert(
-        buf: &mut ViewBuffer<Handle>,
-        mode: &mut InsertMode,
-        key: KeyEvent,
-    ) -> (Option<ModeSwitch>, OutputSignal) {
-        todo!()
-
-        /*
-        match mode.try_handle(key) {
-            NeedsMore => (None, WaitingForMore),
-            NoCommand => (None, NoSuchCmd),
-            ModeResult::Cmd(c) => {
-                let mut new_mode = None;
-
-                let refresh: Option<RefreshKind> = buf.execute_cmd(&c, &mut |buf, cmd| {
-                    Self::handle_insert_cmd(buf, cmd, &mut new_mode)
-                });
-                // TODO: When we actually start handling files, this will need to be done better.
-                let sig = match c {
-                    Cmd::TryClose(_) => OutputSignal::Close,
-                    _ => refresh
-                        .map(OutputSignal::NeedsRefresh)
-                        .unwrap_or(OutputSignal::Nothing),
-                };
-
-                (new_mode, sig)
-            }
-        }
-        */
-    }
-
-    fn handle_insert_cmd(
-        buf: &mut ViewBuffer<Handle>,
-        cmd: &Cmd,
-        new_mode: &mut Option<ModeSwitch>,
-    ) -> Option<RefreshKind> {
-        todo!()
-        /*
-        match cmd {
-            InsertCmd::ExitMode => {
-                *new_mode = Some(ModeSwitch::Normal(NormalMode::new()));
-                buf.set_allow_after(new_mode.as_ref().unwrap().cursor_style().allow_after);
-                None
-            }
-            InsertCmd::InsertChar(c) => {
-                let mut b = [0_u8; 4];
-                buf.insert(c.encode_utf8(&mut b))
-            }
-            InsertCmd::Delete(movement) => buf.delete_movement(*movement, 1, true),
-        }
-        */
-    }
-    */
-
     fn handle_colon_key(&mut self, cmd: &str, key: KeyEvent) -> OutputSignal {
         if key.mods != KeyModifiers::NONE {
             return OutputSignal::Nothing;
@@ -505,60 +368,6 @@ impl View {
             _ => OutputSignal::Nothing,
         }
     }
-
-    /*
-    fn handle_colon_cmds(&mut self, cmds: &Seq<FileCmd>) -> OutputSignal {
-        todo!()
-        /*
-        use crossterm::style::Colorize;
-        use Cmd::{Cursor, Extra, Scroll, TryClose};
-        use ExitKind::{NoSave, ReqSave};
-        use OutputSignal::{Chain, Close, LeaveBottomBar, SaveBottomBar, SetBottomBar};
-
-        match cmd {
-            TryClose(ReqSave) => {
-                if self.unsaved() {
-                    const UNSAVED_ERR_MSG: &'static str =
-                        "No write since last change (use ! to override)";
-
-                    let set_err_msg = SetBottomBar {
-                        prefix: None,
-                        value: UNSAVED_ERR_MSG.red().to_string(),
-                        width: UNSAVED_ERR_MSG.len(),
-                        cursor_col: None,
-                    };
-
-                    Chain(vec![LeaveBottomBar, set_err_msg])
-                } else {
-                    Chain(vec![SaveBottomBar, Close])
-                }
-            }
-
-            TryClose(NoSave) => Chain(vec![SaveBottomBar, Close]),
-
-            // These should probably issue some kind of warning that they aren't allowed (yet?)
-            // ^ But we're probably allowing cursor movement soon, just not scrolling.
-            Cursor(_, _) | Scroll(_, _) => todo!(),
-
-            Extra(ColonCmd::Save) => match self.try_save() {
-                Err(err_str) => {
-                    let width = err_str.len();
-                    Chain(vec![
-                        LeaveBottomBar,
-                        SetBottomBar {
-                            prefix: None,
-                            value: err_str.red().to_string(),
-                            width,
-                            cursor_col: None,
-                        },
-                    ])
-                }
-                Ok(_) => Chain(vec![SaveBottomBar, LeaveBottomBar]),
-            },
-        }
-        */
-    }
-    */
 
     fn try_save(&mut self) -> Result<(), String> {
         self.buffer_mut()

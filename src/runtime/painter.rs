@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use crossterm::{cursor, style, ExecutableCommand, QueueableCommand};
 
-use crate::prelude::*;
+// use crate::prelude::*;
 use crate::runtime::{TermCoord, TermSize};
 
 /// A handler for writing to the screen without requiring positional knowledge

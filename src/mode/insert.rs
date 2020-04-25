@@ -75,15 +75,6 @@ impl<T> super::Mode<T> for Mode<T> {
     }
 }
 
-impl<T> Mode<T> {
-    pub fn new() -> Self {
-        Self {
-            key_stack: Vec::with_capacity(1),
-            _marker: PhantomData,
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Builder {
     keys: Option<Vec<(Vec<KeyEvent>, Seq<Cmd<Never>>)>>,

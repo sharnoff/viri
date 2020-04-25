@@ -105,7 +105,7 @@ impl<T> Monad for Option<T> {
     fn is_error(&self) -> bool { self.is_none() }
 
     fn pass(val: T) -> Self { Some(val) }
-    fn fail(err: ()) -> Self { None }
+    fn fail(_err: ()) -> Self { None }
 
     fn unwrap(self) -> T { Option::unwrap(self) }
     fn unwrap_err(self) -> () { assert!(self.is_none()); () }
@@ -130,7 +130,7 @@ impl<T, S: XFrom<T>> XInto<S> for T {
 pub enum Never {}
 
 impl<T> XFrom<Never> for T {
-    fn xfrom(never: Never) -> T {
+    fn xfrom(_never: Never) -> T {
         unreachable!()
     }
 }

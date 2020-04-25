@@ -7,7 +7,7 @@ use std::io::Write;
 use std::mem;
 use std::sync::{Arc, Mutex};
 
-use crate::prelude::*;
+// use crate::prelude::*;
 use lazy_static::lazy_static;
 use log::{Metadata, Record};
 

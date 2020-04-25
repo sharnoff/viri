@@ -26,8 +26,6 @@
 // These are system-type imports - trait definitions, utilities, and things.
 // They're here to allow everything else to function.
 
-use crossterm::style::Colorize;
-
 use crate::container;
 use crate::mode;
 use crate::prelude::*;

@@ -3,7 +3,7 @@
 use super::handle::Handle;
 use super::FileMeta;
 use crate::mode::handler::{Cmd, Executor};
-use crate::mode::{self, CursorStyle, DeleteKind};
+use crate::mode::{self, CursorStyle};
 use crate::views::buffer::ViewBuffer;
 use crate::views::{ExitKind, MetaCmd, OutputSignal};
 use crossterm::style::Colorize;
