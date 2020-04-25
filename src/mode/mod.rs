@@ -2,25 +2,45 @@
 //!
 //! This module is best defined by a discussion about what a "mode" actually is. For the purposes
 //! of this module, a mode is an interface: a set of ways in which
-// FIXME
+// FIXME: Document
 
 use crate::event::KeyEvent;
-use serde::{Deserialize, Serialize};
+use crate::prelude::*;
 
+pub mod handler;
 pub mod insert;
 pub mod normal;
+
+#[macro_use]
+mod macros;
+
+pub use handler::Handler;
+
+// This macro is provided in './macros.rs' - Doc comments for the produced types are also given
+// there
+modes! {
+    #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+    pub enum ModeKind = ...;
+
+    #[derive(Copy, Clone, Debug)]
+    pub struct ModeSet = ...;
+    pub enum Modes<T> {
+        Normal/normal: normal::Mode<T>,
+        Insert/insert: insert::Mode<T>,
+    }
+}
 
 /// A general trait for abstracting over modes
 ///
 /// For more information on what is meant by a "mode", refer to the [module-level documentation].
 ///
 /// [module-level documentation]: index.html
-pub trait Mode<T> {
+pub trait Mode<T>: Default + XInto<Modes<T>> {
+    const NAME: Option<&'static str>;
+
     // FIXME: Documentation
-    fn try_handle(&mut self, key: KeyEvent) -> Result<Cmd<T>, Error>;
-
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Seq<Cmd<T>>, Error>;
     fn cursor_style(&self) -> CursorStyle;
-
     fn expecting_input(&self) -> bool;
 }
 
@@ -61,14 +81,32 @@ pub enum Cmd<T> {
     ///
     /// [`views::Cmd`]: ../views/type.Cmd.html
     Other(T),
-
-    /// A set of commands to be executed in sequence
-    Chain(Vec<Cmd<T>>),
 }
 
-/// The set of errors allowed as a result of [`Mode::try_handle`]
+impl<S: XInto<T>, T> XFrom<Cmd<S>> for Cmd<T> {
+    #[rustfmt::skip]
+    fn xfrom(cmd: Cmd<S>) -> Self {
+        use Cmd::{ChangeMode, Cursor, Delete, EnterMode, ExitMode, Insert, Other, Scroll};
+
+        match cmd {
+            Cursor(m, n) => Cursor(m, n),
+            Scroll(d, n) => Scroll(d, n),
+            Insert(s) => Insert(s),
+            Delete(kind) => Delete(kind),
+            ExitMode => ExitMode,
+            EnterMode(kind) => EnterMode(kind),
+            ChangeMode(kind) => ChangeMode(kind),
+            Other(s) => Other(s.xinto()),
+        }
+    }
+}
+
+/// The set of errors allowed as a result of [`Mode::try_handle`] or from [`Handler::handle`]. The
+/// only error related to [`Handler`] is from a mode change being denied.
 ///
 /// [`Mode::try_handle`]: trait.Mode.html#tymethod.try_handle
+/// [`Handler::handle`]: struct.Handler.html#method.handle
+/// [`Handler`]: struct.Handler.html
 #[derive(Debug, Clone)]
 pub enum Error {
     /// Signals that the mode is unable to produce a command given the current input, but may be
@@ -82,7 +120,12 @@ pub enum Error {
     /// Represents a value that is actually an error, and should be reported to the user in some
     /// fashion. This may be due to a variety of circumstances, either due to the user's actions or
     /// internal state.
+    ///
+    /// For simplicity, this string must consist entirely of ascii characters.
     Failure { msg: String },
+
+    /// Represents an attempt to switch to a mode that was denied
+    IllegalMode(ModeKind),
 }
 
 /// The current information about cursor styling
@@ -112,13 +155,6 @@ pub struct CursorStyle {
     /// ```
     /// where the cursor occupies the same space as the letter 'h'.
     pub allow_after: bool,
-}
-
-/// An enumeration of the various modes available
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-pub enum ModeKind {
-    Normal,
-    Insert,
 }
 
 /// The ways in which regions of text may be deleted

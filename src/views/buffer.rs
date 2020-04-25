@@ -9,11 +9,12 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::Mutex;
 
 use crate::config::prelude::*;
-use crate::mode::{CharPredicate, Cmd, Direction, Movement};
+use crate::mode::{CharPredicate, CursorStyle, DeleteKind, Direction, Movement};
+use crate::prelude::*;
 use crate::runtime::{Painter, TermCoord, TermSize};
 use crate::text::{ContentProvider, Line};
 
-use super::{MetaCmd, OutputSignal, RefreshKind, View};
+use super::{OutputSignal, RefreshKind, View};
 
 /// A basic `View` with utilities for extending it
 ///
@@ -60,6 +61,8 @@ pub struct ViewBuffer<P: ContentProvider> {
 
 impl<P: ContentProvider> View for ViewBuffer<P> {
     fn refresh(&mut self, painter: &Painter) {
+        log::trace!("Refreshing!");
+
         // If we don't need to redraw, just return
         if self.needs_refresh.is_none() && self.pos == Some(painter.abs_pos()) {
             return;
@@ -88,6 +91,7 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
         painter.print_lines(iter);
 
         self.pos = Some(painter.abs_pos());
+        self.needs_refresh = None;
     }
 
     fn refresh_cursor(&self, painter: &Painter) {
@@ -134,6 +138,11 @@ impl<P: ContentProvider> ViewBuffer<P> {
         &mut self.provider
     }
 
+    /// Sets the current cursor style
+    pub fn set_cursor_style(&mut self, style: CursorStyle) {
+        self.set_allow_after(style.allow_after);
+    }
+
     /// Returns the on-screen position of the cursor *within the buffer*
     pub fn cursor_pos(&self) -> TermCoord {
         self.cursor
@@ -170,55 +179,24 @@ impl<P: ContentProvider> ViewBuffer<P> {
         content.num_lines()
     }
 
-    /// Executes the given command, returning what kind of refresh is needed, if any
-    pub fn execute_cmd<F, T>(
-        &mut self,
-        cmd: &Cmd<MetaCmd<T>>,
-        callback: &mut F,
-    ) -> Option<RefreshKind>
-    where
-        F: FnMut(&mut Self, &T) -> Option<RefreshKind>,
-    {
-        self.provider.lock();
-
-        use Cmd::{Chain, ChangeMode, Cursor, Delete, EnterMode, ExitMode, Insert, Other, Scroll};
-        use MetaCmd::{Custom, TryClose};
-
-        let refresh = match cmd {
-            &Cursor(m, n) => self.move_cursor(m, n),
-            &Scroll(d, n) => self.scroll(d, n),
-
-            Delete(_) | Insert(_) | EnterMode(_) | ChangeMode(_) | ExitMode => todo!(),
-
-            // There isn't anything that the buffer needs to do directly to close - this should be
-            // handled by the caller, if there are any requirements.
-            Other(TryClose(_)) => None,
-            Other(Custom(t)) => callback(self, t),
-            Chain(v) => v
-                .iter()
-                .map(|c| self.execute_cmd(c, callback))
-                .max()
-                .unwrap_or(None),
-        };
-
-        self.provider.unlock();
-
-        self.needs_refresh = self.needs_refresh.max(refresh);
-        self.needs_refresh
-    }
-
-    fn move_cursor(&mut self, movement: Movement, amount: usize) -> Option<RefreshKind> {
+    /// Moves the cursor by the given movement, repeating `amount` times
+    pub fn move_cursor(&mut self, movement: Movement, amount: usize) -> Option<RefreshKind> {
         let (new_row, new_virt_col) = self.simulate_movement(movement, amount, true)?;
         self.virtual_col = new_virt_col;
 
-        self.move_cursor_row_unchecked(new_row)
-            .max(self.try_move_virtual_cursor())
+        let refresh = self
+            .move_cursor_row_unchecked(new_row)
+            .max(self.try_move_virtual_cursor());
+        self.needs_refresh = self.needs_refresh.max(refresh);
+        refresh
     }
 
-    fn scroll(&mut self, _direction: Direction, _amount: usize) -> Option<RefreshKind> {
+    /// Scrolls the buffer by `amount` lines/columns in the direction given
+    pub fn scroll(&mut self, _direction: Direction, _amount: usize) -> Option<RefreshKind> {
         todo!()
     }
 
+    /// Inserts the given string at the current position of the cursor
     pub fn insert(&mut self, s: &str) -> Option<RefreshKind> {
         self.provider.lock();
 
@@ -252,52 +230,119 @@ impl<P: ContentProvider> ViewBuffer<P> {
 
         self.provider.unlock();
 
+        self.needs_refresh = Some(RefreshKind::Full);
         Some(RefreshKind::Full)
     }
 
-    pub fn delete_movement(
+    pub fn delete(&mut self, kind: DeleteKind) -> Option<RefreshKind> {
+        let refresh = match kind {
+            DeleteKind::ByMovement {
+                movement,
+                amount,
+                from_inclusive,
+                to_inclusive,
+            } => self.delete_movement(movement, amount, from_inclusive, to_inclusive),
+            DeleteKind::ByLines { movement, amount } => {
+                let row = self.current_row();
+                let (new_row, _) = self.simulate_movement(movement, amount, true)?;
+                let range = match row < new_row {
+                    true => row..=new_row,
+                    false => new_row..=row,
+                };
+
+                self.delete_lines(range)
+            }
+            DeleteKind::CurrentLine { amount } if amount != 0 => {
+                let row = self.current_row();
+                let max_row = (row + amount - 1).min(self.num_lines() - 1);
+                self.delete_lines(row..=max_row)
+            }
+            _ => None,
+        };
+
+        self.needs_refresh = self.needs_refresh.max(refresh);
+        refresh
+    }
+
+    // Doesn't set `self.needs_refresh` -- this is left to `delete`
+    fn delete_movement(
         &mut self,
         movement: Movement,
         amount: usize,
-        weak_fail: bool,
+        from_inclusive: bool,
+        to_inclusive: bool,
     ) -> Option<RefreshKind> {
         self.provider.lock();
 
         let cur_row = self.current_row();
-        let cur_col = self.current_col();
+        let cur_char = self
+            .current_line()
+            .char_idx_from_width(self.current_col())
+            .0;
 
         // temporarily enable `allow_cursor_after` so that we can do proper deletion
         let old_allow_after = mem::replace(&mut self.allow_cursor_after, true);
 
-        let (new_row, new_char) = self.simulate_movement(movement, amount, weak_fail)?;
-        let new_col = self.provider.line(new_row).width_idx_from_char(new_char);
+        let (new_row, new_char) = self.simulate_movement(movement, amount, true)?;
 
         // re-enable whetever `allow_cursor_after` we had before
         self.allow_cursor_after = old_allow_after;
 
-        if (new_row, new_col) == (cur_row, cur_col) {
+        if (new_row, new_char) == (cur_row, cur_char) {
             return None;
         }
 
-        let content = self.provider.content_mut();
+        let (fwd, mut lo_row, mut lo_char, mut hi_row, mut hi_char) =
+            match (cur_row, cur_char) < (new_row, new_char) {
+                true => (true, cur_row, cur_char, new_row, new_char),
+                false => (false, new_row, new_char, cur_row, cur_char),
+            };
+
+        // Handle `{to,from}_inclusive`
+        if fwd && !from_inclusive || !fwd && !to_inclusive {
+            // attmept to add to lo_char
+            if self.provider.line(lo_row).num_chars() == lo_char {
+                if self.num_lines() == lo_row + 1 {
+                    return None;
+                }
+
+                lo_char = 0;
+                lo_row += 1;
+            } else {
+                lo_char += 1;
+            }
+        }
+
+        if fwd && to_inclusive || !fwd && from_inclusive {
+            // attempt to add to hi_char
+            if self.provider.line(hi_row).num_chars() == hi_char {
+                if hi_row == self.num_lines() {
+                    // do nothing
+                } else {
+                    hi_char = 0;
+                    hi_row += 1;
+                }
+            } else {
+                hi_char += 1;
+            }
+        }
 
         // Convert the two pairs into byte indices
-        let cur_byte_idx = content.byte_index(cur_row, cur_col);
-        let new_byte_idx = content.byte_index(new_row, new_col);
+        let content = self.provider.content();
 
-        let range = if cur_byte_idx > new_byte_idx {
-            new_byte_idx..cur_byte_idx
-        } else {
-            cur_byte_idx..new_byte_idx
-        };
+        let lo_col = content.line(lo_row).width_idx_from_char(lo_char);
+        let hi_col = content.line(hi_row).width_idx_from_char(hi_char);
+        let lo_byte_idx = content.byte_index(lo_row, lo_col);
+        let hi_byte_idx = content.byte_index(hi_row, hi_col);
 
-        let diff = content.delete_byte_range(range);
+        // Record the current position of the cursor
+        let cur_byte_idx = content.byte_index(cur_row, self.current_col());
+
+        let diff = content.delete_byte_range(lo_byte_idx..hi_byte_idx);
+        drop(content);
 
         // apply the diff to the content and the old cursor index
         let new_cursor_idx = diff.shift_idx(cur_byte_idx);
-
-        drop(content);
-
         self.provider.apply_diff(diff).unwrap();
 
         let content = self.provider.content();
@@ -318,7 +363,8 @@ impl<P: ContentProvider> ViewBuffer<P> {
         Some(RefreshKind::Full)
     }
 
-    pub fn delete_lines(&mut self, line_range: RangeInclusive<usize>) -> Option<RefreshKind> {
+    // Doesn't set `self.needs_refresh` -- this is left to `delete`
+    fn delete_lines(&mut self, line_range: RangeInclusive<usize>) -> Option<RefreshKind> {
         if line_range.start() > line_range.end() {
             // if line_range.is_empty() { // <- Unstable feature `range_is_empty`
             return None;
@@ -360,7 +406,8 @@ impl<P: ContentProvider> ViewBuffer<P> {
         Some(RefreshKind::Full)
     }
 
-    pub fn set_allow_after(&mut self, allow: bool) -> Option<RefreshKind> {
+    // Doesn't set `self.needs_refresh` -- this is left to `delete`
+    fn set_allow_after(&mut self, allow: bool) -> Option<RefreshKind> {
         self.allow_cursor_after = allow;
 
         if !allow && self.current_col() != 0 && self.current_col() == self.current_line().width() {
@@ -414,6 +461,8 @@ impl<P: ContentProvider> ViewBuffer<P> {
         amount: usize,
         weak_fail: bool,
     ) -> Option<(usize, usize)> {
+        log::trace!("simulating movement: {:?}, weak_fail: {:?}", movement, weak_fail);
+
         use crate::mode::{
             HorizMove::{Const, LineBoundary, UntilFst, UntilSnd},
             Movement::{Down, Left, Right, Up, LeftCross, RightCross},
@@ -424,7 +473,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             None => return Some((self.current_row(), self.current_col())),
         };
 
-        match movement {
+        let res = match movement {
             Up => self.sim_move_up(amount, weak_fail),
             Down => self.sim_move_down(amount, weak_fail),
 
@@ -448,7 +497,10 @@ impl<P: ContentProvider> ViewBuffer<P> {
             RightCross(UntilSnd(pred)) => self.sim_move_right_pred_cross(pred, amount, false),
 
             _ => todo!(),
-        }
+        };
+
+        log::trace!("New position: {:?}", res);
+        res
     }
 
     fn sim_move_up(&self, amount: NonZeroUsize, weak_fail: bool) -> Option<(usize, usize)> {
@@ -1079,8 +1131,8 @@ static_config! {
     }
 }
 
-impl From<Builder> for Config {
-    fn from(builder: Builder) -> Self {
+impl XFrom<Builder> for Config {
+    fn xfrom(builder: Builder) -> Self {
         Self {
             tabstop: builder.tabstop.unwrap_or(DEFAULT_TABSTOP),
         }

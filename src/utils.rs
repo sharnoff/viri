@@ -1,5 +1,6 @@
 //! Various basic utilites that are used in places throughout the project
 use crate::prelude::*;
+use std::{iter, slice, vec};
 
 /// A convenience type for allowing efficient production of one or many values
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -30,6 +31,39 @@ impl<T> Seq<T> {
             Many(v) => Many(v.into_iter().map(f).collect()),
         }
     }
+
+    pub fn iter(&self) -> SeqIter<&T, slice::Iter<T>> {
+        match self {
+            One(t) => SeqIter::One(iter::once(t)),
+            Many(t) => SeqIter::Many(t.iter()),
+        }
+    }
+
+    pub fn into_iter(self) -> SeqIter<T, vec::IntoIter<T>> {
+        match self {
+            One(t) => SeqIter::One(iter::once(t)),
+            Many(t) => SeqIter::Many(t.into_iter()),
+        }
+    }
+}
+
+pub enum SeqIter<S, I> {
+    One(iter::Once<S>),
+    Many(I),
+}
+
+impl<S, I> Iterator for SeqIter<S, I>
+where
+    I: Iterator<Item = S>,
+{
+    type Item = S;
+
+    fn next(&mut self) -> Option<S> {
+        match self {
+            Self::One(it) => it.next(),
+            Self::Many(it) => it.next(),
+        }
+    }
 }
 
 /// A generic fallible type
@@ -44,10 +78,11 @@ pub trait Monad {
     fn fail(err: Self::Error) -> Self;
 
     fn unwrap(self) -> Self::Success;
+    fn unwrap_err(self) -> Self::Error;
 }
 
 #[rustfmt::skip]
-impl<T,E> Monad for Result<T,E> {
+impl<T: std::fmt::Debug,E: std::fmt::Debug> Monad for Result<T,E> {
     type Success = T;
     type Error = E;
 
@@ -57,7 +92,8 @@ impl<T,E> Monad for Result<T,E> {
     fn pass(val: T) -> Self { Ok(val) }
     fn fail(err: E) -> Self { Err(err) }
 
-    fn unwrap(self) -> T { self.unwrap() }
+    fn unwrap(self) -> T { Result::unwrap(self) }
+    fn unwrap_err(self) -> E { Result::unwrap_err(self) }
 }
 
 #[rustfmt::skip]
@@ -71,7 +107,8 @@ impl<T> Monad for Option<T> {
     fn pass(val: T) -> Self { Some(val) }
     fn fail(err: ()) -> Self { None }
 
-    fn unwrap(self) -> T { self.unwrap() }
+    fn unwrap(self) -> T { Option::unwrap(self) }
+    fn unwrap_err(self) -> () { assert!(self.is_none()); () }
 }
 
 pub trait XInto<T> {

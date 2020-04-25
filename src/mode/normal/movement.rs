@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crate::config::prelude::*;
 use crate::event::KeyEvent;
 use crate::mode::Movement;
+use crate::prelude::*;
 
 use super::ParseResult::{Failed, Success};
 use super::{ParseResult, ParseState, Priority};

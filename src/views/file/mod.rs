@@ -1,46 +1,58 @@
-use crate::config::prelude::*;
-use crate::container::Signal;
-use crate::event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::runtime::{Painter, TermSize};
-use crate::trie::Trie;
+use crossterm::style::Colorize;
 
 use super::buffer::ViewBuffer;
 use super::{
-    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, View,
+    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, View as _,
     ViewKind,
 };
-use crate::mode::Cmd;
+use crate::config::prelude::*;
+use crate::container::Signal;
+use crate::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::mode::handler::{self as mode_handler, Executor, Handler as ModeHandler};
+use crate::mode::{normal::Mode as NormalMode, Cmd, ModeSet};
+use crate::prelude::*;
+use crate::runtime::{Painter, TermSize};
+use crate::trie::Trie;
+use crate::utils::Seq;
 
+mod executor;
 mod handle;
-mod modes;
 
+use executor::FileExecutor;
 use handle::{gen_local_id, Handle};
-use modes::Modes;
 
-#[derive(Debug)]
-pub struct FileView {
-    buffer: ViewBuffer<Handle>,
-    mode: Modes,
+/// The primary file viewer
+pub struct View {
+    handler: ModeHandler<FileExecutor, MetaCmd<FileMeta>>,
 }
-
-type FileCmd = Cmd<MetaCmd<FileMeta>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum FileMeta {
     Save,
 }
 
-impl View for FileView {
+// A few convenience methods. More complex behavior is defined later
+impl View {
+    fn buffer(&self) -> &ViewBuffer<Handle> {
+        &self.handler.executor().buffer
+    }
+
+    fn buffer_mut(&mut self) -> &mut ViewBuffer<Handle> {
+        &mut self.handler.executor_mut().buffer
+    }
+}
+
+impl super::View for View {
     fn refresh(&mut self, painter: &Painter) {
-        self.buffer.refresh(painter);
+        self.buffer_mut().refresh(painter)
     }
 
     fn refresh_cursor(&self, painter: &Painter) {
-        self.buffer.refresh_cursor(painter);
+        self.buffer().refresh_cursor(painter);
     }
 
     fn bottom_left_text(&mut self) -> Option<(String, usize)> {
-        let text = self.mode.try_name_with_width();
+        let text = self.handler.try_name_with_width();
 
         text.map(|(s, w)| (String::from(s), w))
     }
@@ -51,24 +63,26 @@ impl View for FileView {
         // Left of those are RRR,CC (row, column), which are allowed to expand to as wide as
         // necessary.
 
+        let buf = self.buffer();
+
         let loc_str: String = {
-            let row = self.buffer.current_row();
-            let height = self.buffer.size().height;
-            let top_row = row - self.buffer.cursor_pos().row as usize;
+            let row = buf.current_row();
+            let height = buf.size().height;
+            let top_row = row - buf.cursor_pos().row as usize;
             // let top_row = row - (height - self.buffer.cursor_pos().row - 1) as usize;
 
-            if top_row == 0 && height as usize >= self.buffer.num_lines() {
+            if top_row == 0 && height as usize >= buf.num_lines() {
                 "All".into()
             } else if top_row == 0 {
                 "Top".into()
-            } else if top_row + height as usize >= self.buffer.num_lines() {
+            } else if top_row + height as usize >= buf.num_lines() {
                 "Bot".into()
             } else {
                 // Actually get the percentage. This is a complex expression that exists only
                 // because we want to make a smooth transition from 0% at the top to 99% at the
                 // bottom. This isn't possible if we keep a single reference point
                 let lines_to_top = top_row;
-                let lines_to_bot = self.buffer.num_lines() - (top_row + height as usize);
+                let lines_to_bot = buf.num_lines() - (top_row + height as usize);
                 // ^ This subtraction is okay because if it wasn't we would have caught it with the
                 // previous clause for "Bot"
 
@@ -85,8 +99,8 @@ impl View for FileView {
 
         let s = format!(
             "{},{: <3}   {}",
-            self.buffer.current_row(),
-            self.buffer.current_col(),
+            buf.current_row(),
+            buf.current_col(),
             loc_str
         );
 
@@ -100,19 +114,24 @@ impl View for FileView {
     }
 
     fn resize(&mut self, size: TermSize) -> OutputSignal {
-        self.buffer.resize(size)
+        self.buffer_mut().resize(size)
     }
 }
 
-impl ConstructedView for FileView {
+impl ConstructedView for View {
     // Meaning of args:
     // If the first argument is not given, a blank file will be used. Otherwise, we'll try to
     // open the file with name args[0]
     fn init<S: AsRef<str>>(size: TermSize, args: &[S]) -> Self {
         if args.is_empty() {
             return Self {
-                buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
-                mode: Modes::default(),
+                handler: ModeHandler::new(
+                    FileExecutor {
+                        buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
+                    },
+                    NormalMode::default(),
+                    ModeSet::all(),
+                ),
             };
         }
 
@@ -134,26 +153,36 @@ impl ConstructedView for FileView {
                 // If we encountered an error, log the error and provide an empty file
                 log::error!("Failed to open file {}: {}", path, e);
                 return Self {
-                    buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
-                    mode: Modes::default(),
+                    handler: ModeHandler::new(
+                        FileExecutor {
+                            buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
+                        },
+                        NormalMode::default(),
+                        ModeSet::all(),
+                    ),
                 };
             }
         };
 
         Self {
-            buffer: ViewBuffer::new(size, file),
-            mode: Modes::default(),
+            handler: ModeHandler::new(
+                FileExecutor {
+                    buffer: ViewBuffer::new(size, file),
+                },
+                NormalMode::default(),
+                ModeSet::all(),
+            ),
         }
     }
 }
 
-impl ConcreteView for FileView {
+impl ConcreteView for View {
     fn kind(&self) -> ViewKind {
         ViewKind::File
     }
 }
 
-impl SignalHandler for FileView {
+impl SignalHandler for View {
     #[rustfmt::skip]
     fn try_handle(&mut self, signal: Signal) -> OutputSignal {
         // A simple function that takes any refreshes for just the cursor and raises them to
@@ -171,7 +200,7 @@ impl SignalHandler for FileView {
         }
 
         if let Signal::NormalKey(k) = signal {
-            if !self.mode.expecting_input() {
+            if !self.handler.expecting_input() {
                 // We'll take our opportuntity to see if we can change to some other mode
                 //
                 // Currently, the only other type we'll allow is "command" mode, where text is
@@ -186,10 +215,26 @@ impl SignalHandler for FileView {
                 }
             }
 
-            let sig = self.mode.handle(&mut self.buffer, k);
-
             // Otherwise, we'll just return the signal we got previously
-            raise_to_bottom_bar(sig)
+            let mut outs: Vec<Option<OutputSignal>> = self.handler.handle(k);
+            log::trace!("{}:{}: outs = {:?}", file!(), line!(), outs);
+
+            if outs.is_empty() { OutputSignal::Nothing }
+            else if outs.last().unwrap().is_none() {
+                // TODO: This is temporary and should be replaced with proper error handling.
+                let last = OutputSignal::SetBottomBar {
+                    prefix: None,
+                    value: "Failed to execute command. Please rewrite this section".red().to_string(),
+                    width: 54,
+                    cursor_col: None,
+                };
+
+                outs.pop();
+                outs.push(Some(last));
+                raise_to_bottom_bar(OutputSignal::Chain(outs.into_iter().map(Option::unwrap).collect()))
+            } else {
+                raise_to_bottom_bar(OutputSignal::Chain(outs.into_iter().map(Option::unwrap).collect()))
+            }
 
         } else if let Signal::BottomBarKey { prefix: Some(':'), value, key, ..  } = signal {
             //    A few things to note here: ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -207,7 +252,24 @@ impl SignalHandler for FileView {
     }
 }
 
-impl FileView {
+impl View {
+    fn execute_group(&mut self, cmds: &Seq<ColonCmd>) -> OutputSignal {
+        let mut chain = Vec::new();
+
+        for cmd in cmds.iter() {
+            let style = self.handler.cursor_style();
+            chain.push(
+                self.handler
+                    .executor_mut()
+                    .execute(cmd.clone(), style)
+                    .unwrap(),
+                // ^^^^^^ TODO: We shouldn't be unwrapping here
+            )
+        }
+
+        OutputSignal::Chain(chain)
+    }
+
     /*
     fn handle_normal(
         buf: &mut ViewBuffer<Handle>,
@@ -402,8 +464,8 @@ impl FileView {
                 let chars: Vec<_> = cmd.chars().collect();
 
                 // First, we check to see if there's a direct match
-                if let Some(cmd) = cfg.keys.get(&chars) {
-                    self.handle_colon_cmd(cmd)
+                if let Some(cmds) = cfg.keys.get(&chars) {
+                    self.execute_group(cmds)
                 } else {
                     let node = cfg.keys.find(&chars);
                     let no_such_command = OutputSignal::Chain(vec![
@@ -415,11 +477,10 @@ impl FileView {
                         None => no_such_command,
                         Some(n) if n.size() == 0 => no_such_command,
                         Some(n) => match n.try_extract() {
-                            Some(cmd) => self.handle_colon_cmd(cmd),
+                            Some(cmds) => self.execute_group(cmds),
 
                             // This is an ambiguous case, so maybe we flash the bottom bar?
                             None => {
-                                use crossterm::style::Colorize;
                                 const AMBIGUOUS_COMMAND_ERR_MSG: &'static str =
                                     "Ambiguous command usage";
 
@@ -445,7 +506,8 @@ impl FileView {
         }
     }
 
-    fn handle_colon_cmd(&mut self, cmd: &FileCmd) -> OutputSignal {
+    /*
+    fn handle_colon_cmds(&mut self, cmds: &Seq<FileCmd>) -> OutputSignal {
         todo!()
         /*
         use crossterm::style::Colorize;
@@ -493,22 +555,20 @@ impl FileView {
                 }
                 Ok(_) => Chain(vec![SaveBottomBar, LeaveBottomBar]),
             },
-
-            // TODO: There should be a better way of doing this
-            Cmd::Chain(v) => Chain(v.iter().map(|c| self.handle_colon_cmd(c)).collect()),
         }
         */
     }
+    */
 
     fn try_save(&mut self) -> Result<(), String> {
-        self.buffer
+        self.buffer_mut()
             .provider_mut()
             .write()
             .map_err(|e| e.to_string())
     }
 
     fn unsaved(&self) -> bool {
-        let unsaved = self.buffer.provider().unsaved();
+        let unsaved = self.buffer().provider().unsaved();
         unsaved
     }
 }
@@ -517,43 +577,38 @@ impl FileView {
 // Colon commands stuff w/ config                                                                 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[non_exhaustive]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum ColonCmd {
-    /// A request to save the current file
-    Save,
-}
+type ColonCmd = mode_handler::Cmd<super::MetaCmd<FileMeta>>;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Builder {
-    keys: Option<Vec<(String, FileCmd)>>,
+    keys: Option<Vec<(String, Seq<ColonCmd>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     struct Config {
-        pub keys: Trie<char, FileCmd> = default_keybindings(),
+        pub keys: Trie<char, Seq<ColonCmd>> = default_keybindings(),
     }
 
     impl ConfigPart {
         fn update(this: &mut Self, builder: Builder) {
             if let Some(ks) = builder.keys {
-                ks.into_iter().for_each(|(key, cmd)| drop(this.keys.insert(key.chars().collect(), cmd)));
+                ks.into_iter().for_each(|(key, cmds)| drop(this.keys.insert(key.chars().collect(), cmds)));
             }
         }
     }
 }
 
-impl From<Builder> for Config {
-    fn from(builder: Builder) -> Self {
+impl XFrom<Builder> for Config {
+    fn xfrom(builder: Builder) -> Self {
         Self {
             keys: builder
                 .keys
                 .map(|ks| {
                     Trie::from_iter(
                         ks.into_iter()
-                            .map(|(key, cmd)| (key.chars().collect(), cmd)),
+                            .map(|(key, cmds)| (key.chars().collect(), cmds)),
                     )
                 })
                 .unwrap_or_else(default_keybindings),
@@ -562,17 +617,17 @@ impl From<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<char, FileCmd> {
-    use Cmd::{Chain, Other};
+fn default_keybindings() -> Trie<char, Seq<ColonCmd>> {
+    use mode_handler::Cmd::Other;
     use super::MetaCmd::{TryClose, Custom};
     use super::ExitKind::{ReqSave, NoSave};
     use FileMeta::Save;
 
     let keys = vec![
-        ("q", Other(TryClose(ReqSave))),
-        ("q!", Other(TryClose(NoSave))),
-        ("w", Other(Custom(Save))),
-        ("wq", Chain(vec![Other(Custom(Save)), Other(TryClose(ReqSave))])),
+        ("q", One(Other(TryClose(ReqSave)))),
+        ("q!", One(Other(TryClose(NoSave)))),
+        ("w", One(Other(Custom(Save)))),
+        ("wq", Many(vec![Other(Custom(Save)), Other(TryClose(ReqSave))])),
     ];
 
     Trie::from_iter(keys.into_iter().map(|(key,cmd)| (key.chars().collect(), cmd)))

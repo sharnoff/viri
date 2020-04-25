@@ -25,10 +25,12 @@
 
 // These are system-type imports - trait definitions, utilities, and things.
 // They're here to allow everything else to function.
-use serde::{Deserialize, Serialize};
+
+use crossterm::style::Colorize;
 
 use crate::container;
 use crate::mode;
+use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
 
 //-/////////////////////////////////////////////////////////////////////////-//
@@ -66,7 +68,7 @@ mod macros;
 
 viewkind! {
     pub enum ViewKind {
-        File: file::FileView,
+        File: file::View,
         // Foo: your_mod::Foo,
     }
 }

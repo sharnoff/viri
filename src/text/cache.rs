@@ -4,9 +4,8 @@
 //!
 //! [`Cache`]: struct.Cache.html
 
-use std::sync::Mutex;
-
 use super::InternalLine;
+use std::sync::Mutex;
 
 #[derive(Debug)]
 pub struct Cache {

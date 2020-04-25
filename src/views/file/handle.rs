@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::lock::{ArcLock, ReadGuard, RwLock, WriteGuard};
+use crate::prelude::*;
 use crate::text::diff;
 use crate::text::{ContentProvider, Diff, Lines, ReprKind};
 

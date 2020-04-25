@@ -1,20 +1,32 @@
 // TODO: Module-level documentation
 
-use serde::Deserialize;
-
-use super::{Cmd, CursorStyle, Error, HorizMove, Mode, Movement};
 use crate::config::prelude::*;
+use crate::prelude::*;
+use std::marker::PhantomData;
+
+use super::{Cmd, CursorStyle, Error, HorizMove, Movement};
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::never::Never;
 use crate::trie::Trie;
 
 #[derive(Debug)]
-pub struct InsertMode {
+pub struct Mode<T> {
     key_stack: Vec<KeyEvent>,
+    _marker: PhantomData<T>,
 }
 
-impl Mode<Never> for InsertMode {
-    fn try_handle(&mut self, key: KeyEvent) -> Result<Cmd<Never>, Error> {
+impl<T> Default for Mode<T> {
+    fn default() -> Self {
+        Self {
+            key_stack: Vec::new(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> super::Mode<T> for Mode<T> {
+    const NAME: Option<&'static str> = Some("-- INSERT --");
+
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Seq<Cmd<T>>, Error> {
         self.key_stack.push(key);
 
         let cfg = Config::global();
@@ -27,7 +39,7 @@ impl Mode<Never> for InsertMode {
             }
             Some(n) if n.size() == 1 => {
                 self.key_stack.truncate(0);
-                return Ok(n.extract().clone());
+                return Ok(n.extract().clone().xinto());
             }
             Some(n) if n.size() > 1 => {
                 // ^ TODO: This isn't technically true... it could be possible to unwrap this
@@ -46,7 +58,7 @@ impl Mode<Never> for InsertMode {
             if let (KeyCode::Char(c), true) = (key.code, key.mods == KeyModifiers::NONE) {
                 let insert = Cmd::Insert(c.to_string());
                 let shift = Cmd::Cursor(Movement::Right(HorizMove::Const), 1);
-                return Ok(Cmd::Chain(vec![insert, shift]));
+                return Ok(Many(vec![insert, shift]));
             }
         }
 
@@ -58,28 +70,30 @@ impl Mode<Never> for InsertMode {
     }
 
     fn expecting_input(&self) -> bool {
-        !self.key_stack.is_empty()
+        // We always return true because input mode is *always* expecting input
+        true
     }
 }
 
-impl InsertMode {
+impl<T> Mode<T> {
     pub fn new() -> Self {
         Self {
             key_stack: Vec::with_capacity(1),
+            _marker: PhantomData,
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Builder {
-    keys: Option<Vec<(Vec<KeyEvent>, Cmd<Never>)>>,
+    keys: Option<Vec<(Vec<KeyEvent>, Seq<Cmd<Never>>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     pub struct Config {
-        pub keys: Trie<KeyEvent, Cmd<Never>> = default_keybindings(),
+        pub keys: Trie<KeyEvent, Seq<Cmd<Never>>> = default_keybindings(),
     }
 
     impl ConfigPart {
@@ -91,8 +105,8 @@ static_config! {
     }
 }
 
-impl From<Builder> for Config {
-    fn from(builder: Builder) -> Self {
+impl XFrom<Builder> for Config {
+    fn xfrom(builder: Builder) -> Self {
         Self {
             keys: builder
                 .keys
@@ -103,9 +117,9 @@ impl From<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<KeyEvent, Cmd<Never>> {
+fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
     use super::CharPredicate::WordEnd;
-    use super::Cmd::{Chain, Cursor, Delete, ExitMode, Insert};
+    use super::Cmd::{Cursor, Delete, ExitMode, Insert};
     use super::DeleteKind::ByMovement;
     use super::HorizMove::{Const, UntilFst};
     use super::Movement::{Left, LeftCross, RightCross};
@@ -114,17 +128,17 @@ fn default_keybindings() -> Trie<KeyEvent, Cmd<Never>> {
 
     let keys = vec![
         (vec![KeyEvent::ctrl('w')],
-            Delete(ByMovement {
+            One(Delete(ByMovement {
                 movement: LeftCross(UntilFst(WordEnd)),
                 amount: 1,
                 from_inclusive: false,
                 to_inclusive: true,
-            })),
+            }))),
         (vec![KeyEvent {
                 code: Esc,
                 mods: Mods::NONE,
             }],
-            Chain(vec![
+            Many(vec![
                 Cursor(Left(Const), 1),
                 ExitMode
             ])),
@@ -132,24 +146,24 @@ fn default_keybindings() -> Trie<KeyEvent, Cmd<Never>> {
                 code: Enter,
                 mods: Mods::NONE,
             }],
-            Chain(vec![
+            Many(vec![
                 Insert('\n'.to_string()),
                 Cursor(RightCross(Const), 1)
             ])),
         (vec![KeyEvent { code: Backspace, mods: Mods::NONE }],
-            Delete(ByMovement {
+            One(Delete(ByMovement {
                 movement: LeftCross(Const),
                 amount: 1,
                 from_inclusive: false,
                 to_inclusive: true,
-            })),
+            }))),
         (vec![KeyEvent { code: Del, mods: Mods::NONE }],
-            Delete(ByMovement {
+            One(Delete(ByMovement {
                 movement: RightCross(Const),
                 amount: 1,
                 from_inclusive: true,
                 to_inclusive: false,
-            })),
+            }))),
     ];
 
     Trie::from_iter(keys.into_iter())

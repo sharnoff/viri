@@ -1,15 +1,10 @@
 //! Various traits, types, and macros to help with configuring the editor
 
 pub mod prelude {
-    pub use super::{Build, ConfigPart, Configurable};
-    pub use serde::{Deserialize, Serialize};
-    pub use std::ops::{Deref, DerefMut};
     pub use std::sync::{Arc, Mutex, MutexGuard};
 }
 
-use serde::Deserialize;
-use serde::Serialize;
-use std::ops::{Deref, DerefMut};
+use crate::prelude::*;
 
 pub trait Configurable<Config: ConfigPart> {
     fn update(&mut self, config: &Config);
@@ -34,7 +29,7 @@ pub trait ConfigPart: Build {
 }
 
 pub trait Build: Default {
-    type Builder: for<'a> Deserialize<'a> + Serialize + Into<Self>;
+    type Builder: for<'a> Deserialize<'a> + Serialize + XInto<Self>;
 }
 
 #[macro_export]
@@ -67,8 +62,8 @@ macro_rules! static_config {
             $($field: Option<$field_ty>,)*
         }
 
-        impl From<Builder> for $config {
-            fn from(builder: Builder) -> Self {
+        impl XFrom<Builder> for $config {
+            fn xfrom(builder: Builder) -> Self {
                 Self {
                     $($field: builder.$field.unwrap_or_else(|| $value),)*
                 }

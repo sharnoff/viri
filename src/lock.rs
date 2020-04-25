@@ -12,9 +12,10 @@
 //! [`RawLock`]: struct.Lock.html
 //! [`ArcLock`]: struct.ArcLock.html
 
+use crate::prelude::*;
+
 use std::cell::UnsafeCell;
 use std::fmt::{self, Debug, Formatter};
-use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::thread::{self, ThreadId};
 

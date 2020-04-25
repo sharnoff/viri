@@ -1,25 +1,24 @@
 // TODO: Module-level documentation
+
+use std::fmt::{self, Debug, Formatter};
+use std::marker::PhantomData;
+
+use super::{Cmd, CursorStyle, Error};
+use crate::config::prelude::*;
+use crate::event::KeyEvent;
+use crate::prelude::*;
+use crate::trie::Trie;
+
 pub mod combinators;
 pub mod delete;
 pub mod movement;
 
-use std::fmt::{self, Debug, Formatter};
-
-use serde::{Deserialize, Serialize};
-
-use crate::config::prelude::*;
-use crate::event::KeyEvent;
-use crate::never::Never;
-use crate::trie::Trie;
-
-use super::{Cmd, CursorStyle, Error, Mode};
-
 use combinators::{numerical, set, wrap};
 
 /// The type responsible for handling inputs while in "normal" mode
-pub struct NormalMode {
+pub struct Mode<T> {
     /// The ongoing set of parsers that might be able to consume the next key input
-    parsers: Option<combinators::Set<Cmd<Never>>>,
+    parsers: Option<combinators::Set<Seq<Cmd<T>>>>,
 }
 
 pub trait ParseState {
@@ -43,14 +42,20 @@ pub enum Priority {
     Builtin,
 }
 
-impl NormalMode {
+impl<T> Default for Mode<T> {
+    fn default() -> Self {
+        Self { parsers: None }
+    }
+}
+
+impl<T: 'static> Mode<T> {
     pub fn new() -> Self {
         Self { parsers: None }
     }
 
     fn reset_parsers(&mut self) {
         let movement = wrap(numerical(movement::Parser::new()), |(n, m)| {
-            Cmd::Cursor(m, n.unwrap_or(1))
+            One(Cmd::Cursor(m, n.unwrap_or(1)))
         });
 
         self.parsers = Some(set(vec![
@@ -61,8 +66,10 @@ impl NormalMode {
     }
 }
 
-impl Mode<Never> for NormalMode {
-    fn try_handle(&mut self, key: KeyEvent) -> Result<Cmd<Never>, Error> {
+impl<T: 'static> super::Mode<T> for Mode<T> {
+    const NAME: Option<&'static str> = Some("-- NORMAL --");
+
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Seq<Cmd<T>>, Error> {
         use combinators::SetResult::{FinishConflict, PartialConflict, Success};
 
         if self.parsers.is_none() {
@@ -97,7 +104,7 @@ impl Mode<Never> for NormalMode {
     }
 }
 
-impl Debug for NormalMode {
+impl<T> Debug for Mode<T> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         enum OpaqueOption {
             Some,
@@ -120,7 +127,7 @@ impl Debug for NormalMode {
             }
         }
 
-        f.debug_struct("NormalMode")
+        f.debug_struct("normal::Mode")
             .field("parsers", &opaque(self.parsers.as_ref()))
             .finish()
     }
@@ -128,18 +135,22 @@ impl Debug for NormalMode {
 
 /// A parser for the miscellaneous singleton commands
 #[derive(Default)]
-struct Misc {
+struct Misc<T> {
     stack: Vec<KeyEvent>,
+    _marker: PhantomData<T>,
 }
 
-impl Misc {
+impl<T> Misc<T> {
     fn new() -> Self {
-        Self { stack: Vec::new() }
+        Self {
+            stack: Vec::new(),
+            _marker: PhantomData,
+        }
     }
 }
 
-impl ParseState for Misc {
-    type Output = Cmd<Never>;
+impl<T> ParseState for Misc<T> {
+    type Output = Seq<Cmd<T>>;
 
     fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output> {
         self.stack.push(key);
@@ -158,7 +169,7 @@ impl ParseState for Misc {
             }
             Some(n) if n.size() == 1 => {
                 self.stack.truncate(0);
-                ParseResult::Success(Priority::Builtin, n.extract().clone())
+                ParseResult::Success(Priority::Builtin, n.extract().clone().xinto())
             }
             // Some(n) if n.size > 1
             _ => ParseResult::NeedsMore,
@@ -180,14 +191,14 @@ impl ParseState for Misc {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Builder {
-    keys: Option<Vec<(Vec<KeyEvent>, Cmd<Never>)>>,
+    keys: Option<Vec<(Vec<KeyEvent>, Seq<Cmd<Never>>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     pub struct Config {
-        pub keys: Trie<KeyEvent, Cmd<Never>> = default_keybindings(),
+        pub keys: Trie<KeyEvent, Seq<Cmd<Never>>> = default_keybindings(),
     }
 
     impl ConfigPart {
@@ -199,8 +210,8 @@ static_config! {
     }
 }
 
-impl From<Builder> for Config {
-    fn from(builder: Builder) -> Self {
+impl XFrom<Builder> for Config {
+    fn xfrom(builder: Builder) -> Self {
         Self {
             keys: builder
                 .keys
@@ -211,8 +222,8 @@ impl From<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<KeyEvent, Cmd<Never>> {
-    use super::Cmd::{Chain, ChangeMode, Cursor, ExitMode};
+fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
+    use super::Cmd::{EnterMode, Cursor, ExitMode};
     use super::HorizMove::{Const, LineBoundary};
     use super::ModeKind;
     use super::Movement::Right;
@@ -222,20 +233,20 @@ fn default_keybindings() -> Trie<KeyEvent, Cmd<Never>> {
         // (mostly) meaningless for now - this will be available once colon "normal" mode will be
         // allowed to switch back to colon "insert" mode
         (vec![KeyEvent { code: Esc, mods: Mods::NONE }],
-            ExitMode,
+            One(ExitMode),
         ),
 
         // Switching to insert mode
         (vec![KeyEvent::none('i')],
-            ChangeMode(ModeKind::Insert)),
+            One(EnterMode(ModeKind::Insert))),
         (vec![KeyEvent::none('a')],
-            Chain(vec![
-                ChangeMode(ModeKind::Insert),
+            Many(vec![
+                EnterMode(ModeKind::Insert),
                 Cursor(Right(Const), 1)
             ])),
         (vec![KeyEvent::none('A')],
-            Chain(vec![
-                ChangeMode(ModeKind::Insert),
+            Many(vec![
+                EnterMode(ModeKind::Insert),
                 Cursor(Right(LineBoundary), 1),
             ])),
     ];

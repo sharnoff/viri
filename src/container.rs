@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use crossterm::{cursor, style, QueueableCommand};
 
 use crate::event::{KeyEvent, MouseEvent};
+use crate::prelude::*;
 use crate::runtime::{self as rt, Painter, TermSize};
 use crate::views::{self, ConcreteView, RefreshKind, ViewKind};
 
@@ -135,17 +136,24 @@ impl Container {
                     file!(),
                     line!(),
                 ),
-                _ => self.update_cursor(),
+                _ => {
+                    log::trace!("Refresh cursor");
+                    self.update_cursor()
+                }
             },
             Sig::NeedsRefresh(RefreshKind::BottomText) => {
+                log::trace!("Refresh bottom text");
                 self.write_bottom_bar();
                 self.update_cursor();
             }
             Sig::NeedsRefresh(_) => {
+                log::trace!("full refresh!");
                 if let Some(p) = local.as_mut() {
                     self.inner.refresh(p);
                     self.write_bottom_bar();
                     self.update_cursor();
+                } else {
+                    log::trace!("unable to refresh");
                 }
             }
 
@@ -448,7 +456,7 @@ impl Container {
                     Mouse(m) => Signal::Mouse(m),
                 };
 
-                log::debug!("viri::container - giving inner signal: {:?}", signal);
+                log::debug!("{}:{}: giving inner signal: {:?}", file!(), line!(), signal);
 
                 self.inner.try_handle(signal)
             }
@@ -467,6 +475,13 @@ impl Container {
                 }
             }
         };
+
+        log::debug!(
+            "{}:{}: received output signal {:?}",
+            file!(),
+            line!(),
+            out_sig
+        );
 
         if self.handle_view_output_exits(out_sig) {
             return Some(rt::Signal::Exit);

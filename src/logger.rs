@@ -2,12 +2,12 @@
 ///
 /// This file sets up the logger that we use in the rest of the crate, along
 /// with the tools that keep it in order
-
-use std::sync::{Arc, Mutex};
 use std::fs::File;
-use std::mem;
 use std::io::Write;
+use std::mem;
+use std::sync::{Arc, Mutex};
 
+use crate::prelude::*;
 use lazy_static::lazy_static;
 use log::{Metadata, Record};
 
@@ -65,10 +65,10 @@ pub fn level_filter_from_str(s: &str) -> log::LevelFilter {
     match s {
         "Trace" => log::LevelFilter::Trace,
         "Debug" => log::LevelFilter::Debug,
-        "Info"  => log::LevelFilter::Info,
-        "Warn"  => log::LevelFilter::Warn,
+        "Info" => log::LevelFilter::Info,
+        "Warn" => log::LevelFilter::Warn,
         "Error" => log::LevelFilter::Error,
-        "Off"   => log::LevelFilter::Off,
+        "Off" => log::LevelFilter::Off,
         _ => panic!("Unexpected log level string"),
     }
 }
@@ -105,7 +105,7 @@ impl log::Log for Logger {
                 //
                 // Option 2:
                 // We set the log file to `None` and notify the user, along with
-                // letting them know how to set the log file from within the 
+                // letting them know how to set the log file from within the
                 todo!()
             }
         }
@@ -121,4 +121,3 @@ impl log::Log for Logger {
         }
     }
 }
-

@@ -6,9 +6,8 @@ use std::io::{self, stderr};
 use std::panic::{catch_unwind, resume_unwind, UnwindSafe};
 use std::process;
 
-use serde::{Deserialize, Serialize};
-
 use crate::event::{KeyEvent, MouseEvent};
+use crate::prelude::*;
 
 mod painter;
 pub mod panic;
@@ -50,7 +49,7 @@ impl Iterator for EventsLoop {
 
         let event = match crossterm::event::read().unwrap() {
             CTEvent::Key(k) => Event::User(UserEvent::Key(k.into())),
-            CTEvent::Mouse(m) => Event::User(UserEvent::Mouse(m.into())),
+            CTEvent::Mouse(m) => Event::User(UserEvent::Mouse(m.xinto())),
             CTEvent::Resize(width, height) => Event::Resize((width, height).into()),
         };
 

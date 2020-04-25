@@ -9,12 +9,13 @@
 //! examined in the documentation - *NOT* so that they can be used elsewhere. This information will
 //! hopefully provide insight into the inner workings of the editor.
 
-use std::sync::{Mutex, MutexGuard};
 use std::collections::HashMap;
 use std::io::Write;
 use std::panic::{self, PanicInfo};
+use std::sync::{Mutex, MutexGuard};
 use std::thread::{self, ThreadId};
 
+use crate::prelude::*;
 use backtrace::Backtrace;
 use lazy_static::lazy_static;
 
@@ -54,15 +55,21 @@ impl PanicWriter {
 
         threads
             .drain()
-            .map(|(thread_id, panic_str)| match std::str::from_utf8(&panic_str) {
-                Ok(s) => writeln!(writer, "{}", s),
-                Err(_) => writeln!(writer, "<ThreadId {:?}: Invalid utf8: \n{:?}>", thread_id, &panic_str),
-            })
+            .map(
+                |(thread_id, panic_str)| match std::str::from_utf8(&panic_str) {
+                    Ok(s) => writeln!(writer, "{}", s),
+                    Err(_) => writeln!(
+                        writer,
+                        "<ThreadId {:?}: Invalid utf8: \n{:?}>",
+                        thread_id, &panic_str
+                    ),
+                },
+            )
             // We can't worry about handling the results, because there isn't another place we
             // could print to - we're already writing to the place where we'd print it them.
             .for_each(drop);
 
-        // Purely for aesthetics: Only create a gap between things if the exit messages are 
+        // Purely for aesthetics: Only create a gap between things if the exit messages are
         if space_between {
             // A similar story here: we can't do anything with the result
             let _ = writeln!(writer);
@@ -80,8 +87,7 @@ impl PanicWriter {
 
 /// Adds a message to be displayed after the program exits through a panic or hard exit
 pub fn add_exit_msg<S: Into<String>>(msg: S) {
-    force_lock(&PANIC_WRITER.exit_msgs)
-        .push((thread::current().id(), msg.into()));
+    force_lock(&PANIC_WRITER.exit_msgs).push((thread::current().id(), msg.into()));
 }
 
 /// Locks a mutex, ignoring whether it has been poisoned

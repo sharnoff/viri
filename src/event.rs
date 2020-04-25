@@ -11,9 +11,8 @@
 //! [`KeyModifiers`]: struct.KeyModifiers.html
 //! [`MouseEvent`]: enum.MouseEvent.html
 
+use crate::prelude::*;
 use crossterm::event;
-use serde::{Deserialize, Serialize};
-
 pub use crossterm::event::MouseButton;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -25,8 +24,8 @@ pub struct KeyEvent {
 impl From<event::KeyEvent> for KeyEvent {
     fn from(ev: event::KeyEvent) -> Self {
         Self {
-            code: ev.code.into(),
-            mods: ev.modifiers.into(),
+            code: ev.code.xinto(),
+            mods: ev.modifiers.xinto(),
         }
     }
 }
@@ -69,8 +68,8 @@ pub enum KeyCode {
     Esc,
 }
 
-impl From<event::KeyCode> for KeyCode {
-    fn from(code: event::KeyCode) -> KeyCode {
+impl XFrom<event::KeyCode> for KeyCode {
+    fn xfrom(code: event::KeyCode) -> KeyCode {
         use KeyCode::*;
         match code {
             event::KeyCode::Backspace => Backspace,
@@ -124,8 +123,8 @@ impl KeyModifiers {
     };
 }
 
-impl From<event::KeyModifiers> for KeyModifiers {
-    fn from(mods: event::KeyModifiers) -> Self {
+impl XFrom<event::KeyModifiers> for KeyModifiers {
+    fn xfrom(mods: event::KeyModifiers) -> Self {
         use event::KeyModifiers as Mods;
 
         Self {
@@ -145,16 +144,16 @@ pub enum MouseEvent {
     ScrollUp(u16, u16, KeyModifiers),
 }
 
-impl From<event::MouseEvent> for MouseEvent {
-    fn from(ev: event::MouseEvent) -> Self {
+impl XFrom<event::MouseEvent> for MouseEvent {
+    fn xfrom(ev: event::MouseEvent) -> Self {
         use event::MouseEvent::{Down, Drag, ScrollDown, ScrollUp, Up};
 
         match ev {
-            Down(b, x, y, mods) => Self::Down(b, x, y, mods.into()),
-            Up(b, x, y, mods) => Self::Up(b, x, y, mods.into()),
-            Drag(b, x, y, mods) => Self::Drag(b, x, y, mods.into()),
-            ScrollDown(x, y, mods) => Self::ScrollDown(x, y, mods.into()),
-            ScrollUp(x, y, mods) => Self::ScrollUp(x, y, mods.into()),
+            Down(b, x, y, mods) => Self::Down(b, x, y, mods.xinto()),
+            Up(b, x, y, mods) => Self::Up(b, x, y, mods.xinto()),
+            Drag(b, x, y, mods) => Self::Drag(b, x, y, mods.xinto()),
+            ScrollDown(x, y, mods) => Self::ScrollDown(x, y, mods.xinto()),
+            ScrollUp(x, y, mods) => Self::ScrollUp(x, y, mods.xinto()),
         }
     }
 }

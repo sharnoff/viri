@@ -1,5 +1,7 @@
 //! Parser combinators for managing input in "normal" mode
 
+use crate::prelude::*;
+
 use super::ParseResult::{Failed, NeedsMore, Success};
 use super::{ParseResult, ParseState, Priority};
 use crate::event::{KeyCode, KeyEvent, KeyModifiers as Mods};

@@ -1,9 +1,12 @@
 //! Deletion-related `KeyEvent` parsing for "normal" mode
 
+use std::marker::PhantomData;
+
 use crate::event::KeyEvent;
 use crate::mode::HorizMove::LineBoundary;
 use crate::mode::{Cmd, DeleteKind, Movement};
-use crate::never::Never;
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 use super::combinators::{chain, numerical, set, single, wrap, Set, SetResult};
 use super::movement::Parser as MoveParser;
@@ -11,11 +14,12 @@ use super::ParseResult::{self, Failed, NeedsMore, Success};
 use super::{ParseState, Priority};
 
 /// A parser for handling all types of deletion functionality
-pub struct Parser {
+pub struct Parser<T> {
     parsers: Set<Option<DeleteKind>>,
+    _marker: PhantomData<T>,
 }
 
-impl Parser {
+impl<T> Parser<T> {
     pub fn new() -> Self {
         let eol = |(amount, _): (Option<usize>, KeyEvent)| {
             Some(DeleteKind::ByMovement {
@@ -71,6 +75,7 @@ impl Parser {
         }
 
         Self {
+            _marker: PhantomData,
             parsers: set(vec![
                 Box::new(wrap(
                     numerical(single(KeyEvent::none('D'), Priority::Builtin)),
@@ -97,15 +102,15 @@ impl Parser {
     }
 }
 
-impl ParseState for Parser {
-    type Output = Cmd<Never>;
+impl<T> ParseState for Parser<T> {
+    type Output = Seq<Cmd<T>>;
 
-    fn add(&mut self, key: KeyEvent) -> ParseResult<Cmd<Never>> {
+    fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output> {
         match self.parsers.add(key) {
             Failed => Failed,
             NeedsMore => NeedsMore,
             Success(priority, SetResult::Success(Some(delete_kind))) => {
-                Success(priority, Cmd::Delete(delete_kind))
+                Success(priority, One(Cmd::Delete(delete_kind)))
             }
             // FIXME
             Success(_, _) => todo!(),
