@@ -125,18 +125,12 @@ fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
                 from_inclusive: false,
                 to_inclusive: true,
             }))),
-        (vec![KeyEvent {
-                code: Esc,
-                mods: Mods::NONE,
-            }],
+        (vec![KeyEvent { code: Esc, mods: Mods::NONE }],
             Many(vec![
                 Cursor(Left(Const), 1),
                 ExitMode
             ])),
-        (vec![KeyEvent {
-                code: Enter,
-                mods: Mods::NONE,
-            }],
+        (vec![KeyEvent { code: Enter, mods: Mods::NONE }],
             Many(vec![
                 Insert('\n'.to_string()),
                 Cursor(RightCross(Const), 1)

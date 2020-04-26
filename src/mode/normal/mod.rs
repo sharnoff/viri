@@ -219,10 +219,10 @@ impl XFrom<Builder> for Config {
 
 #[rustfmt::skip]
 fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
-    use super::Cmd::{EnterMode, Cursor, ExitMode};
+    use super::Cmd::{EnterMode, Cursor, ExitMode, Insert};
     use super::HorizMove::{Const, LineBoundary};
     use super::ModeKind;
-    use super::Movement::Right;
+    use super::Movement::{Right, RightCross, Left};
     use crate::event::{KeyCode::Esc, KeyModifiers as Mods};
 
     let keys = vec![
@@ -244,6 +244,20 @@ fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
             Many(vec![
                 EnterMode(ModeKind::Insert),
                 Cursor(Right(LineBoundary), 1),
+            ])),
+
+        (vec![KeyEvent::none('o')],
+            Many(vec![
+                EnterMode(ModeKind::Insert),
+                Cursor(Right(LineBoundary), 1),
+                Insert("\n".into()),
+                Cursor(RightCross(Const), 1),
+            ])),
+        (vec![KeyEvent::none('O')],
+            Many(vec![
+                EnterMode(ModeKind::Insert),
+                Cursor(Left(LineBoundary), 1),
+                Insert("\n".into()),
             ])),
     ];
 
