@@ -35,7 +35,7 @@ impl<T> Parser<T> {
         ) -> Option<DeleteKind> {
             use crate::mode::{
                 DeleteKind::{ByLines, ByMovement},
-                HorizMove::UntilSnd,
+                HorizMove::UntilFst,
                 Movement::{Down, Left, LeftCross, Right, RightCross, Up},
             };
 
@@ -50,17 +50,17 @@ impl<T> Parser<T> {
                     from_inclusive: false,
                     to_inclusive: true,
                 },
-                Right(UntilSnd(_)) | RightCross(UntilSnd(_)) => ByMovement {
+                Right(UntilFst(_)) | RightCross(UntilFst(_)) => ByMovement {
                     movement,
                     amount,
                     from_inclusive: true,
-                    to_inclusive: false,
+                    to_inclusive: true,
                 },
                 Right(_) | RightCross(_) => ByMovement {
                     movement,
                     amount,
                     from_inclusive: true,
-                    to_inclusive: true,
+                    to_inclusive: false,
                 },
             })
         }
