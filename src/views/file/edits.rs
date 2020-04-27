@@ -286,6 +286,8 @@ impl Edits {
             return None;
         }
 
+        self.place_in_history += 1;
+
         Some(())
     }
 }

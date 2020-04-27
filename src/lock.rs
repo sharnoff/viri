@@ -115,6 +115,7 @@ unsafe impl<T: Send + Sync> Sync for RawLock<T> {}
 ///
 /// [`read`]: struct.Lock.html#method.read
 /// [`Lock`]: struct.Lock.html
+#[derive(Debug)]
 pub struct ReadGuard<'a, T> {
     guard: RwLockReadGuard<'a, T>,
 }
@@ -125,6 +126,7 @@ pub struct ReadGuard<'a, T> {
 ///
 /// [`write`]: struct.Lock.html#method.write
 /// [`Lock`]: struct.Lock.html
+#[derive(Debug)]
 pub struct WriteGuard<'a, T> {
     lock: &'a RawLock<T>,
     guard: RwLockWriteGuard<'a, T>,

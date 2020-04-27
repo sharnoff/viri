@@ -244,6 +244,10 @@ fn make_absolute<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
 }
 
 impl Handle {
+    pub(super) fn read(&self) -> ReadGuard<File> {
+        self.file.read()
+    }
+
     pub fn blank(id: LocalId) -> Handle {
         let locator = Locator::Local(id);
         let handle_id = gen_handle_id();
@@ -400,7 +404,9 @@ impl Handle {
             }
 
             // We'll unwrap just to validate it
+            log::trace!("commit redo: {:?}", file.edits);
             file.edits.commit_redo().unwrap();
+            log::trace!("after redo: {:?}", file.edits);
         }
 
         Ok((ret_diffs, false))
@@ -584,6 +590,9 @@ impl Debug for File {
             .field("locator", &self.locator)
             .field("n_handles", &self.n_handles)
             .field("unsaved", &self.unsaved)
+            .field("edits", &self.edits)
+            .field("last_diff_id", &self.last_diff_id)
+            .field("diff_history", &self.diff_history)
             .field("last_write", &self.last_write)
             .finish()
     }

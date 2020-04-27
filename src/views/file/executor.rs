@@ -26,6 +26,8 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
         use MetaCmd::{Custom, TryClose};
 
         const UNSAVED_ERR_MSG: &'static str = "No write since last change (use ! to override)";
+        const AT_OLDEST_CHANGE: &'static str = "Already at oldest change";
+        const AT_NEWEST_CHANGE: &'static str = "Already at newest change";
 
         self.buffer.set_cursor_style(style);
 
@@ -71,7 +73,6 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                     .unwrap_or(OutputSignal::Nothing);
 
                 if at_oldest && diffs.is_empty() {
-                    const AT_OLDEST_CHANGE: &'static str = "Already at oldest change";
                     return Some(OutputSignal::Chain(vec![
                         OutputSignal::SetBottomBar {
                             prefix: None,
@@ -100,7 +101,6 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                     .unwrap_or(OutputSignal::Nothing);
 
                 if at_newest && diffs.is_empty() {
-                    const AT_NEWEST_CHANGE: &'static str = "Already at newest change";
                     return Some(OutputSignal::Chain(vec![
                         OutputSignal::SetBottomBar {
                             prefix: None,
