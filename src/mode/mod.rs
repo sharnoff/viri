@@ -39,7 +39,7 @@ pub trait Mode<T>: Default + XInto<Modes<T>> {
     const NAME: Option<&'static str>;
 
     // FIXME: Documentation
-    fn try_handle(&mut self, key: KeyEvent) -> Result<Seq<Cmd<T>>, Error>;
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<T>>, Error>;
     fn cursor_style(&self) -> CursorStyle;
     fn expecting_input(&self) -> bool;
 }

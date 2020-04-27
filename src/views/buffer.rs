@@ -98,16 +98,16 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
         painter.set_cursor(self.cursor);
     }
 
-    fn resize(&mut self, size: TermSize) -> OutputSignal {
+    fn resize(&mut self, size: TermSize) -> Vec<OutputSignal> {
         if size == self.size {
-            OutputSignal::Nothing
+            Vec::new()
         } else {
             self.size = size;
             self.cursor.col = self.cursor.col.min(size.width - 1);
             self.cursor.row = self.cursor.row.min(size.height - 1);
 
             self.needs_refresh = Some(RefreshKind::Full);
-            OutputSignal::NeedsRefresh(RefreshKind::Full)
+            vec![OutputSignal::NeedsRefresh(RefreshKind::Full)]
         }
     }
 }
@@ -221,7 +221,6 @@ impl<P: ContentProvider> ViewBuffer<P> {
             new_col -= 1;
         }
 
-        let new_col = content.line(new_row).width_idx_from_char(new_char);
         drop(line);
         drop(content);
 

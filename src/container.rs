@@ -5,8 +5,8 @@ use std::io::{self, Write};
 use crossterm::{cursor, style, QueueableCommand};
 
 use crate::event::{KeyEvent, MouseEvent};
-// use crate::prelude::*;
 use crate::runtime::{self as rt, Painter, TermSize};
+use crate::utils;
 use crate::views::{self, ConcreteView, RefreshKind, ViewKind};
 
 /// The primary interface between the runtime and the tree of `View`s
@@ -111,177 +111,32 @@ fn pick_init_view(args: &[&str]) -> ViewKind {
     ViewKind::File
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Utility functions                                                          //
+////////////////////////////////////////////////////////////////////////////////
+
 impl Container {
-    /// Handles the result of passing a signal to the outermost view
-    ///
-    /// Returns true iff the the resulting signal successfully requested an exit
-    fn handle_view_output_exits(&mut self, signal: views::OutputSignal) -> bool {
-        use views::OutputSignal as Sig;
-
-        let mut global_painter = Painter::global(self.size);
-        let mut local = match self.bottom_offset().try_into() {
-            Ok(offset) => global_painter.trim_bot(offset),
-            Err(_) => None,
-        };
-
-        match signal {
-            Sig::Nothing => (),
-
-            Sig::NeedsRefresh(RefreshKind::Cursor) => match self.input_mode {
-                InputMode::BottomBar {
-                    cursor_col: Some(_),
-                    ..
-                } => log::warn!(
-                    "{}:{}: cannot refresh cursor; current input mode is bottom bar",
-                    file!(),
-                    line!(),
-                ),
-                _ => {
-                    log::trace!("Refresh cursor");
-                    self.update_cursor()
-                }
-            },
-            Sig::NeedsRefresh(RefreshKind::BottomText) => {
-                log::trace!("Refresh bottom text");
-                self.write_bottom_bar();
-                self.update_cursor();
-            }
-            Sig::NeedsRefresh(_) => {
-                log::trace!("full refresh!");
-                if let Some(p) = local.as_mut() {
-                    self.inner.refresh(p);
-                    self.write_bottom_bar();
-                    self.update_cursor();
-                } else {
-                    log::trace!("unable to refresh");
-                }
-            }
-
-            Sig::SaveBottomBar => match &self.input_mode {
-                InputMode::BottomBar { prefix, value, .. } => {
-                    let mut new_list = self
-                        .previous_bottom_bars
-                        .remove(prefix)
-                        .unwrap_or(Vec::new());
-                    new_list.push(value.clone());
-                    self.previous_bottom_bars.insert(*prefix, new_list);
-                }
-                _ => {
-                    log::warn!(
-                        "{}:{} - Attempted to save bottom bar when nothing is there",
-                        file!(),
-                        line!()
-                    );
-                }
-            },
-
-            Sig::SetBottomBar {
-                prefix,
-                value,
-                width,
-                cursor_col,
+    fn bottom_offset(&self) -> usize {
+        match &self.input_mode {
+            &InputMode::BottomBar {
+                width, cursor_col, ..
             } => {
-                // Something to note here:
-                // If the total width is greater than the width of the screen, we'll need to split
-                // it into multiple lines. If this changes the `num_rows` field of `BottomBar`,
-                // we'll need to resize the contents.
-
-                // Now we're set to replace the contents.
                 let max_width = cursor_col.unwrap_or(0).max(width + 1);
-                let num_rows = (max_width - 1) / (self.size.width as usize) + 1;
-                // ^ Integer division rounding up
-                let previous_bottom_offset = self.bottom_offset();
-
-                self.input_mode = InputMode::BottomBar {
-                    prefix,
-                    value,
-                    width: max_width,
-                    cursor_col,
-                };
-
-                // Actually write the bottom row(s)
-                self.write_bottom_bar();
-
-                // if num_rows changed, resize
-                //
-                // This has the potential to cause infinite recursion if the `View` sets the bottom
-                // bar again as a result of resizing. If that happens, someone messed up, so we'll
-                // simply log what's happening just in case it's an issue. Realistically, resizing
-                // here won't be common, so this amount of logging should be okay.
-                if num_rows != (previous_bottom_offset as usize)
-                    && (self.size.height as usize) > num_rows
-                {
-                    let inner_size = TermSize {
-                        height: self.size.height - (num_rows as u16),
-                        ..self.size
-                    };
-                    let new_signal = self.inner.resize(inner_size);
-                    if !new_signal.is_nothing() {
-                        log::info!(
-                            "Recursing after bottom bar resize. Current input mode: {:?}",
-                            self.input_mode
-                        );
-                        if self.handle_view_output_exits(new_signal) {
-                            // If true, we were told to exit, so we do that here.
-                            return true;
-                        }
-                    }
-                }
-
-                self.update_cursor();
+                (max_width - 1) / self.size.width as usize + 1
             }
-
-            Sig::LeaveBottomBar => match &mut self.input_mode {
-                InputMode::Normal
-                | InputMode::BottomBar {
-                    cursor_col: None, ..
-                } => log::warn!(
-                    "{}:{}: received `LeaveBottomBar` signal while already in `Normal` input mode",
-                    file!(),
-                    line!(),
-                ),
-                InputMode::BottomBar { cursor_col, .. } => {
-                    *cursor_col = None;
-                    self.update_cursor();
-                }
-            },
-
-            Sig::ClearBottomBar => match self.input_mode {
-                InputMode::Normal => log::warn!(
-                    "{}:{}: received `ClearBottomBar` signal when bottom bar is already clear",
-                    file!(),
-                    line!()
-                ),
-                InputMode::BottomBar {
-                    cursor_col: Some(_),
-                    ..
-                } => log::warn!(
-                    "{}:{}: cannot clear bottom bar; it is currently in use",
-                    file!(),
-                    line!()
-                ),
-                _ => {
-                    self.input_mode = InputMode::Normal;
-                    self.write_bottom_bar();
-                    self.update_cursor();
-                }
-            },
-
-            // TODO: Ring the bell when we don't have a command?
-            Sig::NoSuchCmd => {}
-
-            // TODO - In a later version we'll need to keep track of this
-            Sig::WaitingForMore => {}
-
-            // If the outer-most view closes, we exit.
-            Sig::Close => return true,
-
-            Sig::Chain(c) => return c.into_iter().any(|s| self.handle_view_output_exits(s)),
+            InputMode::Normal => 1,
         }
-
-        false
     }
+}
 
+////////////////////////////////////////////////////////////////////////////////
+// Core facilities                                                            //
+// ---------------                                                            //
+// This excludes one function, `handle_view_output_exits`. That function      //
+// relies on many others, so they are all grouped into a separate impl block. //
+////////////////////////////////////////////////////////////////////////////////
+
+impl Container {
     /// Refreshes the cursor location, whether that is the bottom bar or in the inner `View`
     fn update_cursor(&mut self) {
         match self.input_mode {
@@ -383,18 +238,8 @@ impl Container {
                 let offset = self.bottom_offset();
                 // handle the bottom bar stuff
                 let remaining_width = offset * (self.size.width as usize) - width;
-                // This is just copied from runtime::Painter::print_lines_internal
-                let post_str = unsafe {
-                    // 0x20 is the byte code for 'space'.
-                    // We'll just store whatever size we need here. Because the terminal size is stored in
-                    // a u16, we can get away with just keeping all of the blank space we want in there.
-                    const BLANK_SIZE: usize = std::u16::MAX as usize;
-                    const BLANK: [u8; BLANK_SIZE] = [0x20; BLANK_SIZE];
-                    //    ^^^^^ FIXME: This is duplicated in three places - it should be put into
-                    //          one location
 
-                    &std::str::from_utf8_unchecked(&BLANK)[..remaining_width]
-                };
+                let post_str = utils::blank_str(remaining_width as u16);
 
                 let start_height = self.size.height - (offset as u16);
                 // ^ FIXME: Currently this will panic if the offset is greater than the height.
@@ -427,7 +272,7 @@ impl Container {
         use rt::UserEvent::{Key, Mouse};
         use InputMode::BottomBar;
 
-        let out_sig = match event {
+        let signals: Option<Vec<_>> = match event {
             User(event) => {
                 // We need this complex control flow here because separating it into multiple
                 // functions would cause a borrow-checker conflict.
@@ -466,24 +311,27 @@ impl Container {
 
                 let offset = self.bottom_offset();
                 if size.height as usize > offset {
-                    self.inner.resize(TermSize {
+                    Some(self.inner.resize(TermSize {
                         height: size.height - offset as u16,
                         ..size
-                    })
+                    }))
                 } else {
-                    views::OutputSignal::Nothing
+                    Some(Vec::new())
                 }
             }
         };
 
         log::debug!(
-            "{}:{}: received output signal {:?}",
+            "{}:{}: received `OutputSignal`s: {:?}",
             file!(),
             line!(),
-            out_sig
+            signals
         );
 
-        if self.handle_view_output_exits(out_sig) {
+        if signals?
+            .into_iter()
+            .any(|sig| self.handle_view_output_exits(sig))
+        {
             return Some(rt::Signal::Exit);
         }
 
@@ -522,16 +370,219 @@ impl Container {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Handling `View` output signals                                             //
+// ------------------------------                                             //
+// This impl block primarily defines `handle_view_output_exits`, which        //
+// handles a single `OutputSignal` from the inner `View`.                     //
+//                                                                            //
+// There are many different variants to account for, so (for the most part)   //
+// they are split into separate functions. These functions exist purely as    //
+// helper functions; they are not intended to be called from outside this     //
+// impl block.                                                                //
+////////////////////////////////////////////////////////////////////////////////
+
 impl Container {
-    fn bottom_offset(&self) -> usize {
-        match &self.input_mode {
-            &InputMode::BottomBar {
-                width, cursor_col, ..
-            } => {
-                let max_width = cursor_col.unwrap_or(0).max(width + 1);
-                (max_width - 1) / self.size.width as usize + 1
+    /// Handles the result of passing a signal to the outermost view
+    ///
+    /// Returns true iff the the resulting signal successfully requested an exit
+    fn handle_view_output_exits(&mut self, signal: views::OutputSignal) -> bool {
+        use views::OutputSignal::{
+            ClearBottomBar, Close, LeaveBottomBar, NeedsRefresh, NoSuchCmd, Nothing, SaveBottomBar,
+            SetBottomBar, WaitingForMore,
+        };
+
+        let mut global_painter = Painter::global(self.size);
+        let mut local = match self.bottom_offset().try_into() {
+            Ok(offset) => global_painter.trim_bot(offset),
+            Err(_) => None,
+        };
+
+        match signal {
+            Nothing => (),
+            NeedsRefresh(kind) => self.handle_refresh(kind),
+            SaveBottomBar => self.save_bottom_bar(),
+
+            SetBottomBar {
+                prefix,
+                value,
+                width,
+                cursor_col,
+            } => return self.set_bottom_bar(prefix, value, width, cursor_col),
+
+            LeaveBottomBar => self.leave_bottom_bar(),
+
+            ClearBottomBar => self.clear_bottom_bar(),
+
+            // TODO: Ring the bell when we don't have a command?
+            NoSuchCmd => {}
+
+            // TODO - In a later version we'll need to keep track of this
+            WaitingForMore => {}
+
+            // If the outer-most view closes, we exit.
+            Close => return true,
+        }
+
+        false
+    }
+
+    fn handle_refresh(&mut self, kind: RefreshKind) {
+        use InputMode::BottomBar;
+        use RefreshKind::{BottomText, Cursor, Full, Inner};
+
+        let mut global_painter = Painter::global(self.size);
+        let mut local = match self.bottom_offset().try_into() {
+            Ok(offset) => global_painter.trim_bot(offset),
+            Err(_) => None,
+        };
+
+        match kind {
+            Cursor => match self.input_mode {
+                BottomBar { cursor_col, .. } if cursor_col.is_some() => {
+                    log::warn!(
+                        "{}:{}: cannot refresh cursor; current input mode is bottom bar",
+                        file!(),
+                        line!(),
+                    );
+                }
+                _ => self.update_cursor(),
+            },
+            BottomText => {
+                self.write_bottom_bar();
+                self.update_cursor();
             }
-            InputMode::Normal => 1,
+            Full | Inner if local.is_some() => {
+                self.inner.refresh(local.as_mut().unwrap());
+                self.write_bottom_bar();
+                self.update_cursor();
+            }
+            // Tried to refresh but there isn't anything there to display
+            _ => log::warn!(
+                "{}:{}: cannot refresh inner `View`; current PTTY is too small",
+                file!(),
+                line!(),
+            ),
+        }
+    }
+
+    fn save_bottom_bar(&mut self) {
+        use InputMode::BottomBar;
+
+        if let BottomBar { prefix, value, .. } = &self.input_mode {
+            let mut new_list = self
+                .previous_bottom_bars
+                .remove(prefix)
+                .unwrap_or(Vec::new());
+            new_list.push(value.clone());
+            self.previous_bottom_bars.insert(*prefix, new_list);
+        } else {
+            log::warn!(
+                "{}:{} - Attempted to save bottom bar when nothing is there",
+                file!(),
+                line!()
+            );
+        }
+    }
+
+    /// The boolean return here has the same meaning as for `handle_view_output_exits`
+    fn set_bottom_bar(
+        &mut self,
+        prefix: Option<char>,
+        value: String,
+        width: usize,
+        cursor_col: Option<usize>,
+    ) -> bool {
+        // Something to note here:
+        // If the total width is greater than the width of the screen, we'll need to split
+        // it into multiple lines. If this changes the `num_rows` field of `BottomBar`,
+        // we'll need to resize the contents.
+
+        // Now we're set to replace the contents.
+        let max_width = cursor_col.unwrap_or(0).max(width + 1);
+        let num_rows = (max_width - 1) / (self.size.width as usize) + 1;
+        // ^ Integer division rounding up
+        let previous_bottom_offset = self.bottom_offset();
+
+        self.input_mode = InputMode::BottomBar {
+            prefix,
+            value,
+            width: max_width,
+            cursor_col,
+        };
+
+        // Actually write the bottom row(s)
+        self.write_bottom_bar();
+
+        // if num_rows changed, resize
+        //
+        // This has the potential to cause infinite recursion if the `View` sets the bottom
+        // bar again as a result of resizing. If that happens, someone messed up, so we'll
+        // simply log what's happening just in case it's an issue. Realistically, resizing
+        // here won't be common, so this amount of logging should be okay.
+        if num_rows != (previous_bottom_offset as usize) && (self.size.height as usize) > num_rows {
+            let inner_size = TermSize {
+                height: self.size.height - (num_rows as u16),
+                ..self.size
+            };
+            let new_signals = self.inner.resize(inner_size);
+            if !new_signals.is_empty() {
+                log::info!(
+                    "Recursing after bottom bar resize. Current input mode: {:?}",
+                    self.input_mode
+                );
+
+                if new_signals
+                    .into_iter()
+                    .any(|sig| self.handle_view_output_exits(sig))
+                {
+                    // If true, we were told to exit, so we do that here.
+                    return true;
+                }
+            }
+        }
+
+        self.update_cursor();
+        false
+    }
+
+    fn leave_bottom_bar(&mut self) {
+        match &mut self.input_mode {
+            InputMode::Normal
+            | InputMode::BottomBar {
+                cursor_col: None, ..
+            } => log::warn!(
+                "{}:{}: received `LeaveBottomBar` signal while already in `Normal` input mode",
+                file!(),
+                line!(),
+            ),
+            InputMode::BottomBar { cursor_col, .. } => {
+                *cursor_col = None;
+                self.update_cursor();
+            }
+        }
+    }
+
+    fn clear_bottom_bar(&mut self) {
+        match self.input_mode {
+            InputMode::Normal => log::warn!(
+                "{}:{}: received `ClearBottomBar` signal when bottom bar is already clear",
+                file!(),
+                line!()
+            ),
+            InputMode::BottomBar {
+                cursor_col: Some(_),
+                ..
+            } => log::warn!(
+                "{}:{}: cannot clear bottom bar; it is currently in use",
+                file!(),
+                line!()
+            ),
+            _ => {
+                self.input_mode = InputMode::Normal;
+                self.write_bottom_bar();
+                self.update_cursor();
+            }
         }
     }
 }

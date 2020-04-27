@@ -7,7 +7,6 @@ use crate::mode::{self, CursorStyle};
 use crate::text::ContentProvider;
 use crate::views::buffer::ViewBuffer;
 use crate::views::{ExitKind, MetaCmd, OutputSignal};
-use crossterm::style::Colorize;
 
 /// The internal `Executor` that allows handling of mode switching within the main `View`
 pub(super) struct FileExecutor {
@@ -15,17 +14,25 @@ pub(super) struct FileExecutor {
 }
 
 impl Executor<MetaCmd<FileMeta>> for FileExecutor {
-    type Output = Option<OutputSignal>;
+    type Output = Option<Vec<OutputSignal>>;
 
-    fn execute(&mut self, cmd: Cmd<MetaCmd<FileMeta>>, style: CursorStyle) -> Option<OutputSignal> {
+    fn execute(
+        &mut self,
+        cmd: Cmd<MetaCmd<FileMeta>>,
+        style: CursorStyle,
+    ) -> Option<Vec<OutputSignal>> {
         use Cmd::{
             Cursor, Delete, EndEditBlock, Insert, Other, Redo, Scroll, StartEditBlock, Undo,
         };
         use ExitKind::ReqSave;
         use FileMeta::Save;
         use MetaCmd::{Custom, TryClose};
+        use OutputSignal::{Close, NeedsRefresh};
 
-        const UNSAVED_ERR_MSG: &'static str = "No write since last change (use ! to override)";
+        // Getting a few definitions out of the way
+        //
+        // The first few are the actual error messages themselves
+        const UNSAVED: &'static str = "No write since last change (use ! to override)";
         const AT_OLDEST_CHANGE: &'static str = "Already at oldest change";
         const AT_NEWEST_CHANGE: &'static str = "Already at newest change";
 
@@ -34,25 +41,13 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
         let refresh = match cmd {
             Other(o) => {
                 return match o {
-                    TryClose(ReqSave) if self.unsaved() => Some(OutputSignal::SetBottomBar {
-                        prefix: None,
-                        value: UNSAVED_ERR_MSG.red().to_string(),
-                        width: UNSAVED_ERR_MSG.len(),
-                        cursor_col: None,
-                    }),
-                    TryClose(_) => Some(OutputSignal::Close),
+                    TryClose(ReqSave) if self.unsaved() => {
+                        Some(vec![OutputSignal::error(UNSAVED, None, true)])
+                    }
+                    TryClose(_) => Some(vec![Close]),
                     Custom(Save) => match self.try_save() {
-                        Ok(()) => Some(OutputSignal::Nothing),
-                        Err(err_str) => {
-                            let width = err_str.len();
-
-                            Some(OutputSignal::SetBottomBar {
-                                prefix: None,
-                                value: err_str.red().to_string(),
-                                width,
-                                cursor_col: None,
-                            })
-                        }
+                        Ok(()) => Some(Vec::new()),
+                        Err(err_str) => Some(vec![OutputSignal::error(&err_str, None, true)]),
                     },
                 }
             }
@@ -66,26 +61,16 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                     Err(e) => panic!("{}", e),
                 };
 
-                let refresh = self
-                    .buffer
-                    .refresh_diffs(&diffs)
-                    .map(OutputSignal::NeedsRefresh)
-                    .unwrap_or(OutputSignal::Nothing);
+                let refresh = self.buffer.refresh_diffs(&diffs).map(NeedsRefresh);
 
-                if at_oldest && diffs.is_empty() {
-                    return Some(OutputSignal::Chain(vec![
-                        OutputSignal::SetBottomBar {
-                            prefix: None,
-                            value: AT_OLDEST_CHANGE.into(),
-                            width: AT_OLDEST_CHANGE.len(),
-                            cursor_col: None,
-                        },
-                        // This isn't really needed, but it's included for the sake of completeness
-                        refresh,
-                    ]));
+                return if at_oldest && diffs.is_empty() {
+                    // We don't need to include 'refresh' because there weren't any diffs
+                    Some(vec![OutputSignal::error(AT_OLDEST_CHANGE, None, false)])
+                } else if let Some(refresh_signal) = refresh {
+                    Some(vec![refresh_signal])
                 } else {
-                    return Some(refresh);
-                }
+                    Some(Vec::new())
+                };
             }
             Redo(n) => {
                 let (diffs, at_newest) = match self.buffer.provider_mut().redo(n) {
@@ -94,26 +79,15 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                     Err(e) => panic!("{}", e),
                 };
 
-                let refresh = self
-                    .buffer
-                    .refresh_diffs(&diffs)
-                    .map(OutputSignal::NeedsRefresh)
-                    .unwrap_or(OutputSignal::Nothing);
+                let refresh = self.buffer.refresh_diffs(&diffs).map(NeedsRefresh);
 
-                if at_newest && diffs.is_empty() {
-                    return Some(OutputSignal::Chain(vec![
-                        OutputSignal::SetBottomBar {
-                            prefix: None,
-                            value: AT_NEWEST_CHANGE.into(),
-                            width: AT_NEWEST_CHANGE.len(),
-                            cursor_col: None,
-                        },
-                        // This isn't really needed, but it's included for the sake of completeness
-                        refresh,
-                    ]));
+                return if at_newest && diffs.is_empty() {
+                    Some(vec![OutputSignal::error(AT_NEWEST_CHANGE, None, false)])
+                } else if let Some(refresh_signal) = refresh {
+                    Some(vec![refresh_signal])
                 } else {
-                    return Some(refresh);
-                }
+                    Some(Vec::new())
+                };
             }
             StartEditBlock => {
                 self.buffer.provider_mut().start_edit_block();
@@ -126,28 +100,20 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
             Delete(kind) => self.buffer.delete(kind),
         };
 
-        Some(
-            refresh
-                .map(OutputSignal::NeedsRefresh)
-                .unwrap_or(OutputSignal::Nothing),
-        )
+        match refresh {
+            Some(kind) => Some(vec![NeedsRefresh(kind)]),
+            None => Some(Vec::new()),
+        }
     }
 
-    fn error(err: mode::Error) -> Option<OutputSignal> {
+    fn error(err: mode::Error) -> Option<Vec<OutputSignal>> {
         use mode::Error::{Failure, IllegalMode, NeedsMore, NoSuchCommand};
+        use OutputSignal::{NoSuchCmd, WaitingForMore};
 
         match err {
-            NeedsMore => Some(OutputSignal::WaitingForMore),
-            NoSuchCommand => Some(OutputSignal::NoSuchCmd),
-            Failure { msg } => {
-                let width = msg.len();
-                Some(OutputSignal::SetBottomBar {
-                    prefix: None,
-                    value: msg.red().to_string(),
-                    width,
-                    cursor_col: None,
-                })
-            }
+            NeedsMore => Some(vec![WaitingForMore]),
+            NoSuchCommand => Some(vec![NoSuchCmd]),
+            Failure { msg } => Some(vec![OutputSignal::error(&msg, None, true)]),
             IllegalMode(_) => None,
         }
     }

@@ -12,7 +12,6 @@ use crate::mode::{normal::Mode as NormalMode, ModeSet};
 use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
 use crate::trie::Trie;
-use crate::utils::Seq;
 
 mod edits;
 mod executor;
@@ -113,7 +112,7 @@ impl super::View for View {
         false
     }
 
-    fn resize(&mut self, size: TermSize) -> OutputSignal {
+    fn resize(&mut self, size: TermSize) -> Vec<OutputSignal> {
         self.buffer_mut().resize(size)
     }
 }
@@ -184,18 +183,17 @@ impl ConcreteView for View {
 
 impl SignalHandler for View {
     #[rustfmt::skip]
-    fn try_handle(&mut self, signal: Signal) -> OutputSignal {
+    fn try_handle(&mut self, signal: Signal) -> Option<Vec<OutputSignal>> {
+        use OutputSignal::{NeedsRefresh, SetBottomBar};
+        use RefreshKind::{BottomText, Cursor};
+
         // A simple function that takes any refreshes for just the cursor and raises them to
         // refresh the BottomText. This is because we want to display the location in the file in
         // the bottom right.
         fn raise_to_bottom_bar(sig: OutputSignal) -> OutputSignal {
-            use OutputSignal::{Chain, NeedsRefresh};
-            use RefreshKind::{BottomText, Cursor};
-
             match sig {
                 NeedsRefresh(Cursor) => NeedsRefresh(BottomText),
-                Chain(v) => Chain(v.into_iter().map(raise_to_bottom_bar).collect()),
-                s => s,
+                _ => sig,
             }
         }
 
@@ -206,34 +204,42 @@ impl SignalHandler for View {
                 // Currently, the only other type we'll allow is "command" mode, where text is
                 // entered via the bottom bar with a colon.
                 if k.code == KeyCode::Char(':') && k.mods == KeyModifiers::NONE {
-                    return OutputSignal::SetBottomBar {
+                    return Some(vec![SetBottomBar {
                         prefix: Some(':'),
                         value: String::new(),
                         width: 0,
                         cursor_col: Some(1), // We set it to 1 because it starts from zero including the prefix
-                    };
+                    }]);
                 }
             }
 
             // Otherwise, we'll just return the signal we got previously
-            let mut outs: Vec<Option<OutputSignal>> = self.handler.handle(k);
-            log::trace!("{}:{}: outs = {:?}", file!(), line!(), outs);
+            let mut outs: Vec<Option<Vec<OutputSignal>>> = self.handler.handle(k);
 
-            if outs.is_empty() { OutputSignal::Nothing }
-            else if outs.last().unwrap().is_none() {
-                // TODO: This is temporary and should be replaced with proper error handling.
-                let last = OutputSignal::SetBottomBar {
-                    prefix: None,
-                    value: "Failed to execute command. Please rewrite this section".red().to_string(),
-                    width: 54,
-                    cursor_col: None,
-                };
+            if outs.is_empty() { Some(Vec::new()) }
+            else {
+                if outs.last().unwrap().is_none() {
+                    // FIXME: This is temporary and should be replaced with proper error handling.
+                    let last = OutputSignal::error(
+                        "Failed to execute one or more commands",
+                        None,
+                        true,
+                    );
 
-                outs.pop();
-                outs.push(Some(last));
-                raise_to_bottom_bar(OutputSignal::Chain(outs.into_iter().map(Option::unwrap).collect()))
-            } else {
-                raise_to_bottom_bar(OutputSignal::Chain(outs.into_iter().map(Option::unwrap).collect()))
+                    // Get rid of the last element
+                    outs.pop();
+                    // Replace it with an error
+                    outs.push(Some(vec![last]));
+                }
+
+                Some(outs.into_iter()
+                    // It's okay to unwrap here because of the guarantees provided by
+                    // `Handler::handle`: If the error type is returned, it will be the last
+                    // element, and the `if` above will be triggered
+                    .map(Option::unwrap)
+                    .flatten()
+                    .map(raise_to_bottom_bar)
+                    .collect())
             }
 
         } else if let Signal::BottomBarKey { prefix: Some(':'), value, key, ..  } = signal {
@@ -247,32 +253,31 @@ impl SignalHandler for View {
             // width is correct
             self.handle_colon_key(value, key)
         } else {
-            OutputSignal::Nothing
+            None
         }
     }
 }
 
 impl View {
-    fn execute_group(&mut self, cmds: &Seq<ColonCmd>) -> OutputSignal {
-        let mut chain = Vec::new();
-
-        for cmd in cmds.iter() {
-            let style = self.handler.cursor_style();
-            chain.push(
+    fn execute_group(&mut self, cmds: &[ColonCmd]) -> Vec<OutputSignal> {
+        cmds.iter()
+            .map(|cmd| {
+                let style = self.handler.cursor_style();
                 self.handler
                     .executor_mut()
                     .execute(cmd.clone(), style)
-                    .unwrap(),
-                // ^^^^^^ TODO: We shouldn't be unwrapping here
-            )
-        }
-
-        OutputSignal::Chain(chain)
+                    .unwrap()
+                //   ^^^^^^ TODO: We shouldn't be unwrapping here
+            })
+            .flatten()
+            .collect()
     }
 
-    fn handle_colon_key(&mut self, cmd: &str, key: KeyEvent) -> OutputSignal {
+    fn handle_colon_key(&mut self, cmd: &str, key: KeyEvent) -> Option<Vec<OutputSignal>> {
+        use OutputSignal::{ClearBottomBar, LeaveBottomBar, NoSuchCmd, SetBottomBar};
+
         if key.mods != KeyModifiers::NONE {
-            return OutputSignal::Nothing;
+            return None;
         }
 
         match key.code {
@@ -280,27 +285,24 @@ impl View {
             // before
             //
             // We won't clear the bottom bar - that can stay there until something else sets it
-            KeyCode::Esc => OutputSignal::LeaveBottomBar,
+            KeyCode::Esc => Some(vec![LeaveBottomBar]),
 
             // Likewise, deleting the colon should exit the bottom bar
             //
             // This is a feature taken directly from Vim
-            KeyCode::Backspace if cmd.is_empty() => OutputSignal::Chain(vec![
-                OutputSignal::LeaveBottomBar,
-                OutputSignal::ClearBottomBar,
-            ]),
+            KeyCode::Backspace if cmd.is_empty() => Some(vec![LeaveBottomBar, ClearBottomBar]),
 
             KeyCode::Backspace => {
                 let len = cmd.len() - 1;
                 let new_cmd = String::from(&cmd[..len]);
 
-                OutputSignal::SetBottomBar {
+                Some(vec![SetBottomBar {
                     prefix: Some(':'),
                     value: new_cmd,
                     width: len,
                     // We add one because the cursor column includes the prefix character
                     cursor_col: Some(len + 1),
-                }
+                }])
             }
 
             // We'll only allow ASCII characters
@@ -311,7 +313,7 @@ impl View {
 
                 let len = new_cmd.len();
 
-                let sig = OutputSignal::SetBottomBar {
+                let sig = SetBottomBar {
                     prefix: Some(':'),
                     value: new_cmd,
                     width: len,
@@ -319,7 +321,7 @@ impl View {
                     cursor_col: Some(len + 1),
                 };
 
-                sig
+                Some(vec![sig])
             }
 
             // We'll attempt to use this command
@@ -329,44 +331,41 @@ impl View {
 
                 // First, we check to see if there's a direct match
                 if let Some(cmds) = cfg.keys.get(&chars) {
-                    self.execute_group(cmds)
-                } else {
-                    let node = cfg.keys.find(&chars);
-                    let no_such_command = OutputSignal::Chain(vec![
-                        OutputSignal::LeaveBottomBar,
-                        OutputSignal::NoSuchCmd,
-                    ]);
+                    return Some(self.execute_group(cmds));
+                }
 
-                    match node {
-                        None => no_such_command,
-                        Some(n) if n.size() == 0 => no_such_command,
-                        Some(n) => match n.try_extract() {
-                            Some(cmds) => self.execute_group(cmds),
+                let node = cfg.keys.find(&chars);
+                let no_such_command = Some(vec![LeaveBottomBar, NoSuchCmd]);
 
-                            // This is an ambiguous case, so maybe we flash the bottom bar?
-                            None => {
-                                const AMBIGUOUS_COMMAND_ERR_MSG: &'static str =
-                                    "Ambiguous command usage";
+                match node {
+                    None => no_such_command,
+                    Some(n) if n.size() == 0 => no_such_command,
+                    Some(n) => match n.try_extract() {
+                        Some(cmds) => Some(self.execute_group(cmds)),
 
-                                OutputSignal::Chain(vec![
-                                    OutputSignal::LeaveBottomBar,
-                                    OutputSignal::SetBottomBar {
-                                        prefix: None,
-                                        value: AMBIGUOUS_COMMAND_ERR_MSG.red().to_string(),
-                                        width: AMBIGUOUS_COMMAND_ERR_MSG.len(),
-                                        cursor_col: None,
-                                    },
-                                ])
-                            }
-                        },
-                    }
+                        // This is an ambiguous case, so maybe we flash the bottom bar?
+                        None => {
+                            const AMBIGUOUS_COMMAND_ERR_MSG: &'static str =
+                                "Ambiguous command usage";
+
+                            Some(vec![
+                                LeaveBottomBar,
+                                SetBottomBar {
+                                    prefix: None,
+                                    value: AMBIGUOUS_COMMAND_ERR_MSG.red().to_string(),
+                                    width: AMBIGUOUS_COMMAND_ERR_MSG.len(),
+                                    cursor_col: None,
+                                },
+                            ])
+                        }
+                    },
                 }
             }
 
             // Todo: traverse history
             KeyCode::Up | KeyCode::Down => todo!(),
 
-            _ => OutputSignal::Nothing,
+            _ => None,
         }
     }
 
@@ -391,14 +390,14 @@ type ColonCmd = mode_handler::Cmd<super::MetaCmd<FileMeta>>;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Builder {
-    keys: Option<Vec<(String, Seq<ColonCmd>)>>,
+    keys: Option<Vec<(String, Vec<ColonCmd>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     struct Config {
-        pub keys: Trie<char, Seq<ColonCmd>> = default_keybindings(),
+        pub keys: Trie<char, Vec<ColonCmd>> = default_keybindings(),
     }
 
     impl ConfigPart {
@@ -427,17 +426,17 @@ impl XFrom<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<char, Seq<ColonCmd>> {
+fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
     use mode_handler::Cmd::Other;
     use super::MetaCmd::{TryClose, Custom};
     use super::ExitKind::{ReqSave, NoSave};
     use FileMeta::Save;
 
     let keys = vec![
-        ("q", One(Other(TryClose(ReqSave)))),
-        ("q!", One(Other(TryClose(NoSave)))),
-        ("w", One(Other(Custom(Save)))),
-        ("wq", Many(vec![Other(Custom(Save)), Other(TryClose(ReqSave))])),
+        ("q", vec![Other(TryClose(ReqSave))]),
+        ("q!", vec![Other(TryClose(NoSave))]),
+        ("w", vec![Other(Custom(Save))]),
+        ("wq", vec![Other(Custom(Save)), Other(TryClose(ReqSave))]),
     ];
 
     Trie::from_iter(keys.into_iter().map(|(key,cmd)| (key.chars().collect(), cmd)))

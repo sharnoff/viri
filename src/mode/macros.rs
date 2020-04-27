@@ -59,7 +59,7 @@ macro_rules! modes {
         }
 
         impl<$param: 'static> $modes<$param> {
-            fn try_handle(&mut self, key: KeyEvent) -> Result<Seq<Cmd<$param>>, Error> {
+            fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<$param>>, Error> {
                 match self { $(Self::$variant(m) => m.try_handle(key),)+ }
             }
 

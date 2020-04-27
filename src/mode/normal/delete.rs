@@ -103,14 +103,14 @@ impl<T> Parser<T> {
 }
 
 impl<T> ParseState for Parser<T> {
-    type Output = Seq<Cmd<T>>;
+    type Output = Vec<Cmd<T>>;
 
     fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output> {
         match self.parsers.add(key) {
             Failed => Failed,
             NeedsMore => NeedsMore,
             Success(priority, SetResult::Success(Some(delete_kind))) => {
-                Success(priority, One(Cmd::Delete(delete_kind)))
+                Success(priority, vec![Cmd::Delete(delete_kind)])
             }
             // FIXME
             Success(_, _) => todo!(),

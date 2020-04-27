@@ -26,7 +26,7 @@ impl<T> Default for Mode<T> {
 impl<T> super::Mode<T> for Mode<T> {
     const NAME: Option<&'static str> = Some("-- INSERT --");
 
-    fn try_handle(&mut self, key: KeyEvent) -> Result<Seq<Cmd<T>>, Error> {
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<T>>, Error> {
         self.key_stack.push(key);
 
         let cfg = Config::global();
@@ -58,7 +58,7 @@ impl<T> super::Mode<T> for Mode<T> {
             if let (KeyCode::Char(c), true) = (key.code, key.mods == KeyModifiers::NONE) {
                 let insert = Cmd::Insert(c.to_string());
                 let shift = Cmd::Cursor(Movement::Right(HorizMove::Const), 1);
-                return Ok(Many(vec![insert, shift]));
+                return Ok(vec![insert, shift]);
             }
         }
 
@@ -77,14 +77,14 @@ impl<T> super::Mode<T> for Mode<T> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Builder {
-    keys: Option<Vec<(Vec<KeyEvent>, Seq<Cmd<Never>>)>>,
+    keys: Option<Vec<(Vec<KeyEvent>, Vec<Cmd<Never>>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     pub struct Config {
-        pub keys: Trie<KeyEvent, Seq<Cmd<Never>>> = default_keybindings(),
+        pub keys: Trie<KeyEvent, Vec<Cmd<Never>>> = default_keybindings(),
     }
 
     impl ConfigPart {
@@ -108,7 +108,7 @@ impl XFrom<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
+fn default_keybindings() -> Trie<KeyEvent, Vec<Cmd<Never>>> {
     use super::CharPredicate::WordEnd;
     use super::Cmd::{Cursor, Delete, ExitMode, Insert, EndEditBlock};
     use super::DeleteKind::ByMovement;
@@ -119,37 +119,37 @@ fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
 
     let keys = vec![
         (vec![KeyEvent::ctrl('w')],
-            One(Delete(ByMovement {
+            vec![Delete(ByMovement {
                 movement: LeftCross(UntilFst(WordEnd)),
                 amount: 1,
                 from_inclusive: false,
                 to_inclusive: true,
-            }))),
+            })]),
         (vec![KeyEvent { code: Esc, mods: Mods::NONE }],
-            Many(vec![
+            vec![
                 EndEditBlock,
                 Cursor(Left(Const), 1),
                 ExitMode
-            ])),
+            ]),
         (vec![KeyEvent { code: Enter, mods: Mods::NONE }],
-            Many(vec![
+            vec![
                 Insert('\n'.to_string()),
                 Cursor(RightCross(Const), 1)
-            ])),
+            ]),
         (vec![KeyEvent { code: Backspace, mods: Mods::NONE }],
-            One(Delete(ByMovement {
+            vec![Delete(ByMovement {
                 movement: LeftCross(Const),
                 amount: 1,
                 from_inclusive: false,
                 to_inclusive: true,
-            }))),
+            })]),
         (vec![KeyEvent { code: Del, mods: Mods::NONE }],
-            One(Delete(ByMovement {
+            vec![Delete(ByMovement {
                 movement: RightCross(Const),
                 amount: 1,
                 from_inclusive: true,
                 to_inclusive: false,
-            }))),
+            })]),
     ];
 
     Trie::from_iter(keys.into_iter())

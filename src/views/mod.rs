@@ -30,6 +30,7 @@ use crate::container;
 use crate::mode;
 use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
+use crossterm::style::Colorize;
 
 //-/////////////////////////////////////////////////////////////////////////-//
 // Header 0: Imports                                                         //
@@ -157,7 +158,7 @@ pub trait View {
     ///
     /// Note that this method *should not* write to the display directly. It is merely to query the
     /// `View` about what changes will be required due to resizing.
-    fn resize(&mut self, size: TermSize) -> OutputSignal;
+    fn resize(&mut self, size: TermSize) -> Vec<OutputSignal>;
 }
 
 /// `View`s that may be concretely instantiated
@@ -191,7 +192,8 @@ pub trait ConstructedView: ConcreteView {
 /// [`Container`]: ../container/struct.Container.html
 /// [`OutputSignal`]: enum.OutputSignal.html
 pub trait SignalHandler {
-    fn try_handle(&mut self, signal: container::Signal) -> OutputSignal;
+    /// Tries to handle an input signal, returning the output signals if handling was possible
+    fn try_handle(&mut self, signal: container::Signal) -> Option<Vec<OutputSignal>>;
 }
 
 /// Distinct from `runtime::Signal` or a `container::Signal`, this communicates between a `View`
@@ -219,7 +221,6 @@ pub enum OutputSignal {
     NoSuchCmd,
     WaitingForMore,
     Nothing,
-    Chain(Vec<Self>),
 }
 
 /// How much of a refresh needs to be done?
@@ -268,8 +269,26 @@ impl OutputSignal {
     pub fn waiting_for_more(&self) -> bool {
         match self {
             Self::WaitingForMore => true,
-            Self::Chain(v) => v.iter().any(Self::waiting_for_more),
             _ => false,
+        }
+    }
+
+    /// Produces an output signal corresponding to an error with the given message
+    ///
+    /// If `format` is true, the message will be made red. Otherwise, the formatting will be left
+    /// as is. `width` should give the displayed width of the message - if not given, it will be
+    /// assumed to be equal to `msg.len()`
+    pub fn error(msg: &str, width: Option<usize>, format: bool) -> OutputSignal {
+        let value = match format {
+            true => String::from(msg).red().to_string(),
+            false => msg.into(),
+        };
+
+        Self::SetBottomBar {
+            prefix: None,
+            value,
+            width: width.unwrap_or_else(|| msg.len()),
+            cursor_col: None,
         }
     }
 }

@@ -1,70 +1,8 @@
 //! Various basic utilites that are used in places throughout the project
+//!
+//! This is more-or-less a miscellaneous collection.
+
 use crate::prelude::*;
-use std::{iter, slice, vec};
-
-/// A convenience type for allowing efficient production of one or many values
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Seq<T> {
-    One(T),
-    Many(Vec<T>),
-}
-
-impl<T, S: XInto<T>> XFrom<Seq<S>> for Seq<T> {
-    fn xfrom(seq: Seq<S>) -> Seq<T> {
-        match seq {
-            One(s) => One(s.xinto()),
-            Many(v) => Many(v.into_iter().map(XInto::xinto).collect()),
-        }
-    }
-}
-
-impl<T> XFrom<Vec<T>> for Seq<T> {
-    fn xfrom(v: Vec<T>) -> Self {
-        Many(v)
-    }
-}
-
-impl<T> Seq<T> {
-    pub fn map<S>(self, f: impl Fn(T) -> S) -> Seq<S> {
-        match self {
-            One(t) => One(f(t)),
-            Many(v) => Many(v.into_iter().map(f).collect()),
-        }
-    }
-
-    pub fn iter(&self) -> SeqIter<&T, slice::Iter<T>> {
-        match self {
-            One(t) => SeqIter::One(iter::once(t)),
-            Many(t) => SeqIter::Many(t.iter()),
-        }
-    }
-
-    pub fn into_iter(self) -> SeqIter<T, vec::IntoIter<T>> {
-        match self {
-            One(t) => SeqIter::One(iter::once(t)),
-            Many(t) => SeqIter::Many(t.into_iter()),
-        }
-    }
-}
-
-pub enum SeqIter<S, I> {
-    One(iter::Once<S>),
-    Many(I),
-}
-
-impl<S, I> Iterator for SeqIter<S, I>
-where
-    I: Iterator<Item = S>,
-{
-    type Item = S;
-
-    fn next(&mut self) -> Option<S> {
-        match self {
-            Self::One(it) => it.next(),
-            Self::Many(it) => it.next(),
-        }
-    }
-}
 
 /// A generic fallible type
 pub trait Monad {
@@ -125,6 +63,12 @@ impl<T, S: XFrom<T>> XInto<S> for T {
     }
 }
 
+impl<T: XInto<S>, S> XFrom<Vec<T>> for Vec<S> {
+    fn xfrom(vec: Vec<T>) -> Self {
+        vec.into_iter().map(XInto::xinto).collect()
+    }
+}
+
 /// A custom "never" type that supports (de)serialization
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum Never {}
@@ -133,4 +77,15 @@ impl<T> XFrom<Never> for T {
     fn xfrom(_never: Never) -> T {
         unreachable!()
     }
+}
+
+/// A large array of spaces, used in various places
+///
+/// `0x20` is the byte value for 'space', so we'll just store a whole bunch of them.
+const BLANK: [u8; BLANK_SIZE] = [0x20; BLANK_SIZE];
+const BLANK_SIZE: usize = u16::MAX as usize;
+
+/// Provides a string consisting exactly of `length` spaces.
+pub fn blank_str(length: u16) -> &'static str {
+    unsafe { &std::str::from_utf8_unchecked(&BLANK)[..length as usize] }
 }

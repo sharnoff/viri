@@ -18,7 +18,7 @@ use combinators::{numerical, set, single, wrap};
 /// The type responsible for handling inputs while in "normal" mode
 pub struct Mode<T> {
     /// The ongoing set of parsers that might be able to consume the next key input
-    parsers: Option<combinators::Set<Seq<Cmd<T>>>>,
+    parsers: Option<combinators::Set<Vec<Cmd<T>>>>,
 }
 
 pub trait ParseState {
@@ -51,17 +51,17 @@ impl<T> Default for Mode<T> {
 impl<T: 'static> Mode<T> {
     fn reset_parsers(&mut self) {
         let movement = wrap(numerical(movement::Parser::new()), |(n, m)| {
-            One(Cmd::Cursor(m, n.unwrap_or(1)))
+            vec![Cmd::Cursor(m, n.unwrap_or(1))]
         });
 
         let undo = wrap(
             numerical(single(KeyEvent::none('u'), Priority::Builtin)),
-            |(n, _)| One(Cmd::Undo(n.unwrap_or(1))),
+            |(n, _)| vec![Cmd::Undo(n.unwrap_or(1))],
         );
 
         let redo = wrap(
             numerical(single(KeyEvent::ctrl('r'), Priority::Builtin)),
-            |(n, _)| One(Cmd::Redo(n.unwrap_or(1))),
+            |(n, _)| vec![Cmd::Redo(n.unwrap_or(1))],
         );
 
         self.parsers = Some(set(vec![
@@ -77,7 +77,7 @@ impl<T: 'static> Mode<T> {
 impl<T: 'static> super::Mode<T> for Mode<T> {
     const NAME: Option<&'static str> = Some("-- NORMAL --");
 
-    fn try_handle(&mut self, key: KeyEvent) -> Result<Seq<Cmd<T>>, Error> {
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<T>>, Error> {
         use combinators::SetResult::{FinishConflict, PartialConflict, Success};
 
         if self.parsers.is_none() {
@@ -158,7 +158,7 @@ impl<T> Misc<T> {
 }
 
 impl<T> ParseState for Misc<T> {
-    type Output = Seq<Cmd<T>>;
+    type Output = Vec<Cmd<T>>;
 
     fn add(&mut self, key: KeyEvent) -> ParseResult<Self::Output> {
         self.stack.push(key);
@@ -199,14 +199,14 @@ impl<T> ParseState for Misc<T> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Builder {
-    keys: Option<Vec<(Vec<KeyEvent>, Seq<Cmd<Never>>)>>,
+    keys: Option<Vec<(Vec<KeyEvent>, Vec<Cmd<Never>>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
     pub struct Config {
-        pub keys: Trie<KeyEvent, Seq<Cmd<Never>>> = default_keybindings(),
+        pub keys: Trie<KeyEvent, Vec<Cmd<Never>>> = default_keybindings(),
     }
 
     impl ConfigPart {
@@ -230,7 +230,7 @@ impl XFrom<Builder> for Config {
 }
 
 #[rustfmt::skip]
-fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
+fn default_keybindings() -> Trie<KeyEvent, Vec<Cmd<Never>>> {
     use super::Cmd::{EnterMode, Cursor, ExitMode, Insert, StartEditBlock};
     use super::HorizMove::{Const, LineBoundary};
     use super::ModeKind;
@@ -241,43 +241,43 @@ fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
         // (mostly) meaningless for now - this will be available once colon "normal" mode will be
         // allowed to switch back to colon "insert" mode
         (vec![KeyEvent { code: Esc, mods: Mods::NONE }],
-            One(ExitMode),
+            vec![ExitMode],
         ),
 
         // Switching to insert mode
         (vec![KeyEvent::none('i')],
-            Many(vec![
+            vec![
                 StartEditBlock,
                 EnterMode(ModeKind::Insert),
-            ])),
+            ]),
         (vec![KeyEvent::none('a')],
-            Many(vec![
+            vec![
                 StartEditBlock,
                 EnterMode(ModeKind::Insert),
                 Cursor(Right(Const), 1)
-            ])),
+            ]),
         (vec![KeyEvent::none('A')],
-            Many(vec![
+            vec![
                 StartEditBlock,
                 EnterMode(ModeKind::Insert),
                 Cursor(Right(LineBoundary), 1),
-            ])),
+            ]),
 
         (vec![KeyEvent::none('o')],
-            Many(vec![
+            vec![
                 StartEditBlock,
                 EnterMode(ModeKind::Insert),
                 Cursor(Right(LineBoundary), 1),
                 Insert("\n".into()),
                 Cursor(RightCross(Const), 1),
-            ])),
+            ]),
         (vec![KeyEvent::none('O')],
-            Many(vec![
+            vec![
                 StartEditBlock,
                 EnterMode(ModeKind::Insert),
                 Cursor(Left(LineBoundary), 1),
                 Insert("\n".into()),
-            ])),
+            ]),
     ];
 
     Trie::from_iter(keys.into_iter())

@@ -6,8 +6,8 @@ use std::ops::Range;
 
 use crossterm::{cursor, style, ExecutableCommand, QueueableCommand};
 
-// use crate::prelude::*;
 use crate::runtime::{TermCoord, TermSize};
+use crate::utils;
 
 /// A handler for writing to the screen without requiring positional knowledge
 #[derive(Debug)]
@@ -139,17 +139,7 @@ impl<'a> Painter<'a> {
         }
 
         // Actually print the lines now
-
-        let blank = unsafe {
-            // 0x20 is the byte code for 'space'.
-            // We'll just store whatever size we need here. Because the terminal size is stored in
-            // a u16, we can get away with just keeping all of the blank space we want in there.
-            const BLANK_SIZE: usize = std::u16::MAX as usize;
-            const BLANK: [u8; BLANK_SIZE] = [0x20; BLANK_SIZE];
-
-            std::str::from_utf8_unchecked(&BLANK)
-        };
-
+        //
         // We'll use this iterator to keep track of things. If there's any left over after we're
         // done, we'll use this to clear the rest of the screen (if it needs it)
         let mut line_indexes = window.rows.start as usize..window.rows.end as usize;
@@ -169,13 +159,17 @@ impl<'a> Painter<'a> {
             let right_pad = (window.cols.end - segment.end) as usize;
 
             if left_pad > 0 {
-                stdout.queue(style::Print(&blank[0..left_pad])).unwrap();
+                stdout
+                    .queue(style::Print(utils::blank_str(left_pad as u16)))
+                    .unwrap();
             }
 
             stdout.queue(style::Print(line)).unwrap();
 
             if right_pad > 0 {
-                stdout.queue(style::Print(&blank[0..right_pad])).unwrap();
+                stdout
+                    .queue(style::Print(utils::blank_str(right_pad as u16)))
+                    .unwrap();
             }
         }
 
@@ -186,7 +180,7 @@ impl<'a> Painter<'a> {
                 .queue(cursor::MoveTo(window.cols.start, window.rows.start + i))
                 .unwrap();
             stdout
-                .queue(style::Print(&blank[0..window.cols.len()]))
+                .queue(style::Print(utils::blank_str(window.cols.len() as u16)))
                 .unwrap();
         }
 

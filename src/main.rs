@@ -25,11 +25,7 @@ extern crate uuid;
 /// A crate-wide prelude for ensuring that certain items are correctly overriden
 mod prelude {
     pub use crate::config::{Build, ConfigPart, Configurable};
-    pub use crate::utils::{
-        Monad, Never,
-        Seq::{self, Many, One},
-        XFrom, XInto,
-    };
+    pub use crate::utils::{Monad, Never, XFrom, XInto};
     pub use serde::{Deserialize, Serialize};
     pub use std::ops::{Deref, DerefMut};
 }
