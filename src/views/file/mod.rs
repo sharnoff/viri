@@ -14,6 +14,7 @@ use crate::runtime::{Painter, TermSize};
 use crate::trie::Trie;
 use crate::utils::Seq;
 
+mod edits;
 mod executor;
 mod handle;
 

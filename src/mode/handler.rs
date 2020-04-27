@@ -36,6 +36,19 @@ pub enum Cmd<T> {
     /// A deletion
     Delete(DeleteKind),
 
+    /// A request to undo the last 'n' changes
+    Undo(usize),
+
+    /// A request to redo the 'n' most recently undone changes
+    Redo(usize),
+
+    /// A request to start a new "edit block" - a set of applied diffs that are treated as a single
+    /// contiguous edit.
+    StartEditBlock,
+
+    /// A request to end the edit block
+    EndEditBlock,
+
     /// Any other command that might be provided
     ///
     /// This is notably used in the case of [`views::Cmd`], which defines a type alias for
@@ -51,6 +64,16 @@ pub trait Executor<T> {
     fn execute(&mut self, cmd: Cmd<T>, cursor_style: CursorStyle) -> Self::Output;
 
     fn error(err: super::Error) -> Self::Output;
+
+    /// A method that will be run immediately before the execution of any commands
+    ///
+    /// The default implementation does nothing.
+    fn pre(&mut self) {}
+
+    /// A method that will be run immediately following the execution of any commands
+    ///
+    /// The default implementation does nothing.
+    fn post(&mut self) {}
 }
 
 impl<Meta: 'static, E: Executor<Meta>> Handler<E, Meta> {
@@ -74,7 +97,10 @@ impl<Meta: 'static, E: Executor<Meta>> Handler<E, Meta> {
 
     /// Handles the given key event, producing output specified by the `Executor`
     pub fn handle(&mut self, key: KeyEvent) -> Vec<E::Output> {
-        use super::Cmd::{ChangeMode, Cursor, Delete, EnterMode, ExitMode, Insert, Other, Scroll};
+        use super::Cmd::{
+            ChangeMode, Cursor, Delete, EndEditBlock, EnterMode, ExitMode, Insert, Other, Redo,
+            Scroll, StartEditBlock, Undo,
+        };
 
         let cmds = match self.mode_stack.last_mut().unwrap().try_handle(key) {
             Ok(c) => c,
@@ -82,6 +108,7 @@ impl<Meta: 'static, E: Executor<Meta>> Handler<E, Meta> {
         };
 
         let mut outs = Vec::new();
+        self.executor.pre();
 
         for cmd in cmds.into_iter() {
             let cmd = match cmd {
@@ -89,6 +116,10 @@ impl<Meta: 'static, E: Executor<Meta>> Handler<E, Meta> {
                 Scroll(d, n) => Cmd::Scroll(d, n),
                 Insert(s) => Cmd::Insert(s),
                 Delete(kind) => Cmd::Delete(kind),
+                Undo(n) => Cmd::Undo(n),
+                Redo(n) => Cmd::Redo(n),
+                StartEditBlock => Cmd::StartEditBlock,
+                EndEditBlock => Cmd::EndEditBlock,
                 Other(t) => Cmd::Other(t),
                 ExitMode => {
                     if self.mode_stack.len() > 1 {
@@ -124,10 +155,12 @@ impl<Meta: 'static, E: Executor<Meta>> Handler<E, Meta> {
 
             outs.push(res);
             if is_err {
+                self.executor.post();
                 return outs;
             }
         }
 
+        self.executor.post();
         return outs;
     }
 

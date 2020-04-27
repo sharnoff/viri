@@ -13,7 +13,7 @@ pub mod combinators;
 pub mod delete;
 pub mod movement;
 
-use combinators::{numerical, set, wrap};
+use combinators::{numerical, set, single, wrap};
 
 /// The type responsible for handling inputs while in "normal" mode
 pub struct Mode<T> {
@@ -54,8 +54,20 @@ impl<T: 'static> Mode<T> {
             One(Cmd::Cursor(m, n.unwrap_or(1)))
         });
 
+        let undo = wrap(
+            numerical(single(KeyEvent::none('u'), Priority::Builtin)),
+            |(n, _)| One(Cmd::Undo(n.unwrap_or(1))),
+        );
+
+        let redo = wrap(
+            numerical(single(KeyEvent::ctrl('r'), Priority::Builtin)),
+            |(n, _)| One(Cmd::Redo(n.unwrap_or(1))),
+        );
+
         self.parsers = Some(set(vec![
             Box::new(movement),
+            Box::new(undo),
+            Box::new(redo),
             Box::new(Misc::new()),
             Box::new(delete::Parser::new()),
         ]));
@@ -219,7 +231,7 @@ impl XFrom<Builder> for Config {
 
 #[rustfmt::skip]
 fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
-    use super::Cmd::{EnterMode, Cursor, ExitMode, Insert};
+    use super::Cmd::{EnterMode, Cursor, ExitMode, Insert, StartEditBlock};
     use super::HorizMove::{Const, LineBoundary};
     use super::ModeKind;
     use super::Movement::{Right, RightCross, Left};
@@ -234,20 +246,26 @@ fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
 
         // Switching to insert mode
         (vec![KeyEvent::none('i')],
-            One(EnterMode(ModeKind::Insert))),
+            Many(vec![
+                StartEditBlock,
+                EnterMode(ModeKind::Insert),
+            ])),
         (vec![KeyEvent::none('a')],
             Many(vec![
+                StartEditBlock,
                 EnterMode(ModeKind::Insert),
                 Cursor(Right(Const), 1)
             ])),
         (vec![KeyEvent::none('A')],
             Many(vec![
+                StartEditBlock,
                 EnterMode(ModeKind::Insert),
                 Cursor(Right(LineBoundary), 1),
             ])),
 
         (vec![KeyEvent::none('o')],
             Many(vec![
+                StartEditBlock,
                 EnterMode(ModeKind::Insert),
                 Cursor(Right(LineBoundary), 1),
                 Insert("\n".into()),
@@ -255,6 +273,7 @@ fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
             ])),
         (vec![KeyEvent::none('O')],
             Many(vec![
+                StartEditBlock,
                 EnterMode(ModeKind::Insert),
                 Cursor(Left(LineBoundary), 1),
                 Insert("\n".into()),

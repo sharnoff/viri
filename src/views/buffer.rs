@@ -12,7 +12,7 @@ use crate::config::prelude::*;
 use crate::mode::{CharPredicate, CursorStyle, DeleteKind, Direction, Movement};
 use crate::prelude::*;
 use crate::runtime::{Painter, TermCoord, TermSize};
-use crate::text::{ContentProvider, Line};
+use crate::text::{ContentProvider, Diff, Line};
 
 use super::{OutputSignal, RefreshKind, View};
 
@@ -177,6 +177,63 @@ impl<P: ContentProvider> ViewBuffer<P> {
     pub fn num_lines(&self) -> usize {
         let content = self.provider.content();
         content.num_lines()
+    }
+
+    /// Returns whether the buffer currently allows cursors to move one index beyond the end of the
+    /// line.
+    ///
+    /// For more information, see the `allow_cursor_after` field.
+    pub fn allows_after(&self) -> bool {
+        self.allow_cursor_after
+    }
+
+    /// Shifts all relevant context by the diffs, in order. Currently this will simply move the
+    /// cursor according to the diffs. A return of `None` indicates that there is no refreshing
+    /// necessary.
+    ///
+    /// This function *must* be called after applying a set of diffs to the content, and not
+    /// before. If this is not upheld, this (or other functions) will panic.
+    ///
+    /// Planned improvements: This function shouldn't move the view if the
+    pub fn refresh_diffs(&mut self, diffs: &[Diff]) -> Option<RefreshKind> {
+        if diffs.is_empty() {
+            return None;
+        }
+
+        // Keeping `content` in scope for the majority of the function ensures that it'll be
+        // locked.
+        let content = self.provider.content();
+
+        // Shift the cursor index by the amount given by all of the diffs
+        let mut cursor_byte_idx = content.byte_index(self.current_row(), self.current_col());
+        for d in diffs {
+            cursor_byte_idx = d.shift_idx(cursor_byte_idx);
+        }
+
+        // Generate new cursor index. We unwrap here because the diffs should already be applied to
+        // the content. If they aren't this is a hard error.
+        let (new_row, new_char) = content.line_pair_from_byte(cursor_byte_idx);
+
+        let line = content.line(new_row);
+        let mut new_col = line.width_idx_from_char(new_char);
+
+        if new_col != 0 && new_col == line.width() && !self.allow_cursor_after {
+            new_col -= 1;
+        }
+
+        let new_col = content.line(new_row).width_idx_from_char(new_char);
+        drop(line);
+        drop(content);
+
+        self.virtual_col = new_col;
+        self.move_cursor_row_unchecked(new_row);
+        self.try_move_virtual_cursor();
+
+        // Currently, we aren't tracking where the actually occur, so we'll just do a full refresh.
+        // In the future, we could do smart things like choosing to not change the display if the
+        // diff doesn't affect what's on-screen
+        self.needs_refresh = self.needs_refresh.max(Some(RefreshKind::Full));
+        Some(RefreshKind::Full)
     }
 
     /// Moves the cursor by the given movement, repeating `amount` times
@@ -417,14 +474,6 @@ impl<P: ContentProvider> ViewBuffer<P> {
         } else {
             None
         }
-    }
-
-    /// Returns whether the buffer currently allows cursors to move one index beyond the end of the
-    /// line.
-    ///
-    /// For more information, see the `allow_cursor_after` field.
-    pub fn allows_after(&self) -> bool {
-        self.allow_cursor_after
     }
 }
 

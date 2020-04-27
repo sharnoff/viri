@@ -61,6 +61,19 @@ pub enum Cmd<T> {
     /// A deletion
     Delete(DeleteKind),
 
+    /// A request to undo the last 'n' changes
+    Undo(usize),
+
+    /// A request to redo the 'n' most recently undone changes
+    Redo(usize),
+
+    /// A request to start a new "edit block" - a set of applied diffs that are treated as a single
+    /// contiguous edit.
+    StartEditBlock,
+
+    /// A request to end the edit block
+    EndEditBlock,
+
     /// A request to exit the current mode, returning to whatever the previous mode was
     ExitMode,
 
@@ -86,16 +99,20 @@ pub enum Cmd<T> {
 impl<S: XInto<T>, T> XFrom<Cmd<S>> for Cmd<T> {
     #[rustfmt::skip]
     fn xfrom(cmd: Cmd<S>) -> Self {
-        use Cmd::{ChangeMode, Cursor, Delete, EnterMode, ExitMode, Insert, Other, Scroll};
+        use Cmd::{ChangeMode, Cursor, Delete, EnterMode, ExitMode, Insert, Other, Scroll, Undo, Redo, StartEditBlock, EndEditBlock};
 
         match cmd {
             Cursor(m, n) => Cursor(m, n),
             Scroll(d, n) => Scroll(d, n),
             Insert(s) => Insert(s),
             Delete(kind) => Delete(kind),
+            StartEditBlock => StartEditBlock,
+            EndEditBlock => EndEditBlock,
             ExitMode => ExitMode,
             EnterMode(kind) => EnterMode(kind),
             ChangeMode(kind) => ChangeMode(kind),
+            Undo(n) => Undo(n),
+            Redo(n) => Redo(n),
             Other(s) => Other(s.xinto()),
         }
     }

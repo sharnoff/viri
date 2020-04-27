@@ -110,7 +110,7 @@ impl XFrom<Builder> for Config {
 #[rustfmt::skip]
 fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
     use super::CharPredicate::WordEnd;
-    use super::Cmd::{Cursor, Delete, ExitMode, Insert};
+    use super::Cmd::{Cursor, Delete, ExitMode, Insert, EndEditBlock};
     use super::DeleteKind::ByMovement;
     use super::HorizMove::{Const, UntilFst};
     use super::Movement::{Left, LeftCross, RightCross};
@@ -127,6 +127,7 @@ fn default_keybindings() -> Trie<KeyEvent, Seq<Cmd<Never>>> {
             }))),
         (vec![KeyEvent { code: Esc, mods: Mods::NONE }],
             Many(vec![
+                EndEditBlock,
                 Cursor(Left(Const), 1),
                 ExitMode
             ])),

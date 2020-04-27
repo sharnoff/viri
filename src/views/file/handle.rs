@@ -21,17 +21,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use super::edits::{EditOwner, Edits};
 use crate::lock::{ArcLock, ReadGuard, RwLock, WriteGuard};
-// use crate::prelude::*;
-use crate::text::diff;
-use crate::text::{ContentProvider, Diff, Lines, ReprKind};
-
+use crate::text::{diff, ContentProvider, Diff, Lines, ReprKind};
 use lazy_static::lazy_static;
 
 lazy_static! {
     /// A global registry to store all of the files that have been opened during this session
     ///
-    /// The files are keyed by their absolute, canonicalized paths (if available)
+    /// The files are keyed by a `Locator`, which is typically the absolute, canonicalized path of
+    /// the file
     static ref REGISTRY: RwLock<HashMap<Locator, ArcLock<File>>> = RwLock::new(HashMap::new());
 }
 
@@ -46,8 +45,6 @@ static NEXT_LOCAL_ID: AtomicU64 = AtomicU64::new(0);
 /// file management can be limited to this module.
 ///
 /// [`ArcLock<File>`]: struct.File.html
-// TODO: We'll need to keep track of which diffs have been seen by the handle yet and which
-// haven't.
 #[derive(Debug)]
 pub struct Handle {
     /// The actual file
@@ -58,6 +55,16 @@ pub struct Handle {
 
     /// A unique identifier to track changes by
     id: HandleId,
+
+    /// The id of the most recent diff applied at the time of the handle's last interaction with the
+    /// file
+    ///
+    /// Please note that this value has nothing to do with the current set of applied edits; this
+    /// is only to track the raw set of changes to the content of the file between calls to
+    /// [`refresh`].
+    ///
+    /// [`refresh`]: #method.refresh
+    last_diff_id: DiffId,
 }
 
 /// An individual, cached file and its content.
@@ -91,17 +98,21 @@ pub struct File {
     /// True whenever the content has changed without being written to the file system
     unsaved: bool,
 
+    /// The set of edits that have been made to the file
+    edits: Edits,
+
     /// A unique identifier to track diffs on this file
     ///
-    /// Note that this is distinct from the number of diffs, as that may be
-    next_diff_id: u64,
+    /// Note that this is distinct from the number of currently-applied diffs, as that value may be
+    /// manipulated by undoing and redoing, whereas the Id is guaranteed to be increasing.
+    last_diff_id: DiffId,
 
-    /// All of the currently applied diffs to the original file with the ID of the handle that made
-    /// the change
+    /// The complete list of the diffs that have been applied to the file
     ///
-    /// A handle id of `None` corresponds to an external change to the file (e.g. running a
-    /// formatter).
-    diffs: Vec<(Diff, Option<HandleId>)>,
+    /// This records every single change made to the file, including undoing/redoing diffs. This is
+    /// notably distinct from the set of applied diffs, which is explicitly manipulated to provide
+    /// undoing.
+    diff_history: Vec<(DiffId, Diff, Option<HandleId>)>,
 
     /// The last time the contents of the file was written to the disc
     ///
@@ -148,6 +159,14 @@ enum Locator {
 /// `LocalId`s are created via the [`gen_local_id`] function.
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub struct LocalId(u64);
+
+/// Represents a unique identifier for a `Diff` applied to the file
+///
+/// These are generated with the [`get_inc`] method, which copies the value and increments it.
+///
+/// [`get_inc`]: #method.inc
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DiffId(u64);
 
 /// Provides a way of immutably borrowing the file's content
 ///
@@ -229,10 +248,14 @@ impl Handle {
         let locator = Locator::Local(id);
         let handle_id = gen_handle_id();
 
-        if let Some(arc_handle) = REGISTRY.read().get(&locator) {
+        if let Some(file_ref) = REGISTRY.read().get(&locator) {
+            let file = file_ref.clone();
+            let last_diff_id = file.read().last_diff_id;
+
             return Handle {
-                file: arc_handle.clone(),
+                file,
                 id: handle_id,
+                last_diff_id,
             };
         }
 
@@ -248,11 +271,13 @@ impl Handle {
                 content: Lines::empty(TABSTOP, REPR_KIND),
                 n_handles: 1,
                 unsaved: false,
-                next_diff_id: 0,
-                diffs: Vec::new(),
+                edits: Edits::new(),
+                last_diff_id: DiffId(0),
+                diff_history: Vec::new(),
                 last_write: SystemTime::now(),
             }),
             id: handle_id,
+            last_diff_id: DiffId(0),
         }
     }
 
@@ -264,26 +289,33 @@ impl Handle {
         let id = gen_handle_id();
         let locator = Locator::Path(path.clone());
 
-        if let Some(arc_handle) = REGISTRY.read().get(&locator) {
+        if let Some(file_ref) = REGISTRY.read().get(&locator) {
+            let file = file_ref.clone();
+            let last_diff_id = file.read().last_diff_id;
+
             return Ok(Handle {
-                file: arc_handle.clone(),
+                file,
                 id,
+                last_diff_id,
             });
         }
 
         let mut file = File::open(path)?;
         file.n_handles = 1;
+        let last_diff_id = file.last_diff_id;
 
         let handle = Handle {
             file: ArcLock::new(file),
             id,
+            last_diff_id,
         };
 
         REGISTRY.write().insert(locator, handle.file.clone());
         Ok(handle)
     }
 
-    /// Returns whether the underlying file currently has unsaved changes
+    /// Returns whether the underlying file currently has changes that have not been synced with
+    /// the filesystem
     pub fn unsaved(&self) -> bool {
         let guard = self.file.read();
         guard.unsaved
@@ -303,6 +335,84 @@ impl Handle {
         let mut guard = self.file.write();
         guard.write()
     }
+
+    /// Attempts to undo the last 'n' changes
+    ///
+    /// More information on undoing is provided in the sibling module [edits]. This function will
+    /// produce an additional return of `false` when it is unable to undo *all* of the requested
+    /// changes. Note that there may still be changes that were undone.
+    ///
+    /// [edits]: ../edits/index.html
+    pub fn undo(&mut self, n: usize) -> Result<(Vec<Diff>, bool), diff::Error> {
+        let mut file = self.file.write();
+
+        let mut ret_diffs = Vec::new();
+        for _ in 0..n {
+            let diffs = match file.edits.get_undo() {
+                Some(diffs) => diffs,
+                None => return Ok((ret_diffs, true)),
+            };
+
+            ret_diffs.extend_from_slice(&diffs);
+
+            // Attempt to apply the diffs. If any one of these fails, there's a bigger issue that
+            // will need to be addressed. There isn't really a good solution here.
+            for diff in diffs.into_iter() {
+                file.content.apply_diff(diff.clone())?;
+                let id = file.last_diff_id.get_inc();
+                file.diff_history.push((id, diff, Some(self.id)));
+            }
+
+            // We'll unwrap just to validate it
+            file.edits.commit_undo().unwrap();
+        }
+
+        Ok((ret_diffs, false))
+    }
+
+    /// Attempts to redo the 'n' most recently undone changes
+    ///
+    /// More information on redoing is provided in the sibling module [edits]. This function's
+    /// signature is the same as [`undo`]; the semantics implied by the returned values are the
+    /// same.
+    ///
+    /// [edits]: ../edits/index.html
+    /// [`undo`]: #method.undo
+    pub fn redo(&mut self, n: usize) -> Result<(Vec<Diff>, bool), diff::Error> {
+        let mut file = self.file.write();
+
+        let mut ret_diffs = Vec::new();
+        for _ in 0..n {
+            let diffs = match file.edits.get_redo() {
+                Some(diffs) => diffs,
+                None => return Ok((ret_diffs, true)),
+            };
+
+            ret_diffs.extend_from_slice(&diffs);
+            let diffs = diffs.iter().cloned().collect::<Vec<_>>();
+
+            // Attempt to apply the diffs. If any one of these fails, there's a bigger issue that
+            // will need to be addressed. There isn't really a good solution here.
+            for diff in diffs.into_iter() {
+                file.content.apply_diff(diff.clone())?;
+                let id = file.last_diff_id.get_inc();
+                file.diff_history.push((id, diff, Some(self.id)));
+            }
+
+            // We'll unwrap just to validate it
+            file.edits.commit_redo().unwrap();
+        }
+
+        Ok((ret_diffs, false))
+    }
+
+    pub fn start_edit_block(&mut self) {
+        self.file.write().edits.start_edit_block()
+    }
+
+    pub fn end_edit_block(&mut self) {
+        self.file.write().edits.end_edit_block()
+    }
 }
 
 impl File {
@@ -320,8 +430,9 @@ impl File {
             content: Lines::from_arc(Arc::new(content), TABSTOP, REPR_KIND),
             n_handles: 0,
             unsaved: false,
-            next_diff_id: 0,
-            diffs: Vec::new(),
+            edits: Edits::new(),
+            last_diff_id: DiffId(0),
+            diff_history: Vec::new(),
             last_write: SystemTime::now(),
             //          ^^^^^^^^^^^^^^^^^ This probably isn't the *correct* value here. What we
             //          actually want is more like what we do in `fs_refresh`
@@ -339,6 +450,18 @@ impl File {
         f.flush()?;
         self.unsaved = false;
         Ok(())
+    }
+
+    fn start_edit_block(&mut self) {
+        todo!()
+    }
+
+    fn end_edit_block(&mut self) {
+        todo!()
+    }
+
+    fn make_edit(&mut self, diff: Diff) -> Result<(), diff::Error> {
+        todo!()
     }
 }
 
@@ -381,21 +504,47 @@ impl ContentProvider for Handle {
         }
     }
 
+    /// Basic diff application. Each diff given is treated as a single edit
     fn apply_diff(&mut self, diff: Diff) -> Result<(), diff::Error> {
         let mut file = self.file.write();
         let res = file.content.apply_diff(diff.clone());
         if res.is_ok() {
-            log::trace!("setting unsaved");
             file.unsaved = true;
-            file.diffs.push((diff, Some(self.id)));
+            file.edits
+                .make_edit(diff.clone(), EditOwner::Local(self.id));
+            let diff_id = file.last_diff_id.get_inc();
+            file.diff_history.push((diff_id, diff, Some(self.id)));
         }
         res
     }
 
+    /// Refreshes the handle, returning all of the diffs that have been applied since the last
+    /// interaction with that particular handle.
     fn refresh(&mut self) -> io::Result<Vec<Diff>> {
         todo!()
     }
 }
+
+impl DiffId {
+    /// Increments the value, and returns the new value
+    ///
+    /// This is intended to be used as the primary way to produce new `DiffId`s. If the number of
+    /// `Id`s overflows, this function will panic (this will likely never occur).
+    fn get_inc(&mut self) -> Self {
+        let DiffId(current) = self;
+        let new = match current.checked_add(1) {
+            Some(new) => DiffId(new),
+            None => panic!("DiffId overflow!"),
+        };
+
+        *self = new;
+        new
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Boilerplate trait implementations                                          //
+////////////////////////////////////////////////////////////////////////////////
 
 impl Drop for Handle {
     fn drop(&mut self) {

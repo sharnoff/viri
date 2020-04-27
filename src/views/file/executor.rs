@@ -4,6 +4,7 @@ use super::handle::Handle;
 use super::FileMeta;
 use crate::mode::handler::{Cmd, Executor};
 use crate::mode::{self, CursorStyle};
+use crate::text::ContentProvider;
 use crate::views::buffer::ViewBuffer;
 use crate::views::{ExitKind, MetaCmd, OutputSignal};
 use crossterm::style::Colorize;
@@ -17,7 +18,9 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
     type Output = Option<OutputSignal>;
 
     fn execute(&mut self, cmd: Cmd<MetaCmd<FileMeta>>, style: CursorStyle) -> Option<OutputSignal> {
-        use Cmd::{Cursor, Delete, Insert, Other, Scroll};
+        use Cmd::{
+            Cursor, Delete, EndEditBlock, Insert, Other, Redo, Scroll, StartEditBlock, Undo,
+        };
         use ExitKind::ReqSave;
         use FileMeta::Save;
         use MetaCmd::{Custom, TryClose};
@@ -54,10 +57,74 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
             Cursor(m, n) => self.buffer.move_cursor(m, n),
             Scroll(d, n) => self.buffer.scroll(d, n),
             Insert(s) => self.buffer.insert(s.as_ref()),
+            Undo(n) => {
+                let (diffs, at_oldest) = match self.buffer.provider_mut().undo(n) {
+                    Ok(diffs) => diffs,
+                    // TODO: There should be better error handling here
+                    Err(e) => panic!("{}", e),
+                };
+
+                let refresh = self
+                    .buffer
+                    .refresh_diffs(&diffs)
+                    .map(OutputSignal::NeedsRefresh)
+                    .unwrap_or(OutputSignal::Nothing);
+
+                if at_oldest && diffs.is_empty() {
+                    const AT_OLDEST_CHANGE: &'static str = "Already at oldest change";
+                    return Some(OutputSignal::Chain(vec![
+                        OutputSignal::SetBottomBar {
+                            prefix: None,
+                            value: AT_OLDEST_CHANGE.into(),
+                            width: AT_OLDEST_CHANGE.len(),
+                            cursor_col: None,
+                        },
+                        // This isn't really needed, but it's included for the sake of completeness
+                        refresh,
+                    ]));
+                } else {
+                    return Some(refresh);
+                }
+            }
+            Redo(n) => {
+                let (diffs, at_newest) = match self.buffer.provider_mut().redo(n) {
+                    Ok(diffs) => diffs,
+                    // TODO: There should be better error handling here
+                    Err(e) => panic!("{}", e),
+                };
+
+                let refresh = self
+                    .buffer
+                    .refresh_diffs(&diffs)
+                    .map(OutputSignal::NeedsRefresh)
+                    .unwrap_or(OutputSignal::Nothing);
+
+                if at_newest && diffs.is_empty() {
+                    const AT_NEWEST_CHANGE: &'static str = "Already at newest change";
+                    return Some(OutputSignal::Chain(vec![
+                        OutputSignal::SetBottomBar {
+                            prefix: None,
+                            value: AT_NEWEST_CHANGE.into(),
+                            width: AT_NEWEST_CHANGE.len(),
+                            cursor_col: None,
+                        },
+                        // This isn't really needed, but it's included for the sake of completeness
+                        refresh,
+                    ]));
+                } else {
+                    return Some(refresh);
+                }
+            }
+            StartEditBlock => {
+                self.buffer.provider_mut().start_edit_block();
+                None
+            }
+            EndEditBlock => {
+                self.buffer.provider_mut().end_edit_block();
+                None
+            }
             Delete(kind) => self.buffer.delete(kind),
         };
-
-        log::trace!("{}:{}: refresh = {:?}", file!(), line!(), refresh);
 
         Some(
             refresh
@@ -83,6 +150,17 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
             }
             IllegalMode(_) => None,
         }
+    }
+
+    fn pre(&mut self) {
+        // We'll lock the file so that all of the changes happen atomically
+        // TODO: We'll also need to `refresh` here.
+        self.buffer.provider_mut().lock()
+    }
+
+    fn post(&mut self) {
+        // Unlock the file
+        self.buffer.provider_mut().unlock()
     }
 }
 
