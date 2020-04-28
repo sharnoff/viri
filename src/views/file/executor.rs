@@ -52,7 +52,7 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                 }
             }
             Cursor(m, n) => self.buffer.move_cursor(m, n),
-            Scroll(d, n) => self.buffer.scroll(d, n),
+            Scroll(kind, n) => self.buffer.scroll(kind, n),
             Insert(s) => self.buffer.insert(s.as_ref()),
             Undo(n) => {
                 let (diffs, at_oldest) = match self.buffer.provider_mut().undo(n) {

@@ -12,6 +12,7 @@ use crate::trie::Trie;
 pub mod combinators;
 pub mod delete;
 pub mod movement;
+pub mod scroll;
 
 use combinators::{numerical, set, single, wrap};
 
@@ -66,10 +67,11 @@ impl<T: 'static> Mode<T> {
 
         self.parsers = Some(set(vec![
             Box::new(movement),
+            Box::new(scroll::Parser::new()),
+            Box::new(delete::Parser::new()),
             Box::new(undo),
             Box::new(redo),
             Box::new(Misc::new()),
-            Box::new(delete::Parser::new()),
         ]));
     }
 }
@@ -231,8 +233,10 @@ impl XFrom<Builder> for Config {
 
 #[rustfmt::skip]
 fn default_keybindings() -> Trie<KeyEvent, Vec<Cmd<Never>>> {
-    use super::Cmd::{EnterMode, Cursor, ExitMode, Insert, StartEditBlock};
+    use super::Cmd::{EnterMode, Cursor, ExitMode, Insert, StartEditBlock, Scroll};
     use super::HorizMove::{Const, LineBoundary};
+    use super::Direction::{Up, Down};
+    use super::ScrollKind::ByDirection;
     use super::ModeKind;
     use super::Movement::{Right, RightCross, Left};
     use crate::event::{KeyCode::Esc, KeyModifiers as Mods};

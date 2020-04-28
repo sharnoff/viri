@@ -3,7 +3,7 @@
 use crate::event::KeyEvent;
 use crate::prelude::*;
 
-use super::{CursorStyle, DeleteKind, Direction, Error, Mode, ModeSet, Modes, Movement};
+use super::{CursorStyle, DeleteKind, Error, Mode, ModeSet, Modes, Movement, ScrollKind};
 
 /// A generic handler for managing switching between multiple modes
 pub struct Handler<E: Executor<Meta>, Meta: 'static> {
@@ -24,11 +24,11 @@ pub struct Handler<E: Executor<Meta>, Meta: 'static> {
 /// [`mode::Cmd`]: ../enum.Cmd.html
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Cmd<T> {
-    /// A cursor movement, given by the direction and a number of repetitions
+    /// A cursor movement, given by the type of movement and a number of repetitions
     Cursor(Movement, usize),
 
-    /// A scrolling movement, given by the direction and number of lines or columns to scroll by
-    Scroll(Direction, usize),
+    /// A scrolling movement, given by the type of scrolling and number of repetitions
+    Scroll(ScrollKind, usize),
 
     /// An insertion of the given string at the current cursor position
     Insert(String),
@@ -113,7 +113,7 @@ impl<Meta: 'static, E: Executor<Meta>> Handler<E, Meta> {
         for cmd in cmds.into_iter() {
             let cmd = match cmd {
                 Cursor(m, n) => Cmd::Cursor(m, n),
-                Scroll(d, n) => Cmd::Scroll(d, n),
+                Scroll(kind, n) => Cmd::Scroll(kind, n),
                 Insert(s) => Cmd::Insert(s),
                 Delete(kind) => Cmd::Delete(kind),
                 Undo(n) => Cmd::Undo(n),

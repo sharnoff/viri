@@ -3,13 +3,14 @@
 //! Additionally provided are the modules `normal_mode` and `insert_mode`, which define generic
 //! handlers for typical normal and insert modes.
 
+use std::convert::TryInto;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::{Range, RangeInclusive};
 use std::sync::Mutex;
 
 use crate::config::prelude::*;
-use crate::mode::{CharPredicate, CursorStyle, DeleteKind, Direction, Movement};
+use crate::mode::{CharPredicate, CursorStyle, DeleteKind, Direction, Movement, ScrollKind};
 use crate::prelude::*;
 use crate::runtime::{Painter, TermCoord, TermSize};
 use crate::text::{ContentProvider, Diff, Line};
@@ -248,8 +249,84 @@ impl<P: ContentProvider> ViewBuffer<P> {
     }
 
     /// Scrolls the buffer by `amount` lines/columns in the direction given
-    pub fn scroll(&mut self, _direction: Direction, _amount: usize) -> Option<RefreshKind> {
-        todo!()
+    pub fn scroll(&mut self, kind: ScrollKind, amount: usize) -> Option<RefreshKind> {
+        if amount == 0 {
+            return None;
+        }
+
+        self.provider_mut().lock();
+
+        // `new_row` and `new_col` give the top-left corner of the displayed region
+        let (mut new_row, mut new_col) = self.simulate_scroll(kind, amount);
+        let (old_row, old_col) = (self.top_row, self.left_col);
+
+        new_row = new_row.min(self.num_lines() - 1);
+
+        let mut changed = false;
+
+        if new_row != old_row {
+            changed = true;
+
+            // Drag the cursor to the new row
+            self.top_row = new_row;
+            if new_row < old_row {
+                let max_row = self.size.height - 1;
+
+                self.cursor.row = (self
+                    .cursor
+                    .row
+                    .saturating_add((old_row - new_row).try_into().unwrap_or(std::u16::MAX)))
+                .min(max_row);
+            } else {
+                // old_row < new_row
+                self.cursor.row = self
+                    .cursor
+                    .row
+                    .saturating_sub((new_row - old_row).try_into().unwrap_or(std::u16::MAX));
+            }
+        }
+
+        let max_line_col = match self.allows_after() {
+            true => self.current_line().width(),
+            false => self.current_line().width().saturating_sub(1),
+        };
+        new_col = new_col.min(max_line_col);
+
+        if new_col != old_col {
+            changed = true;
+
+            // drag the cursor to the new column
+            self.left_col = new_col;
+            if new_col < old_col {
+                let max_col = (max_line_col - new_col).try_into().unwrap_or(std::u16::MAX);
+
+                self.cursor.col = (self
+                    .cursor
+                    .col
+                    .saturating_add((old_col - new_col).try_into().unwrap_or(std::u16::MAX)))
+                .min(max_col);
+            } else {
+                // old_row < new_row
+                self.cursor.col = self
+                    .cursor
+                    .col
+                    .saturating_sub((new_col - old_col).try_into().unwrap_or(std::u16::MAX));
+            }
+        }
+
+        self.provider_mut().unlock();
+
+        if !changed {
+            return None;
+        }
+
+        // calculate the new cursor position - scrolling will drag it along
+
+        self.top_row = new_row;
+        self.left_col = new_col;
+
+        self.needs_refresh = self.needs_refresh.max(Some(RefreshKind::Full));
+        Some(RefreshKind::Full)
     }
 
     /// Inserts the given string at the current position of the cursor
@@ -992,6 +1069,127 @@ impl<P: ContentProvider> ViewBuffer<P> {
         }
 
         None
+    }
+}
+
+// SCROLL SIMULATION
+//
+// This is much the same as the "movement simulation" block above.
+//
+// The main function, `simulate_scroll` returns a `(usize, usize)`, which signifies the new values
+// of `top_row` and `left_col`, respectively. `simulate_scroll` is the only function that should be
+// called from this block.
+//
+// All other functions return `(Option<usize>, Option<usize>)`, which signifies the same thing as
+// above, except `None` indicates no change.
+//
+// NOTE: `simulate_scroll` does not perform bounds checks on the values it returns; these are done
+// by the caller, `ViewBuffer::scroll`.
+impl<P: ContentProvider> ViewBuffer<P> {
+    // Description given by the comment on the surrounding impl block
+    fn simulate_scroll(&self, kind: ScrollKind, amount: usize) -> (usize, usize) {
+        use Direction::{Down, Left, Right, Up};
+        use ScrollKind::{ByDirection, DownPage, UpPage, VerticalCenter};
+
+        let (row, col) = match kind {
+            ByDirection(Up) => self.sim_scroll_up(amount),
+            ByDirection(Down) => self.sim_scroll_down(amount),
+            ByDirection(Left) => self.sim_scroll_left(amount),
+            ByDirection(Right) => self.sim_scroll_right(amount),
+
+            // We ignore `amount` here because repeated scrolling to the center wouldn't mean
+            // anything.
+            VerticalCenter => self.sim_scroll_vertical_center(),
+            DownPage(frac) => self.sim_scroll_down_page(frac, amount),
+            UpPage(frac) => self.sim_scroll_up_page(frac, amount),
+        };
+
+        (row.unwrap_or(self.top_row), col.unwrap_or(self.left_col))
+    }
+
+    fn sim_scroll_up(&self, amount: usize) -> (Option<usize>, Option<usize>) {
+        (Some(self.top_row.saturating_sub(amount)), None)
+    }
+
+    fn sim_scroll_down(&self, amount: usize) -> (Option<usize>, Option<usize>) {
+        (Some(self.top_row + amount), None)
+    }
+
+    fn sim_scroll_left(&self, amount: usize) -> (Option<usize>, Option<usize>) {
+        (None, Some(self.left_col.saturating_sub(amount)))
+    }
+
+    fn sim_scroll_right(&self, amount: usize) -> (Option<usize>, Option<usize>) {
+        (None, Some(self.left_col + amount))
+    }
+
+    fn sim_scroll_vertical_center(&self) -> (Option<usize>, Option<usize>) {
+        let center = (self.size.height / 2) as usize;
+        let current = self.cursor.row as usize;
+
+        let new_row = if current > center {
+            // Cursor below middle
+            self.top_row + (current - center)
+        } else {
+            // Cursor above middle
+            self.top_row.saturating_sub(center - current)
+        };
+
+        (Some(new_row), None)
+    }
+
+    fn sim_scroll_down_page(&self, mut frac: f64, amount: usize) -> (Option<usize>, Option<usize>) {
+        if frac.is_nan() {
+            panic!(
+                "Invalid float {:?} given to `ViewBuffer::sim_scroll_down_page`",
+                frac
+            );
+        }
+
+        // The bounds on the floating-point value before casting it to a `usize`.
+        // We need to do this because it is currently undefined behavior to cast a float outside of
+        // the range supported by the `usize`.
+        //
+        // Relevant issue: https://github.com/rust-lang/rust/issues/10184
+        const MAX_FLOAT: f64 = std::usize::MAX as f64;
+        const MIN_FLOAT: f64 = 0.0;
+
+        frac *= amount as f64;
+        frac *= self.size.height as f64;
+        frac = frac.max(MIN_FLOAT).min(MAX_FLOAT);
+
+        // `frac` can't be NaN because we've already checked for that above and it won't have been
+        // produced by the operations above.
+
+        let n_lines = frac as usize;
+        self.sim_scroll_down(n_lines)
+    }
+
+    fn sim_scroll_up_page(&self, mut frac: f64, amount: usize) -> (Option<usize>, Option<usize>) {
+        if frac.is_nan() {
+            panic!(
+                "Invalid float {:?} given to `ViewBuffer::sim_scroll_up_page`",
+                frac
+            );
+        }
+
+        // The bounds on the floating-point value before casting it to a `usize`.
+        // We need to do this because it is currently undefined behavior to cast a float outside of
+        // the range supported by the `usize`
+        //
+        // Relevant issue: https://github.com/rust-lang/rust/issues/10184
+        const MAX_FLOAT: f64 = std::usize::MAX as f64;
+        const MIN_FLOAT: f64 = 0.0;
+
+        frac *= amount as f64;
+        frac *= self.size.height as f64;
+        frac = frac.max(MIN_FLOAT).min(MAX_FLOAT);
+
+        // `frac` can't be NaN because we've already checked for that above and it won't have been
+        // produced by the operations above.
+
+        let n_lines = frac as usize;
+        self.sim_scroll_up(n_lines)
     }
 }
 

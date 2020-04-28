@@ -49,11 +49,11 @@ pub trait Mode<T>: Default + XInto<Modes<T>> {
 /// Most of the documentation is provided in the individual types referenced in the variants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Cmd<T> {
-    /// A cursor movement, given by the direction and a number of repetitions
+    /// A cursor movement, given by the type of movement and a number of repetitions
     Cursor(Movement, usize),
 
-    /// A scrolling movement, given by the direction and number of lines or columns to scroll by
-    Scroll(Direction, usize),
+    /// A scrolling movement, given by the type of scrolling and number of repetitions
+    Scroll(ScrollKind, usize),
 
     /// An insertion of the given string at the current cursor position
     Insert(String),
@@ -233,6 +233,28 @@ pub enum Movement {
 
     /// Represents a movement to the right that may cross lines
     RightCross(HorizMove),
+}
+
+/// The types of scrolling actions that are available
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub enum ScrollKind {
+    /// A scrolling movement that is given simply by its direction
+    ByDirection(Direction),
+
+    /// A scrolling movement that shifts so the cursor is in the middle of the screen. This should
+    /// fail weakly - i.e. if it is not possible, the scrolling action taken should get as lose as
+    /// possible to the desired outcome.
+    VerticalCenter,
+
+    /// A scrolling movement to move down by the given fraction of a page. Values given here should
+    /// be between zero and one - any handlers need not fail nicely if given values outside that
+    /// range.
+    DownPage(f64),
+
+    /// A scrolling movement to move up by the given fraction of a page. Values given here should
+    /// be between zero and one - any handlers need not fail nicely if given values outside that
+    /// range.
+    UpPage(f64),
 }
 
 /// Represents a horizontal movement, regardless of direction or whether it is bounded to a single
