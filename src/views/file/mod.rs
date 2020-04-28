@@ -368,18 +368,6 @@ impl View {
             _ => None,
         }
     }
-
-    fn try_save(&mut self) -> Result<(), String> {
-        self.buffer_mut()
-            .provider_mut()
-            .write()
-            .map_err(|e| e.to_string())
-    }
-
-    fn unsaved(&self) -> bool {
-        let unsaved = self.buffer().provider().unsaved();
-        unsaved
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

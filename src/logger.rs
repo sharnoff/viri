@@ -45,16 +45,6 @@ pub fn set_level(level: log::LevelFilter) -> log::LevelFilter {
     previous
 }
 
-/// Returns whether there there is currently a logger in use
-pub fn logging() -> bool {
-    LOG.lock().unwrap().is_some()
-}
-
-/// Returns the curent level of the logger
-pub fn level() -> log::LevelFilter {
-    log::max_level()
-}
-
 /// Utility function for grabbing the log level from a string.
 ///
 /// The string should always be one of:

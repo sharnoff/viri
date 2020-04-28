@@ -392,12 +392,6 @@ impl Container {
             SetBottomBar, WaitingForMore,
         };
 
-        let mut global_painter = Painter::global(self.size);
-        let mut local = match self.bottom_offset().try_into() {
-            Ok(offset) => global_painter.trim_bot(offset),
-            Err(_) => None,
-        };
-
         match signal {
             Nothing => (),
             NeedsRefresh(kind) => self.handle_refresh(kind),

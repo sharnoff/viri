@@ -259,20 +259,6 @@ pub enum ExitSignal {
 }
 
 impl OutputSignal {
-    pub fn is_nothing(&self) -> bool {
-        match self {
-            Self::Nothing => true,
-            _ => false,
-        }
-    }
-
-    pub fn waiting_for_more(&self) -> bool {
-        match self {
-            Self::WaitingForMore => true,
-            _ => false,
-        }
-    }
-
     /// Produces an output signal corresponding to an error with the given message
     ///
     /// If `format` is true, the message will be made red. Otherwise, the formatting will be left

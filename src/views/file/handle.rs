@@ -244,10 +244,6 @@ fn make_absolute<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
 }
 
 impl Handle {
-    pub(super) fn read(&self) -> ReadGuard<File> {
-        self.file.read()
-    }
-
     pub fn blank(id: LocalId) -> Handle {
         let locator = Locator::Local(id);
         let handle_id = gen_handle_id();
@@ -456,18 +452,6 @@ impl File {
         f.flush()?;
         self.unsaved = false;
         Ok(())
-    }
-
-    fn start_edit_block(&mut self) {
-        todo!()
-    }
-
-    fn end_edit_block(&mut self) {
-        todo!()
-    }
-
-    fn make_edit(&mut self, diff: Diff) -> Result<(), diff::Error> {
-        todo!()
     }
 }
 
