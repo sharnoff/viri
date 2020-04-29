@@ -68,7 +68,6 @@ impl super::View for View {
             let row = buf.current_row();
             let height = buf.size().height;
             let top_row = row - buf.cursor_pos().row as usize;
-            // let top_row = row - (height - self.buffer.cursor_pos().row - 1) as usize;
 
             if top_row == 0 && height as usize >= buf.num_lines() {
                 "All".into()
@@ -98,8 +97,9 @@ impl super::View for View {
 
         let s = format!(
             "{},{: <3}   {}",
-            buf.current_row(),
-            buf.current_col(),
+            // We add one so that the values start at one, not zero
+            buf.current_row() + 1,
+            buf.current_col() + 1,
             loc_str
         );
 
@@ -163,15 +163,51 @@ impl ConstructedView for View {
             }
         };
 
+        let mut buffer = ViewBuffer::new(size, file);
+        buffer.set_prefix(line_num_width, line_num_prefix);
+
+        // buffer.set_prefix(None);
         Self {
             handler: ModeHandler::new(
-                FileExecutor {
-                    buffer: ViewBuffer::new(size, file),
-                },
+                FileExecutor { buffer },
                 NormalMode::default(),
                 ModeSet::all(),
             ),
         }
+    }
+}
+
+fn line_num_width(buf: &ViewBuffer<Handle>) -> u16 {
+    // There's an amount of padding we'll put on either side of the line numbers. Currently, this
+    // value is 1, so we have a padding factor of 2 to account for both sides.
+    const PADDING_FACTOR: u16 = 2;
+
+    let width = (buf.num_lines() as f64).log10().ceil();
+
+    if width > (u16::MAX - PADDING_FACTOR) as f64 || width < 0.0 || width.is_nan() {
+        return 0;
+    }
+
+    width as u16 + PADDING_FACTOR
+}
+
+fn line_num_prefix(buf: &ViewBuffer<Handle>, line: usize) -> String {
+    const ALIGN_LINE_NO_LEFT: bool = false;
+
+    // Sometimes `width` might return zero - if, for instance, the value is outside the maximum
+    // range of a `u16`. This won't happen in practice, but we'll catch it here anyways.
+    //
+    // This function should also never be called if that is the case, but we'll still be defensive
+    // becaues it doesn't have much cost.
+    let width = line_num_width(buf);
+    if width == 0 {
+        return String::new();
+    }
+
+    if ALIGN_LINE_NO_LEFT {
+        format!(" {:<3} ", line).yellow().to_string()
+    } else {
+        format!(" {:>3} ", line).yellow().to_string()
     }
 }
 

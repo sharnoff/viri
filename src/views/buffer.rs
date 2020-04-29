@@ -4,6 +4,7 @@
 //! handlers for typical normal and insert modes.
 
 use std::convert::TryInto;
+use std::fmt::{self, Debug, Formatter};
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::{Range, RangeInclusive};
@@ -21,12 +22,21 @@ use super::{OutputSignal, RefreshKind, View};
 ///
 /// The term "view buffer" comes from the standard meaning in vi-style editors, where a buffer is a
 /// single window into a file (or something else).
-#[derive(Debug)]
 pub struct ViewBuffer<P: ContentProvider> {
     /// The type providing the content of the buffer
     ///
     /// This is made available through various methds on the type
     provider: P,
+
+    /// An optional prefix to provide before every line
+    ///
+    /// The first element in the pair gives the expected width of each prefix. The second element
+    /// provides the actual prefix itsef, given the line number.
+    prefix_fns: Option<(fn(&Self) -> u16, fn(&Self, usize) -> String)>,
+
+    /// Gives the current width of the displayd prefixes at the beginning of each line. This value
+    /// will be zero if `prefix_fns` is `None`.
+    prefix_width: u16,
 
     /// The size of the view
     size: TermSize,
@@ -62,41 +72,49 @@ pub struct ViewBuffer<P: ContentProvider> {
 
 impl<P: ContentProvider> View for ViewBuffer<P> {
     fn refresh(&mut self, painter: &Painter) {
-        log::trace!("Refreshing!");
+        let prefix_width = self.prefix_fns.as_ref().map(|(w, _)| w(self)).unwrap_or(0);
 
         // If we don't need to redraw, just return
-        if self.needs_refresh.is_none() && self.pos == Some(painter.abs_pos()) {
+        //
+        // TODO: This system should be better - it shouldn't be the View's responsibility to decide
+        // whether it needs to refresh when the painter tells it to. Perhaps something like a "min
+        // refresh" level?
+        //
+        // FIXME: This actually currently causes a bug to do with buffer resizing when new lines
+        // are added. - `FileView` provides a different painter size than what is expected.
+        if self.needs_refresh.is_none()
+            && self.pos == Some(painter.abs_pos())
+            && prefix_width == self.prefix_width
+        {
             return;
         }
 
-        let width = self.size.width as usize;
+        let prefix_width = self.prefix_fns.as_ref().map(|(w, _)| w(self)).unwrap_or(0);
+        let abs_pos = painter.abs_pos();
 
-        let display_range = std::ops::Range {
-            start: self.left_col,
-            end: self.left_col + width,
-        };
+        // Handle drawing the line prefixes
+        if let Some((_, p_fn)) = self.prefix_fns {
+            self.refresh_prefixes(prefix_width, p_fn, painter);
+        }
 
-        let content = self.provider.content();
-        let lines: Vec<_> = content.iter(self.top_row..).collect();
+        // Handle the actual displaying of the content
+        self.refresh_main_content(prefix_width, painter);
 
-        let iter = lines.iter().map(move |l| {
-            let (line, Range { mut start, mut end }) = l.display_segment(display_range.clone());
-
-            // Shift the start/end points to where they actually are on the display:
-            start -= display_range.start;
-            end -= display_range.start;
-
-            ((start as u16..end as u16), line)
-        });
-
-        painter.print_lines(iter);
-
-        self.pos = Some(painter.abs_pos());
+        self.pos = Some(abs_pos);
         self.needs_refresh = None;
     }
 
     fn refresh_cursor(&self, painter: &Painter) {
-        painter.set_cursor(self.cursor);
+        let pos = if self.prefix_width < painter.size().width {
+            TermCoord {
+                col: self.cursor.col + self.prefix_width,
+                ..self.cursor
+            }
+        } else {
+            self.cursor
+        };
+
+        painter.set_cursor(pos);
     }
 
     fn resize(&mut self, size: TermSize) -> Vec<OutputSignal> {
@@ -113,11 +131,95 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Helper methods for the `View` implementation                                                   //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+impl<P: ContentProvider> ViewBuffer<P> {
+    /// This method re-draws the line prefixe, given the expected number of columns to use and a
+    /// painter for the whole view. If the painter does not have room for the prefixes, they will
+    /// not be drawn.
+    ///
+    /// This function assumes that `self.size == painter.size`
+    fn refresh_prefixes(
+        &self,
+        prefix_width: u16,
+        prefix_fn: fn(&Self, usize) -> String,
+        painter: &Painter,
+    ) {
+        if prefix_width >= self.size.width {
+            return;
+        }
+
+        let display_range = Range {
+            start: 0_u16,
+            end: prefix_width,
+        };
+
+        let painter = painter.trim_right_to(prefix_width).unwrap_or_else(|| {
+            panic!("unexpected `Painter` size; prefix width: {}, current size: {:?}, painter size: {:?}",  prefix_width, self.size, painter.size());
+        });
+
+        let content = self.provider.content();
+        let iter = (self.top_row..)
+            .zip(content.iter(self.top_row..))
+            .map(|(i, l)| {
+                let prefix = prefix_fn(self, i);
+                (display_range.clone(), prefix)
+            });
+
+        painter.print_lines(iter)
+    }
+
+    /// This method re-draws the main content of the buffer, given an amount to exclude to the left
+    /// due to the prefix. If `prefix_width` is less greater than the number of columns permitted
+    /// by the painter, this method will instead ignore the prefix and entirely draw itself.
+    ///
+    /// This function assumes that `self.size == painter.size`
+    fn refresh_main_content(&self, prefix_width: u16, painter: &Painter) {
+        let display_range = std::ops::Range {
+            start: self.left_col,
+            end: self.left_col + self.size().width as usize,
+        };
+
+        let inner_painter: Painter;
+        // This is the *normal* case:
+        let painter: &Painter = match painter.trim_left(prefix_width) {
+            Some(p) => {
+                inner_painter = p;
+                &inner_painter
+            }
+            None => painter,
+        };
+
+        let content = self.provider.content();
+        let lines: Vec<_> = content.iter(self.top_row..).collect();
+
+        let iter = lines.iter().map(move |l| {
+            let (line, Range { mut start, mut end }) = l.display_segment(display_range.clone());
+
+            // Shift the start/end points to where they actually are within our window:
+            start -= display_range.start;
+            end -= display_range.start;
+
+            ((start as u16..end as u16), line)
+        });
+
+        painter.print_lines(iter);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Standard, public-facing methods                                                                //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 impl<P: ContentProvider> ViewBuffer<P> {
     /// Creates a new `ViewBuffer` with the given content source
     pub fn new(size: TermSize, provider: P) -> Self {
         Self {
             provider,
+            prefix_fns: None,
+            prefix_width: 0,
             size,
             pos: None,
             cursor: (0, 0).into(),
@@ -149,9 +251,16 @@ impl<P: ContentProvider> ViewBuffer<P> {
         self.cursor
     }
 
-    /// Returns the on-screen size of the buffer
+    /// Returns the on-screen size of the buffer, **excluding line prefixes**.
     pub fn size(&self) -> TermSize {
-        self.size
+        TermSize {
+            width: self
+                .size
+                .width
+                .checked_sub(self.prefix_width)
+                .unwrap_or(self.size.width),
+            ..self.size
+        }
     }
 
     /// Returns the *logical* column of the cursor in the content
@@ -186,6 +295,27 @@ impl<P: ContentProvider> ViewBuffer<P> {
     /// For more information, see the `allow_cursor_after` field.
     pub fn allows_after(&self) -> bool {
         self.allow_cursor_after
+    }
+
+    /// Sets the functions that generate the strings to prefix to every line
+    ///
+    /// `width` should return the expected width of each returned value from `prefix`, given the
+    /// same `ViewBuffer`. `prefix` gives the actual generated prefix, which should have a width
+    /// equal to the output of `width`. The second argument to `prefix` is the line number,
+    /// starting from zero.
+    pub fn set_prefix(
+        &mut self,
+        width: fn(&Self) -> u16,
+        prefix: fn(&Self, usize) -> String,
+    ) -> Option<RefreshKind> {
+        let old_width = self.prefix_width;
+        self.prefix_width = width(self);
+        self.prefix_fns = Some((width, prefix));
+
+        match self.prefix_width == old_width {
+            true => None,
+            false => Some(RefreshKind::Full),
+        }
     }
 
     /// Shifts all relevant context by the diffs, in order. Currently this will simply move the
@@ -270,7 +400,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             // Drag the cursor to the new row
             self.top_row = new_row;
             if new_row < old_row {
-                let max_row = self.size.height - 1;
+                let max_row = self.size().height - 1;
 
                 self.cursor.row = (self
                     .cursor
@@ -1124,7 +1254,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
     }
 
     fn sim_scroll_vertical_center(&self) -> (Option<usize>, Option<usize>) {
-        let center = (self.size.height / 2) as usize;
+        let center = (self.size().height / 2) as usize;
         let current = self.cursor.row as usize;
 
         let new_row = if current > center {
@@ -1155,7 +1285,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         const MIN_FLOAT: f64 = 0.0;
 
         frac *= amount as f64;
-        frac *= self.size.height as f64;
+        frac *= self.size().height as f64;
         frac = frac.max(MIN_FLOAT).min(MAX_FLOAT);
 
         // `frac` can't be NaN because we've already checked for that above and it won't have been
@@ -1182,7 +1312,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         const MIN_FLOAT: f64 = 0.0;
 
         frac *= amount as f64;
-        frac *= self.size.height as f64;
+        frac *= self.size().height as f64;
         frac = frac.max(MIN_FLOAT).min(MAX_FLOAT);
 
         // `frac` can't be NaN because we've already checked for that above and it won't have been
@@ -1217,7 +1347,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             return None;
         }
 
-        let screen_width = self.size.width as usize;
+        let screen_width = self.size().width as usize;
         // The subtraction is okay because self.cursor.col is guaranteed to be < screen_width
         let screen_right = screen_width - cursor_col - 1;
 
@@ -1283,7 +1413,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             None
         } else if row > current_row {
             let diff = row - current_row;
-            let height = self.size.height as usize;
+            let height = self.size().height as usize;
 
             // If we can remain on the screen we'll just move the cursor down to that row
             if diff < height - cursor_row {
@@ -1293,7 +1423,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
                 // Otherwise, we need to scroll - we'll do this by setting the top
                 // currently-displayed row
                 self.top_row = current_row + diff - (height - 1) as usize;
-                self.cursor.row = self.size.height - 1;
+                self.cursor.row = self.size().height - 1;
                 Some(RefreshKind::Full)
             }
 
@@ -1382,5 +1512,31 @@ impl XFrom<Builder> for Config {
         Self {
             tabstop: builder.tabstop.unwrap_or(DEFAULT_TABSTOP),
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Boilerplate implementations                                                                    //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+impl<P: Debug + ContentProvider> Debug for ViewBuffer<P> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("ViewBuffer")
+            .field("provider", &self.provider)
+            // Because there's no way we'll be able to print the functions, we'll instead just
+            // indicate whether it's here with a range so it displays one of:
+            //   `None`, or
+            //   `Some(..)`
+            // which should provide the necessary information
+            .field("prefix_fns", &self.prefix_fns.as_ref().map(|_| ..))
+            .field("size", &self.size)
+            .field("pos", &self.pos)
+            .field("cursor", &self.cursor)
+            .field("top_row", &self.top_row)
+            .field("left_col", &self.left_col)
+            .field("allow_cursor_after", &self.allow_cursor_after)
+            .field("virtual_col", &self.virtual_col)
+            .field("needs_refresh", &self.needs_refresh)
+            .finish()
     }
 }

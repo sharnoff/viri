@@ -18,10 +18,10 @@ pub struct Painter<'a> {
     pos: TermCoord,
 
     /// Gives the size of the terminal that we have available
-    pub size: TermSize,
+    size: TermSize,
 
     /// The parent painter, if it exists.
-    pub parent: Option<&'a mut Painter<'a>>,
+    parent: Option<&'a Painter<'a>>,
 }
 
 /// A logical display region in the terminal
@@ -43,6 +43,11 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// Returns the size of the painter
+    pub fn size(&self) -> TermSize {
+        self.size
+    }
+
     /// Returns the absolute position of the painter on the screen
     pub fn abs_pos(&self) -> TermCoord {
         // TODO: Maybe this shouldn't be written recursively? It would be much cheaper to be
@@ -62,7 +67,7 @@ impl<'a> Painter<'a> {
     /// than the current height.
     ///
     /// [`Container::handle_view_output_exits`]: ../container/struct.Container.html#handle_view_output_exits
-    pub fn trim_bot<'b: 'a>(&'b mut self, amount: u16) -> Option<Painter<'b>> {
+    pub fn trim_bot<'b: 'a>(&'b self, amount: u16) -> Option<Painter<'b>> {
         if self.size.height <= amount {
             return None;
         }
@@ -77,15 +82,63 @@ impl<'a> Painter<'a> {
         })
     }
 
+    /// Returns a new painter whose size has been decreased horizontally by pushing the left side
+    /// inwards
+    ///
+    /// This will shift the position of the painter rightwards by `amount` and decrease the
+    /// horizontal size by `amount`. If the painter's window is too small to support this
+    /// operation, it will return `None`.
+    pub fn trim_left<'b: 'a>(&'b self, amount: u16) -> Option<Painter<'b>> {
+        if self.size.width <= amount {
+            return None;
+        }
+
+        let pos = TermCoord {
+            col: self.pos.col + amount,
+            ..self.pos
+        };
+
+        let size = TermSize {
+            width: self.size.width - amount,
+            ..self.size
+        };
+
+        Some(Painter {
+            pos,
+            size,
+            parent: Some(self),
+        })
+    }
+
+    /// Returns a new painter whose size has been decreased horizontally by pushing the right side
+    /// inwards
+    ///
+    /// This will not shift the position of the painter, but will decrease the horizontal size by
+    /// `amount`. If the painter's window is too small to support this operation, it will return
+    /// `None`.
+    pub fn trim_right_to<'b: 'a>(&'b self, amount: u16) -> Option<Painter<'b>> {
+        if self.size.width <= amount {
+            return None;
+        }
+
+        let size = TermSize {
+            width: self.size.width - amount,
+            ..self.size
+        };
+
+        Some(Painter {
+            pos: self.pos,
+            size,
+            parent: Some(self),
+        })
+    }
+
     /// Prints the lines given, where they are expected to fill `line_range`
     ///
     /// Each item in the supplied iterator has the actual displayed range of the line, in addition
     /// to the string to print. This is assumed to be correct - if it isn't, things will not
     /// display correctly.
-    pub fn print_lines<'b, I>(&self, iter: I)
-    where
-        I: Iterator<Item = (Range<u16>, &'b str)>,
-    {
+    pub fn print_lines<S: AsRef<str>>(&self, iter: impl Iterator<Item = (Range<u16>, S)>) {
         let window = Window {
             cols: 0..self.size.width,
             rows: 0..self.size.height,
@@ -108,9 +161,10 @@ impl<'a> Painter<'a> {
 }
 
 impl<'a> Painter<'a> {
-    fn print_lines_internal<'b, I>(&self, iter: I, mut window: Window)
+    fn print_lines_internal<I, S>(&self, iter: I, mut window: Window)
     where
-        I: Iterator<Item = (Range<u16>, &'b str)>,
+        I: Iterator<Item = (Range<u16>, S)>,
+        S: AsRef<str>,
     {
         let c = self.pos.col;
         let r = self.pos.row;
@@ -133,7 +187,7 @@ impl<'a> Painter<'a> {
 
         // If this isn't the top-level painter, we'll pass on the message to print to that one
         if let Some(p) = self.parent.as_ref() {
-            let dyn_iter = &mut iter as &mut dyn Iterator<Item = (Range<u16>, &str)>;
+            let dyn_iter = &mut iter as &mut dyn Iterator<Item = (Range<u16>, S)>;
             p.print_lines_internal(dyn_iter, window);
             return;
         }
@@ -164,7 +218,7 @@ impl<'a> Painter<'a> {
                     .unwrap();
             }
 
-            stdout.queue(style::Print(line)).unwrap();
+            stdout.queue(style::Print(line.as_ref())).unwrap();
 
             if right_pad > 0 {
                 stdout
