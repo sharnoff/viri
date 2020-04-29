@@ -47,6 +47,7 @@ use crossterm::style::Colorize;
 // Builtin modules:
 mod buffer;
 mod file;
+mod split;
 
 // mod your_mod;
 
