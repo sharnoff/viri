@@ -1,14 +1,14 @@
 //! An helper module for interfacing with the filesystem and tracking changes
 //!
-//! This module provides the [`Handle`] type, which is used in the implementation of [`FileView`] to
-//! keep changes to the same file from multiple `FileView`s separate (and therefore separately
+//! This module provides the [`Handle`] type, which is used in the implementation of [`file::View`] to
+//! keep changes to the same file from multiple `file::View`s separate (and therefore separately
 //! undo-able).
 //!
 //! This works by storing all files that have been opened during the session in a global registry
-//! (`REGISTRY`) and giving each `FileView` a unique identifier to use for edits to a file.
+//! (`REGISTRY`) and giving each `file::View` a unique identifier to use for edits to a file.
 //!
 //! [`Handle`]: struct.Handle.html
-//! [`FileView`]: ../struct.FileView.html
+//! [`file::View`]: ../struct.View.html
 
 use std::collections::HashMap;
 use std::env::current_dir;

@@ -81,7 +81,7 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
         // refresh" level?
         //
         // FIXME: This actually currently causes a bug to do with buffer resizing when new lines
-        // are added. - `FileView` provides a different painter size than what is expected.
+        // are added. - `file::View` provides a different painter size than what is expected.
         if self.needs_refresh.is_none()
             && self.pos == Some(painter.abs_pos())
             && prefix_width == self.prefix_width

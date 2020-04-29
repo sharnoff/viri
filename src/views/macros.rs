@@ -5,7 +5,7 @@
 /// Specificially, given an input that looks something like:
 /// ```
 /// pub enum ViewKind {
-///     File: file::FileView,
+///     File: file::View,
 ///     Help: help::HelpView,
 ///     // ...
 /// }

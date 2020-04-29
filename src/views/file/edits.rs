@@ -1,4 +1,4 @@
-//! Utilities for handling the processing of individual edits in a `FileView`
+//! Utilities for handling the processing of individual edits in a `file::View`
 //!
 //! This should primarily be a sub-module of 'views::file::handle', but for the sake of simplifing
 //! the module hierarchy, it is not.

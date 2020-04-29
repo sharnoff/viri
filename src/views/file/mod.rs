@@ -135,7 +135,7 @@ impl ConstructedView for View {
         }
 
         if args.len() > 1 {
-            log::warn!("FileView received args with len > 1, ignoring entries.");
+            log::warn!("file::View received args with len > 1, ignoring entries.");
             log::warn!(
                 "Ignored: {:?}",
                 args[1..].iter().map(AsRef::as_ref).collect::<Vec<_>>()
