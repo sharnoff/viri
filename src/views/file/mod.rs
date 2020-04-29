@@ -205,9 +205,9 @@ fn line_num_prefix(buf: &ViewBuffer<Handle>, line: usize) -> String {
     }
 
     if ALIGN_LINE_NO_LEFT {
-        format!(" {:<3} ", line).yellow().to_string()
+        format!(" {:<3} ", line + 1).yellow().to_string()
     } else {
-        format!(" {:>3} ", line).yellow().to_string()
+        format!(" {:>3} ", line + 1).yellow().to_string()
     }
 }
 
