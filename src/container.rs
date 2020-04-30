@@ -169,57 +169,11 @@ impl Container {
     fn write_bottom_bar(&mut self) {
         match &self.input_mode {
             InputMode::Normal => {
-                // handle asking the view for the its bottom bar
-                let left = self.inner.bottom_left_text();
-                let right = self.inner.bottom_right_text();
-                let prefer_left = self.inner.prefer_bottom_left();
+                // get the bottom bar from the view
+                let bot_str = self.inner.construct_bottom_text(self.size.width);
 
-                let mut left_width = left.as_ref().map(|(_, w)| *w).unwrap_or(0);
-                let mut right_width = right.as_ref().map(|(_, w)| *w).unwrap_or(0);
-
-                let left_too_big = left_width > self.size.width as usize;
-                let right_too_big = right_width > self.size.width as usize;
-
-                // +1 so that we have space between them
-                let combo_too_big = left_width + right_width + 1 > (self.size.width as usize);
-
-                let do_left = left.is_some() && !left_too_big && (!combo_too_big || prefer_left);
-                let do_right =
-                    right.is_some() && !right_too_big && (!combo_too_big || !prefer_left);
-
-                if !do_left {
-                    left_width = 0
-                };
-                if !do_right {
-                    right_width = 0
-                };
-
-                let mut bot_str = String::new();
-
-                if do_left {
-                    bot_str.push_str(left.unwrap().0.as_ref());
-                }
-
-                // Add spaces to cover the difference
-                let difference = (self.size.width as usize) - (left_width + right_width);
-                // This is just copied from runtime::Painter::print_lines_internal
-                let middle_str = unsafe {
-                    // 0x20 is the byte code for 'space'.
-                    // We'll just store whatever size we need here. Because the terminal size is stored in
-                    // a u16, we can get away with just keeping all of the blank space we want in there.
-                    const BLANK_SIZE: usize = std::u16::MAX as usize;
-                    const BLANK: [u8; BLANK_SIZE] = [0x20; BLANK_SIZE];
-
-                    &std::str::from_utf8_unchecked(&BLANK)[..difference]
-                };
-                bot_str.push_str(middle_str);
-
-                if do_right {
-                    // ^ See: Benny Goodman and Peggy Lee
-                    bot_str.push_str(right.unwrap().0.as_ref());
-                }
-
-                // And finally, print it. A few things to note here:
+                // And now print it
+                //
                 // * We move to the last row because it will *always* be exactly just the last row
                 // that gets printed.
                 let mut stdout = io::stdout();
