@@ -233,10 +233,8 @@ impl XFrom<Builder> for Config {
 
 #[rustfmt::skip]
 fn default_keybindings() -> Trie<KeyEvent, Vec<Cmd<Never>>> {
-    use super::Cmd::{EnterMode, Cursor, ExitMode, Insert, StartEditBlock, Scroll};
+    use super::Cmd::{EnterMode, Cursor, ExitMode, Insert, StartEditBlock};
     use super::HorizMove::{Const, LineBoundary};
-    use super::Direction::{Up, Down};
-    use super::ScrollKind::ByDirection;
     use super::ModeKind;
     use super::Movement::{Right, RightCross, Left};
     use crate::event::{KeyCode::Esc, KeyModifiers as Mods};

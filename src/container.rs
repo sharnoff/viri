@@ -155,7 +155,7 @@ impl Container {
                     .unwrap();
             }
             _ => {
-                let mut painter = Painter::global(self.size);
+                let painter = Painter::global(self.size);
                 if let Ok(offset) = self.bottom_offset().try_into() {
                     if let Some(mut p) = painter.trim_bot(offset) {
                         self.inner.refresh_cursor(&mut p);
@@ -334,12 +334,11 @@ impl Container {
     /// Returns true iff the the resulting signal successfully requested an exit
     fn handle_view_output_exits(&mut self, signal: views::OutputSignal) -> bool {
         use views::OutputSignal::{
-            ClearBottomBar, Close, LeaveBottomBar, NeedsRefresh, NoSuchCmd, Nothing, SaveBottomBar,
+            ClearBottomBar, Close, LeaveBottomBar, NeedsRefresh, NoSuchCmd, SaveBottomBar,
             SetBottomBar, WaitingForMore,
         };
 
         match signal {
-            Nothing => (),
             NeedsRefresh(kind) => self.handle_refresh(kind),
             SaveBottomBar => self.save_bottom_bar(),
 
@@ -371,7 +370,7 @@ impl Container {
         use InputMode::BottomBar;
         use RefreshKind::{BottomText, Cursor, Full, Inner};
 
-        let mut global_painter = Painter::global(self.size);
+        let global_painter = Painter::global(self.size);
         let mut local = match self.bottom_offset().try_into() {
             Ok(offset) => global_painter.trim_bot(offset),
             Err(_) => None,
