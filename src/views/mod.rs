@@ -30,6 +30,7 @@ use crate::container;
 use crate::mode;
 use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
+use crate::utils;
 use crossterm::style::Colorize;
 
 //-/////////////////////////////////////////////////////////////////////////-//
@@ -154,6 +155,53 @@ pub trait View {
     /// [`bottom_right_text`]: #tymethod.bottom_right_text
     fn prefer_bottom_left(&self) -> bool {
         false
+    }
+
+    /// Constructs what the totality of the text on the bottom bar should read, given the width.
+    ///
+    /// This function is sometimes used in place of `bottom_{left,right}_text`, but not always. The
+    /// default implementation uses these two methods.
+    fn construct_bottom_text(&mut self, width: u16) -> String {
+        let left = self.bottom_left_text();
+        let right = self.bottom_right_text();
+        let prefer_left = self.prefer_bottom_left();
+
+        let mut left_width = left.as_ref().map(|(_, w)| *w).unwrap_or(0);
+        let mut right_width = right.as_ref().map(|(_, w)| *w).unwrap_or(0);
+
+        let left_too_big = left_width > width as usize;
+        let right_too_big = right_width > width as usize;
+
+        // +1 so that we have space between them
+        let combo_too_big = left_width + right_width + 1 > (width as usize);
+
+        let do_left = left.is_some() && !left_too_big && (!combo_too_big || prefer_left);
+        let do_right = right.is_some() && !right_too_big && (!combo_too_big || !prefer_left);
+
+        if !do_left {
+            left_width = 0
+        };
+        if !do_right {
+            right_width = 0
+        };
+
+        let mut text = String::new();
+
+        if do_left {
+            text.push_str(left.unwrap().0.as_ref());
+        }
+
+        // Add spaces to cover the difference
+        let difference = width - (left_width + right_width) as u16;
+        let middle_str = utils::blank_str(difference);
+        text.push_str(middle_str);
+
+        if do_right {
+            // ^ See: Benny Goodman and Peggy Lee
+            text.push_str(right.unwrap().0.as_ref());
+        }
+
+        text
     }
 }
 
