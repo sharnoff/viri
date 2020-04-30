@@ -307,17 +307,9 @@ impl Container {
             }
             Resize(size) => {
                 self.size = size;
-                self.write_bottom_bar();
-
-                let offset = self.bottom_offset();
-                if size.height as usize > offset {
-                    Some(self.inner.resize(TermSize {
-                        height: size.height - offset as u16,
-                        ..size
-                    }))
-                } else {
-                    Some(Vec::new())
-                }
+                // We'll resize the inner `View` by giving an update through a resized painter
+                self.handle_refresh(RefreshKind::Full);
+                Some(Vec::new())
             }
         };
 
@@ -453,7 +445,7 @@ impl Container {
             }
             // Tried to refresh but there isn't anything there to display
             _ => log::warn!(
-                "{}:{}: cannot refresh inner `View`; current PTTY is too small",
+                "{}:{}: cannot refresh inner `View`; current PTY is too small",
                 file!(),
                 line!(),
             ),
@@ -509,31 +501,9 @@ impl Container {
         self.write_bottom_bar();
 
         // if num_rows changed, resize
-        //
-        // This has the potential to cause infinite recursion if the `View` sets the bottom
-        // bar again as a result of resizing. If that happens, someone messed up, so we'll
-        // simply log what's happening just in case it's an issue. Realistically, resizing
-        // here won't be common, so this amount of logging should be okay.
         if num_rows != (previous_bottom_offset as usize) && (self.size.height as usize) > num_rows {
-            let inner_size = TermSize {
-                height: self.size.height - (num_rows as u16),
-                ..self.size
-            };
-            let new_signals = self.inner.resize(inner_size);
-            if !new_signals.is_empty() {
-                log::info!(
-                    "Recursing after bottom bar resize. Current input mode: {:?}",
-                    self.input_mode
-                );
-
-                if new_signals
-                    .into_iter()
-                    .any(|sig| self.handle_view_output_exits(sig))
-                {
-                    // If true, we were told to exit, so we do that here.
-                    return true;
-                }
-            }
+            // We resized, so we'll refresh the inner `View`
+            self.handle_refresh(RefreshKind::Full);
         }
 
         self.update_cursor();
