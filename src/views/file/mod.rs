@@ -111,10 +111,6 @@ impl super::View for View {
     fn prefer_bottom_left(&self) -> bool {
         false
     }
-
-    fn resize(&mut self, size: TermSize) -> Vec<OutputSignal> {
-        self.buffer_mut().resize(size)
-    }
 }
 
 impl ConstructedView for View {

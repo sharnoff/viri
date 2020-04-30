@@ -79,14 +79,17 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
         // TODO: This system should be better - it shouldn't be the View's responsibility to decide
         // whether it needs to refresh when the painter tells it to. Perhaps something like a "min
         // refresh" level?
-        //
-        // FIXME: This actually currently causes a bug to do with buffer resizing when new lines
-        // are added. - `file::View` provides a different painter size than what is expected.
         if self.needs_refresh.is_none()
             && self.pos == Some(painter.abs_pos())
             && prefix_width == self.prefix_width
+            && painter.size() == self.size
         {
             return;
+        }
+
+        // Properly resize ourself, provided we actually need to
+        if self.size != painter.size() {
+            self.resize(painter.size());
         }
 
         let prefix_width = self.prefix_fns.as_ref().map(|(w, _)| w(self)).unwrap_or(0);
@@ -116,18 +119,17 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
 
         painter.set_cursor(pos);
     }
+}
 
-    fn resize(&mut self, size: TermSize) -> Vec<OutputSignal> {
-        if size == self.size {
-            Vec::new()
-        } else {
-            self.size = size;
-            self.cursor.col = self.cursor.col.min(size.width - 1);
-            self.cursor.row = self.cursor.row.min(size.height - 1);
-
-            self.needs_refresh = Some(RefreshKind::Full);
-            vec![OutputSignal::NeedsRefresh(RefreshKind::Full)]
-        }
+impl<P: ContentProvider> ViewBuffer<P> {
+    /// Handles resizing itself to a new size. This is only called from
+    fn resize(&mut self, size: TermSize) {
+        // TODO: This isn't *perfect* - we might want to ensure that the cursor actually maintains
+        // its position instead of just trimming it. This can be done simply with
+        // `move_cursor_row_unchecked` and `try_move_virtual_cursor`.
+        self.size = size;
+        self.cursor.col = self.cursor.col.min(size.width - 1);
+        self.cursor.row = self.cursor.row.min(size.height - 1);
     }
 }
 

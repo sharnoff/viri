@@ -109,7 +109,8 @@ read_config! {
 pub trait View {
     /// Re-draws the `View`, using the provided painter to draw to the screen
     ///
-    /// The painter handles drawing to the correct location on the screen.
+    /// The painter handles drawing to the correct location on the screen. Note that the provided
+    /// size of the painter may not equal the previous size; this must be accounted for.
     fn refresh(&mut self, painter: &Painter);
 
     /// Sets the position of the cursor through the painter
@@ -153,12 +154,6 @@ pub trait View {
     fn prefer_bottom_left(&self) -> bool {
         false
     }
-
-    /// Resizes the internal representation of the `View`
-    ///
-    /// Note that this method *should not* write to the display directly. It is merely to query the
-    /// `View` about what changes will be required due to resizing.
-    fn resize(&mut self, size: TermSize) -> Vec<OutputSignal>;
 }
 
 /// `View`s that may be concretely instantiated
