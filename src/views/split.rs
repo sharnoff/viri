@@ -43,6 +43,7 @@ use crate::mode::Direction;
 use crate::runtime::{Painter, TermSize};
 use crossterm::style::Colorize;
 use std::convert::TryFrom;
+use std::iter;
 
 /// A horizontally-split container of two (or more) [`View`]s
 ///
@@ -79,16 +80,6 @@ pub struct Horiz {
     // TODO: Describe in more detail.
     include_bottom_bar: bool,
 }
-
-/// A vertically-split container of two (or more) [`View`]s
-///
-/// For the difference between horizontal and vertical splits, please refer to the
-/// [module-level documentation].
-///
-/// [`View`]: ../trait.View.html
-/// [module-level documentation]: index.html
-// TODO: This should be fully done once `Horiz` has been tested properly
-struct Vert {}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Publicly-exposed API/methods - `Horiz`                                     //
@@ -326,8 +317,8 @@ impl Horiz {
     fn can_display(&self) -> bool {
         match u16::try_from(self.current_sum_height()) {
             Err(_) => false,
-            // We would put `>=` here, but that would be overly defensive because it should always be
-            // the case that either `total_size = self.size.height` or `total_size < self.size.height`.
+            // We would put `<=` here, but that would be overly defensive because it should always be
+            // the case that either `total_size = self.size.height` or `total_size > self.size.height`.
             // Simply placing `==` here allows us to catch bugs as soon as they occur instead of causing
             // graphical issues.
             Ok(s) => s == self.size.height,
@@ -361,11 +352,9 @@ impl Horiz {
         };
         use RefreshKind::{Full, Inner};
 
-        /*
         fn to_signal(refresh: Option<RefreshKind>) -> Vec<OutputSignal> {
             refresh.map(|r| vec![NeedsRefresh(r)]).unwrap_or(Vec::new())
         }
-        */
 
         match signal {
             SaveBottomBar
@@ -392,20 +381,16 @@ impl Horiz {
             ShiftFocus(d, n) => match d {
                 Up if n <= self.selected_idx => {
                     self.selected_idx -= n;
-                    self.inner_views[self.selected_idx].1.focus();
                     (
                         false,
-                        vec![NeedsRefresh(Full)],
-                        // to_signal(self.inner_views[self.selected_idx].1.focus()),
+                        to_signal(self.inner_views[self.selected_idx].1.focus()),
                     )
                 }
                 Down if self.selected_idx + n < self.inner_views.len() => {
                     self.selected_idx += n;
-                    self.inner_views[self.selected_idx].1.focus();
                     (
                         false,
-                        vec![NeedsRefresh(Full)],
-                        // to_signal(self.inner_views[self.selected_idx].1.focus()),
+                        to_signal(self.inner_views[self.selected_idx].1.focus()),
                     )
                 }
                 Up => (false, vec![ShiftFocus(Up, n - self.selected_idx)]),
@@ -423,29 +408,181 @@ impl Horiz {
     }
 }
 
+/// A vertically-split container of two (or more) [`View`]s
+///
+/// For the difference between horizontal and vertical splits, please refer to the
+/// [module-level documentation].
+///
+/// [`View`]: ../trait.View.html
+/// [module-level documentation]: index.html
+pub struct Vert {
+    /// The total size of the `View`
+    size: TermSize,
+
+    /// The index in `inner_views` of the view that is currently selected.
+    selected_idx: usize,
+
+    /// The set of internal `View`s and the number of columns that each takes up on the screen.
+    /// Lower indices correspond to `View`s displayed further left on the screen. To take the
+    /// module-level documentation as an example, we would have the following indices:
+    /// ```text
+    /// ╔══════════╦══════════╗
+    /// ║          ║          ║
+    /// ║          ║          ║
+    /// ║ inner[0] ║ inner[1] ║
+    /// ║          ║          ║
+    /// ║          ║          ║
+    /// ╚══════════╩══════════╝
+    /// ```
+    /// It should be noted that this number of columns does not include the vertical bars inserted
+    /// between views.
+    inner_views: Vec<(u16, Box<dyn ConcreteView>)>,
+
+    /// Whether a custom bottom bar is included within the region of the screen allocated to this
+    /// `View`
+    // TODO: Describe in more detail.
+    include_bottom_bar: bool,
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Publicly-exposed API/methods - `Vert`                                      //
+////////////////////////////////////////////////////////////////////////////////
+
+impl Vert {
+    pub fn construct(views: Vec<Box<dyn ConcreteView>>) -> Self {
+        Self {
+            // It's easier to do it this way, than to handle passing sizes through
+            //
+            // We'll just resize on the first refresh
+            size: (1, 1).into(),
+            selected_idx: 0,
+            // Again, just passing it a random value
+            inner_views: views.into_iter().map(|v| (10, v)).collect(),
+            // Another one of the "easier to just resize" scenarios
+            include_bottom_bar: true,
+        }
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Trait implementations - `Vert`                                             //
 ////////////////////////////////////////////////////////////////////////////////
 
 impl View for Vert {
     fn refresh(&mut self, painter: &Painter) {
-        todo!()
+        // This function is largely duplicated from `Horiz`. Each item is explained in detail
+        // there; for more information please refer to `Horiz::refresh`.
+
+        log::trace!(">>> refresh vert");
+
+        if painter.distinct_bottom_bar() == self.include_bottom_bar {
+            self.include_bottom_bar = !painter.distinct_bottom_bar();
+        }
+
+        if painter.size() != self.size {
+            self.size = painter.size();
+            self.resize();
+        }
+
+        if !self.can_display() {
+            const CANNOT_DISPLAY: &'static str =
+                "View too small; please resize or close inner views";
+            let range = 0..CANNOT_DISPLAY.len().min(painter.size().width as usize);
+            painter.print_single(0, 0, CANNOT_DISPLAY[range].red().on_white().to_string());
+            return;
+        }
+
+        let mut left_col = 0_u16;
+        let num_inner = self.inner_views.len();
+        for (i, &mut (n_cols, ref mut view)) in self.inner_views.iter_mut().enumerate() {
+            // This is safe to unwrap because we already know that it's within the bounds of the
+            // painter
+            let inner_painter = painter
+                .slice_horizontally(left_col..left_col + n_cols)
+                .unwrap();
+            view.refresh(&inner_painter);
+
+            left_col += n_cols;
+
+            if i != num_inner - 1 {
+                // get the single column that we want to display
+                let col_painter = painter.slice_horizontally(left_col..left_col + 1).unwrap();
+                let iter = iter::repeat('|').map(|c| (0..1, c.black().on_white().to_string()));
+                col_painter.print_lines(iter);
+                left_col += 1;
+            }
+        }
+
+        if self.include_bottom_bar {
+            let text = self
+                .construct_bottom_text(self.size.width)
+                .black()
+                .on_white()
+                .to_string();
+            painter.print_single(self.size.height - 1, 0, text);
+        }
     }
 
     fn refresh_cursor(&self, painter: &Painter) {
-        todo!()
+        // Get the inner painter corresponding to that index
+        let idx = u16::try_from(self.selected_idx).unwrap_or(u16::MAX);
+        let cols_offset = idx.saturating_add(
+            self.inner_views[..self.selected_idx]
+                .iter()
+                .map(|(r, _)| r)
+                .sum(),
+        );
+        let width = self.inner_views[self.selected_idx].0;
+
+        let inner_painter = match painter.slice_horizontally(cols_offset..cols_offset + width) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let inner_painter = match self.include_bottom_bar {
+            true => match inner_painter.trim_bot(1) {
+                Some(p) => p,
+                None => return,
+            },
+            false => inner_painter,
+        };
+
+        self.inner_views[self.selected_idx]
+            .1
+            .refresh_cursor(&inner_painter)
     }
 
     fn bottom_left_text(&mut self) -> Option<(String, usize)> {
-        todo!()
+        None
     }
 
     fn bottom_right_text(&mut self) -> Option<(String, usize)> {
-        todo!()
+        None
     }
 
     fn prefer_bottom_left(&self) -> bool {
         false
+    }
+
+    fn construct_bottom_text(&mut self, width: u16) -> String {
+        if width != self.size.width {
+            self.size.width = width;
+            self.resize();
+        }
+
+        let &mut (w, ref mut v) = &mut self.inner_views[0];
+        let mut text = v.construct_bottom_text(w).black().on_white().to_string();
+
+        for &mut (width, ref mut view) in self.inner_views.iter_mut() {
+            text += &" ".black().on_white().to_string();
+            text += &view
+                .construct_bottom_text(width)
+                .black()
+                .on_white()
+                .to_string();
+        }
+
+        text
     }
 }
 
@@ -453,6 +590,172 @@ impl ConcreteView for Vert {}
 
 impl SignalHandler for Vert {
     fn try_handle(&mut self, signal: Signal) -> Option<Vec<OutputSignal>> {
-        todo!()
+        let current_focus = &mut self.inner_views[self.selected_idx].1;
+        let output_signals = current_focus.try_handle(signal)?;
+        Some(self.handle_signals(output_signals))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Helper methods - `Vert`                                                    //
+////////////////////////////////////////////////////////////////////////////////
+
+impl Vert {
+    /// Returns the current width of the `View` as given by the sum of the widths of inner views
+    /// (plus inner columns). This need not fit within a `u16`.
+    fn current_sum_width(&self) -> usize {
+        // This is largely replicated from `Horiz::current_sum_height`. For more comments, see that
+        // function.
+        (self.inner_views.len() - 1)
+            + self
+                .inner_views
+                .iter()
+                .map(|&(s, _)| s as usize)
+                .sum::<usize>()
+    }
+
+    fn resize(&mut self) {
+        // If we can't fit anything, simply return
+        let min_width = 2 * self.inner_views.len() - 1;
+        if min_width > self.size.height as usize {
+            return;
+        }
+
+        let size_total = self.current_sum_width();
+
+        let include_bar = |this: &Vert, inner_idx: usize| inner_idx < this.inner_views.len() - 1;
+
+        // The ratios in the screen
+        let ratios = self.inner_views.iter().enumerate().map(|(i, &(h, _))| {
+            let width = match include_bar(self, i) {
+                true => h + 1,
+                false => h,
+            };
+
+            (i, width as f64)
+        });
+
+        // the scaling ratio to apply
+        let scale = self.size.width as f64 / size_total as f64;
+
+        let min_width = |this, inner_idx| match include_bar(this, inner_idx) {
+            true => 2,
+            false => 1,
+        };
+
+        // Produce the new heights. We round down so that the last line can *always* pick up the
+        // slack - if we didn't this would not be guaranteed.
+        let mut running_total_width = 0_u16;
+        let new_widths = ratios
+            .map(|(i, r)| {
+                let mut w = ((r * scale) as u16).max(min_width(self, i));
+                running_total_width += w;
+                if include_bar(self, i) {
+                    w -= 1;
+                }
+
+                (i, w)
+            })
+            .collect::<Vec<_>>();
+
+        for (i, w) in new_widths.into_iter() {
+            self.inner_views[i].0 = w;
+        }
+
+        let diff = self.size.width - running_total_width;
+        self.inner_views.last_mut().unwrap().0 += diff;
+    }
+
+    /// Returns whether the inner contents of the split can actually be displayed. This may be
+    /// false if `self.size` cannot accomodate even a single column from each inner view
+    fn can_display(&self) -> bool {
+        match u16::try_from(self.current_sum_width()) {
+            Err(_) => false,
+            // For an explanation of why this is `==` and not `<=`, see `Horiz::can_display`
+            Ok(w) => w == self.size.width,
+        }
+    }
+
+    // Copied exactly line-for-line from `Horiz::handle_singals`
+    fn handle_signals(&mut self, signals: Vec<OutputSignal>) -> Vec<OutputSignal> {
+        let mut outputs = Vec::new();
+        let mut sigs_iter = signals.into_iter();
+        while let Some(s) = sigs_iter.next() {
+            let (early_exit, sigs) = self.handle_output_signal(s);
+            outputs.extend(sigs);
+            if early_exit {
+                outputs.extend(sigs_iter);
+                return outputs;
+            }
+        }
+
+        outputs
+    }
+
+    /// Returns the output signals and whether the caller should exit early - this will occur in
+    /// cases where we are replacing *this* `View` -- output signals should not be handled any
+    /// further.
+    fn handle_output_signal(&mut self, signal: OutputSignal) -> (bool, Vec<OutputSignal>) {
+        // NOTE: This is copied nearly line-for-line from `Horiz::handle_output_signal`
+        use Direction::{Down, Left, Right, Up};
+        use OutputSignal::{
+            ClearBottomBar, Close, LeaveBottomBar, NeedsRefresh, NoSuchCmd, Open, Replace,
+            SaveBottomBar, SetBottomBar, ShiftFocus, WaitingForMore,
+        };
+        use RefreshKind::{Full, Inner};
+
+        fn to_signal(refresh: Option<RefreshKind>) -> Vec<OutputSignal> {
+            refresh.map(|r| vec![NeedsRefresh(r)]).unwrap_or(Vec::new())
+        }
+
+        match signal {
+            SaveBottomBar
+            | SetBottomBar { .. }
+            | LeaveBottomBar
+            | ClearBottomBar
+            | NoSuchCmd
+            | WaitingForMore => (false, vec![signal]),
+            NeedsRefresh(_) => (false, vec![NeedsRefresh(Inner)]),
+            Replace(new_view) => {
+                self.inner_views[self.selected_idx].1 = new_view;
+                (false, Vec::new())
+            }
+            Close if self.inner_views.len() == 2 => {
+                self.inner_views.remove(self.selected_idx);
+                (true, vec![Replace(self.inner_views.pop().unwrap().1)])
+            }
+            // inner_views.len() > 2
+            Close => {
+                self.inner_views.remove(self.selected_idx);
+                self.selected_idx = self.selected_idx.min(self.inner_views.len() - 1);
+                (false, vec![NeedsRefresh(Full)])
+            }
+            ShiftFocus(d, n) => match d {
+                Left if n <= self.selected_idx => {
+                    self.selected_idx -= n;
+                    (
+                        false,
+                        to_signal(self.inner_views[self.selected_idx].1.focus()),
+                    )
+                }
+                Right if self.selected_idx + n < self.inner_views.len() => {
+                    self.selected_idx += n;
+                    (
+                        false,
+                        to_signal(self.inner_views[self.selected_idx].1.focus()),
+                    )
+                }
+                Left => (false, vec![ShiftFocus(Up, n - self.selected_idx)]),
+                Right => (
+                    false,
+                    vec![ShiftFocus(
+                        Up,
+                        n - (self.inner_views.len() - self.selected_idx - 1),
+                    )],
+                ),
+                Up | Down => (false, vec![ShiftFocus(d, n)]),
+            },
+            Open(_, _) => todo!(),
+        }
     }
 }

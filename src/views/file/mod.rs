@@ -460,7 +460,7 @@ fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
     use mode_handler::Cmd::Other;
     use super::MetaCmd::{TryClose, Custom, Split, ShiftFocus};
     use super::ExitKind::{ReqSave, NoSave};
-    use Direction::{Up, Down};
+    use Direction::{Down, Left, Right, Up};
     use FileMeta::Save;
 
     let keys = vec![
@@ -468,11 +468,16 @@ fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
         ("q!", vec![Other(TryClose(NoSave))]),
         ("w", vec![Other(Custom(Save))]),
         ("wq", vec![Other(Custom(Save)), Other(TryClose(ReqSave))]),
+
+        // Splits
         ("sp", vec![Other(Split(Down))]),
+        ("vs", vec![Other(Split(Left))]),
         
         // Temporary, until config is sorted
         ("up", vec![Other(ShiftFocus(Up, 1))]),
         ("down", vec![Other(ShiftFocus(Down, 1))]),
+        ("left", vec![Other(ShiftFocus(Left, 1))]),
+        ("right", vec![Other(ShiftFocus(Right, 1))]),
     ];
 
     Trie::from_iter(keys.into_iter().map(|(key,cmd)| (key.chars().collect(), cmd)))

@@ -8,7 +8,7 @@ use crate::event::{KeyEvent, MouseEvent};
 use crate::mode::Direction;
 use crate::runtime::{self as rt, Painter, TermSize};
 use crate::utils;
-use crate::views::split::Horiz;
+use crate::views::split::{Horiz, Vert};
 use crate::views::{self, ConcreteView, RefreshKind, ViewKind};
 
 /// The primary interface between the runtime and the tree of `View`s
@@ -530,12 +530,13 @@ impl Container {
         let old_inner = self.inner.take().unwrap();
 
         let inner = match direction {
-            Up => Horiz::construct(vec![new_inner, old_inner]),
-            Down => Horiz::construct(vec![old_inner, new_inner]),
-            Left | Right => todo!(),
+            Up => Box::new(Horiz::construct(vec![new_inner, old_inner])) as Box<dyn ConcreteView>,
+            Down => Box::new(Horiz::construct(vec![old_inner, new_inner])),
+            Left => Box::new(Vert::construct(vec![new_inner, old_inner])),
+            Right => Box::new(Vert::construct(vec![old_inner, new_inner])),
         };
 
-        self.inner = Some(Box::new(inner));
+        self.inner = Some(inner);
         self.handle_refresh(RefreshKind::Full);
     }
 }

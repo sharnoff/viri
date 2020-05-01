@@ -103,6 +103,30 @@ impl<'a> Painter<'a> {
         })
     }
 
+    pub fn slice_horizontally<'b: 'a>(&'b self, range: Range<u16>) -> Option<Painter<'b>> {
+        if self.size.width < range.end || range.start >= range.end {
+            return None;
+        }
+
+        // the position is relative to the parent painter
+        let pos = TermCoord {
+            row: 0,
+            col: range.start,
+        };
+
+        let size = TermSize {
+            width: range.end - range.start,
+            ..self.size
+        };
+
+        Some(Painter {
+            pos,
+            size,
+            parent: Some(self),
+            distinct_bottom_bar: self.distinct_bottom_bar,
+        })
+    }
+
     /// A helper function mostly for use in [`Container::handle_view_output_exits`]
     ///
     /// This returns a new painter whose size has been decreased vertically trimming the bottom. If
