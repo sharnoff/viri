@@ -22,6 +22,19 @@ pub struct Painter<'a> {
 
     /// The parent painter, if it exists.
     parent: Option<&'a Painter<'a>>,
+
+    /// A boolean value that is only really used in the context of [`views::split`]. This
+    /// determines whether the bottom bar for a [`View`] passed this struct will be distinct from
+    /// the bottom bar provided by the main [`Container`].
+    ///
+    /// This value defaults to false, and is set to true by the [`with_distinct_bottom_bar`] method.
+    /// All children inherit the current value by default.
+    ///
+    /// [`views::split`]: ../../views/split/index.html
+    /// [`View`]: ../../views/trait.View.html
+    /// [`Container`]: ../../container/struct.Container.html
+    /// [`with_distinct_bottom_bar`]: #method.with_distinct_bottom_bar
+    distinct_bottom_bar: bool,
 }
 
 /// A logical display region in the terminal
@@ -40,6 +53,7 @@ impl<'a> Painter<'a> {
             pos: (0, 0).into(),
             size,
             parent: None,
+            distinct_bottom_bar: false,
         }
     }
 
@@ -60,6 +74,35 @@ impl<'a> Painter<'a> {
                 .unwrap_or((0, 0).into())
     }
 
+    /// Returns a new painter whose vertical size has been decreased to the size of the given
+    /// range, by taking a subset of this painter's window, shifting as necessary.
+    ///
+    /// This will shift the painter downwards by `range.start`. If the painter cannot contain the
+    /// given range, `None` will be returned.
+    pub fn slice_vertically<'b: 'a>(&'b self, range: Range<u16>) -> Option<Painter<'b>> {
+        if self.size.height < range.end || range.start >= range.end {
+            return None;
+        }
+
+        // the position is relative to the parent painter
+        let pos = TermCoord {
+            row: range.start,
+            col: 0,
+        };
+
+        let size = TermSize {
+            height: range.end - range.start,
+            ..self.size
+        };
+
+        Some(Painter {
+            pos,
+            size,
+            parent: Some(self),
+            distinct_bottom_bar: self.distinct_bottom_bar,
+        })
+    }
+
     /// A helper function mostly for use in [`Container::handle_view_output_exits`]
     ///
     /// This returns a new painter whose size has been decreased vertically trimming the bottom. If
@@ -73,12 +116,13 @@ impl<'a> Painter<'a> {
         }
 
         Some(Painter {
-            pos: self.pos,
+            pos: (0, 0).into(),
             size: TermSize {
                 height: self.size.height - amount,
                 width: self.size.width,
             },
             parent: Some(self),
+            distinct_bottom_bar: self.distinct_bottom_bar,
         })
     }
 
@@ -94,8 +138,8 @@ impl<'a> Painter<'a> {
         }
 
         let pos = TermCoord {
-            col: self.pos.col + amount,
-            ..self.pos
+            col: amount,
+            row: 0,
         };
 
         let size = TermSize {
@@ -107,6 +151,7 @@ impl<'a> Painter<'a> {
             pos,
             size,
             parent: Some(self),
+            distinct_bottom_bar: self.distinct_bottom_bar,
         })
     }
 
@@ -127,10 +172,83 @@ impl<'a> Painter<'a> {
         };
 
         Some(Painter {
-            pos: self.pos,
+            pos: (0, 0).into(),
             size,
             parent: Some(self),
+            distinct_bottom_bar: self.distinct_bottom_bar,
         })
+    }
+
+    /// Returns whether the painter has a "distinct bottom bar". The meaning of this phrase is
+    /// discussed in more detail in the documentation for [`with_distinct_bottom_bar`].
+    ///
+    /// [`with_distinct_bottom_bar`]: #method.with_distinct_bottom_bar
+    pub fn distinct_bottom_bar(&self) -> bool {
+        self.distinct_bottom_bar
+    }
+
+    /// A method for setting the flag that the bottom bar is distinct, via method chaining.
+    ///
+    /// This method is only really used in the implementations within [`views::split`]. Additional
+    /// information is provided in the documentation on the field of this struct named
+    /// [`distinct_bottom_bar`]. Note that it *is* private, but can be shown by running the
+    /// following command:
+    ///
+    /// ```sh
+    /// cargo doc --document-private-items --open
+    /// ```
+    ///
+    /// ## Example usage
+    ///
+    /// ```
+    /// let size = (10, 20).into();
+    /// let painter = Painter::global(size).with_distinct_bottom_bar();
+    ///
+    /// // pass on `painter` to some function expecting one, noting that we handle output related
+    /// // to the bottom bar. In the case of `views::split`, we only handle displaying
+    /// // `bottom_{left,right}_text`.
+    /// ```
+    /// [`views::split`]: ../../views/split/index.html
+    /// [`distinct_bottom_bar`]: #structfield.distinct_bottom_bar
+    pub fn with_distinct_bottom_bar(self) -> Self {
+        Self {
+            distinct_bottom_bar: true,
+            ..self
+        }
+    }
+
+    /// Prints a single row on the painter, given the range of the line displayed and the number of
+    /// rows from the top (starting at zero).
+    ///
+    /// If `row` is greater than or equal to `self.size().height`, this function will panic, as it
+    /// is out of bounds. `col` is primarily for internal use; callers should provide a value of
+    /// zero.
+    ///
+    /// If you need to print many lines, it is advisable to use [`print_lines`] instead, which takes
+    /// an iterator.
+    ///
+    /// [`print_lines`]: #method.print_lines
+    pub fn print_single(&self, row: u16, col: u16, s: impl AsRef<str>) {
+        if row >= self.size.height {
+            panic!("row {:?} out of bounds for size {:?}", row, self.size);
+        }
+
+        let pos = self.abs_pos() + TermCoord { col, row };
+
+        /*
+        if let Some(p) = self.parent.as_ref() {
+            p.print_single(row + self.pos.row, col + self.pos.col, s);
+            return;
+        }
+        */
+
+        io::stdout()
+            .queue(cursor::MoveTo(pos.col, pos.row))
+            .unwrap()
+            .queue(style::Print(s.as_ref()))
+            .unwrap()
+            .flush()
+            .unwrap();
     }
 
     /// Prints the lines given, where they are expected to fill `line_range`
@@ -196,7 +314,7 @@ impl<'a> Painter<'a> {
         //
         // We'll use this iterator to keep track of things. If there's any left over after we're
         // done, we'll use this to clear the rest of the screen (if it needs it)
-        let mut line_indexes = window.rows.start as usize..window.rows.end as usize;
+        let mut line_indexes = 0..(window.rows.end - window.rows.start) as usize;
 
         let mut stdout = io::stdout();
         for (i, (segment, line)) in (&mut line_indexes).zip(iter) {

@@ -131,9 +131,6 @@ pub trait ContentProvider: Sized {
     /// A helper type for providing mutable access to the `Lines`
     type DerefMut<'a>: DerefMut<Target = Lines>;
 
-    /// An error type resulting from attempting to refresh the content
-    type RefreshError: Error;
-
     /// Locks the content, preventing write locks from being acquired from outside the current
     /// thread.
     ///
@@ -158,7 +155,7 @@ pub trait ContentProvider: Sized {
     fn content_mut<'a>(&'a mut self) -> Self::DerefMut<'a>;
 
     /// Refreshes the content, providing a list of the changes
-    fn refresh(&mut self) -> Result<Vec<Diff>, Self::RefreshError>;
+    fn refresh(&mut self) -> Vec<Diff>;
 
     ////////////////////////////////////////////////////////////////////////////////
     // Default method implementations                                             //
@@ -328,7 +325,6 @@ pub trait ContentProvider: Sized {
 impl ContentProvider for Lines {
     type Deref<'a> = &'a Self;
     type DerefMut<'a> = &'a mut Self;
-    type RefreshError = !;
 
     fn lock(&mut self) {}
     fn unlock(&mut self) {}
@@ -341,8 +337,8 @@ impl ContentProvider for Lines {
         self
     }
 
-    fn refresh(&mut self) -> Result<Vec<Diff>, !> {
-        Ok(Vec::new())
+    fn refresh(&mut self) -> Vec<Diff> {
+        Vec::new()
     }
 }
 

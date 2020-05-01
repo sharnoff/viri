@@ -6,7 +6,7 @@ use crate::mode::handler::{Cmd, Executor};
 use crate::mode::{self, CursorStyle};
 use crate::text::ContentProvider;
 use crate::views::buffer::ViewBuffer;
-use crate::views::{ExitKind, MetaCmd, OutputSignal};
+use crate::views::{ConcreteView, ExitKind, MetaCmd, OutputSignal};
 
 /// The internal `Executor` that allows handling of mode switching within the main `View`
 pub(super) struct FileExecutor {
@@ -26,8 +26,8 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
         };
         use ExitKind::ReqSave;
         use FileMeta::Save;
-        use MetaCmd::{Custom, TryClose};
-        use OutputSignal::{Close, NeedsRefresh};
+        use MetaCmd::{Custom, Replace, Split, TryClose};
+        use OutputSignal::{Close, NeedsRefresh, Open, ShiftFocus};
 
         // Getting a few definitions out of the way
         //
@@ -45,6 +45,10 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                         Some(vec![OutputSignal::error(UNSAVED, None, true)])
                     }
                     TryClose(_) => Some(vec![Close]),
+                    Split(d) => Some(vec![Open(d, self.clone_into_builder())]),
+                    MetaCmd::Open(_, _) => todo!(),
+                    MetaCmd::ShiftFocus(d, n) => Some(vec![ShiftFocus(d, n)]),
+                    Replace(_) => todo!(),
                     Custom(Save) => match self.try_save() {
                         Ok(()) => Some(Vec::new()),
                         Err(err_str) => Some(vec![OutputSignal::error(&err_str, None, true)]),
@@ -147,5 +151,21 @@ impl FileExecutor {
     /// been written to the file system
     fn unsaved(&self) -> bool {
         self.buffer.provider().unsaved()
+    }
+
+    fn clone_into_builder(&mut self) -> Box<dyn ConcreteView> {
+        let file = self.buffer.provider_mut().clone();
+        // We'll just pass it a random size - it'll be resized on the first refresh anyways
+        let size = (10, 10).into();
+
+        let mut buffer = ViewBuffer::new(size, file);
+        buffer.set_prefix(super::line_num_width, super::line_num_prefix);
+        Box::new(super::View {
+            handler: super::ModeHandler::new(
+                FileExecutor { buffer },
+                super::NormalMode::default(),
+                super::ModeSet::all(),
+            ),
+        })
     }
 }

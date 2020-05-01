@@ -1,17 +1,14 @@
-use crossterm::style::Colorize;
-
 use super::buffer::ViewBuffer;
-use super::{
-    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, ViewKind,
-};
+use super::{ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler};
 use crate::config::prelude::*;
 use crate::container::Signal;
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::mode::handler::{self as mode_handler, Executor, Handler as ModeHandler};
-use crate::mode::{normal::Mode as NormalMode, ModeSet};
+use crate::mode::{normal::Mode as NormalMode, Direction, ModeSet};
 use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
 use crate::trie::Trie;
+use crossterm::style::Colorize;
 
 mod edits;
 mod executor;
@@ -50,10 +47,19 @@ impl super::View for View {
         self.buffer().refresh_cursor(painter);
     }
 
-    fn bottom_left_text(&mut self) -> Option<(String, usize)> {
-        let text = self.handler.try_name_with_width();
+    fn focus(&mut self) -> Option<RefreshKind> {
+        self.buffer_mut().focus()
+    }
 
-        text.map(|(s, w)| (String::from(s), w))
+    fn bottom_left_text(&mut self) -> Option<(String, usize)> {
+        let handle = self.buffer().provider();
+        let mut path_name = handle.locator().to_string();
+        if handle.unsaved() {
+            path_name += " [+]";
+        }
+
+        let width = path_name.len();
+        Some((path_name, width))
     }
 
     fn bottom_right_text(&mut self) -> Option<(String, usize)> {
@@ -207,11 +213,7 @@ fn line_num_prefix(buf: &ViewBuffer<Handle>, line: usize) -> String {
     }
 }
 
-impl ConcreteView for View {
-    fn kind(&self) -> ViewKind {
-        ViewKind::File
-    }
-}
+impl ConcreteView for View {}
 
 impl SignalHandler for View {
     #[rustfmt::skip]
@@ -366,7 +368,7 @@ impl View {
                 // First, we check to see if there's a direct match
                 if let Some(cmds) = cfg.keys.get(&chars) {
                     let mut signals = self.execute_group(cmds);
-                    signals.extend_from_slice(&[SaveBottomBar, LeaveBottomBar]);
+                    signals.extend(vec![SaveBottomBar, LeaveBottomBar]);
                     return Some(signals);
                 }
 
@@ -379,7 +381,7 @@ impl View {
                     Some(n) => match n.try_extract() {
                         Some(cmds) => {
                             let mut signals = self.execute_group(cmds);
-                            signals.extend_from_slice(&[SaveBottomBar, LeaveBottomBar]);
+                            signals.extend(vec![SaveBottomBar, LeaveBottomBar]);
                             return Some(signals);
                         }
 
@@ -456,8 +458,9 @@ impl XFrom<Builder> for Config {
 #[rustfmt::skip]
 fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
     use mode_handler::Cmd::Other;
-    use super::MetaCmd::{TryClose, Custom};
+    use super::MetaCmd::{TryClose, Custom, Split, ShiftFocus};
     use super::ExitKind::{ReqSave, NoSave};
+    use Direction::{Up, Down};
     use FileMeta::Save;
 
     let keys = vec![
@@ -465,6 +468,11 @@ fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
         ("q!", vec![Other(TryClose(NoSave))]),
         ("w", vec![Other(Custom(Save))]),
         ("wq", vec![Other(Custom(Save)), Other(TryClose(ReqSave))]),
+        ("sp", vec![Other(Split(Down))]),
+        
+        // Temporary, until config is sorted
+        ("up", vec![Other(ShiftFocus(Up, 1))]),
+        ("down", vec![Other(ShiftFocus(Down, 1))]),
     ];
 
     Trie::from_iter(keys.into_iter().map(|(key,cmd)| (key.chars().collect(), cmd)))

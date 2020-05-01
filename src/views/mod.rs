@@ -27,11 +27,12 @@
 // They're here to allow everything else to function.
 
 use crate::container;
-use crate::mode;
+use crate::mode::{self, Direction};
 use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
 use crate::utils;
 use crossterm::style::Colorize;
+use std::fmt::{self, Debug, Formatter};
 
 //-/////////////////////////////////////////////////////////////////////////-//
 // Header 0: Imports                                                         //
@@ -48,7 +49,7 @@ use crossterm::style::Colorize;
 // Builtin modules:
 mod buffer;
 mod file;
-mod split;
+pub mod split;
 
 // mod your_mod;
 
@@ -117,6 +118,12 @@ pub trait View {
 
     /// Sets the position of the cursor through the painter
     fn refresh_cursor(&self, painter: &Painter);
+
+    /// Records that the `View` has been put into focus, optionally returning the type of refresh
+    /// needed, if any.
+    fn focus(&mut self) -> Option<RefreshKind> {
+        None
+    }
 
     /// Gives the text to display at the bottom-left of the screen
     ///
@@ -209,10 +216,7 @@ pub trait View {
 ///
 /// All [`View`]s implement this trait, with the exception of `ViewBuffer`, which cannot be used
 /// directly.
-pub trait ConcreteView: View + SignalHandler {
-    /// Returns the `ViewKind` associated with the `View`
-    fn kind(&self) -> ViewKind;
-}
+pub trait ConcreteView: View + SignalHandler {}
 
 /// Helper for `ConcreteView`
 ///
@@ -242,7 +246,6 @@ pub trait SignalHandler {
 
 /// Distinct from `runtime::Signal` or a `container::Signal`, this communicates between a `View`
 /// and its parent, eventually leading up to the host `Container`.
-#[derive(Clone, Debug)]
 pub enum OutputSignal {
     NeedsRefresh(RefreshKind),
     SaveBottomBar,
@@ -261,7 +264,14 @@ pub enum OutputSignal {
     },
     LeaveBottomBar,
     ClearBottomBar,
+    Open(Direction, Box<dyn ConcreteView>),
+    /// Indicates a request to replace the current view with the given one. This *must* be
+    /// performed as the sender may now have an invalid state
+    Replace(Box<dyn ConcreteView>),
     Close,
+    /// A request to shift the cursor's focus in the given direction by the given number of
+    /// `View`s.
+    ShiftFocus(Direction, usize),
     NoSuchCmd,
     WaitingForMore,
 }
@@ -279,11 +289,28 @@ pub enum RefreshKind {
 /// A general command that may be passed to a `View`
 pub type Cmd<T> = mode::Cmd<MetaCmd<T>>;
 
-/// Commands for manipulating the current
+/// Commands for manipulating the currently-focussed `View`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MetaCmd<T> {
     /// A request to close the current view
     TryClose(ExitKind),
+
+    /// A request to split the current view in two, placing the new view in the given direction
+    /// from the current one. The focus should shift from the current `View` to the new one
+    Split(Direction),
+
+    /// A request to open a view corresponding to the given `ViewKind` in a new `View`, splitting
+    /// the current one in the given direction. The focus should shift from the current `View` to
+    /// the new one
+    Open(Direction, ViewKind),
+
+    /// A request to replace the current view with the given `ViewKind`. If the current view is
+    /// unable to be closed, this may alternatively open the other view in a split, where the new
+    /// `View` is now focussed.
+    Replace(ViewKind),
+
+    /// A request to move the cursor's focus a number of views in the given direction
+    ShiftFocus(Direction, usize),
 
     /// Any custom operation relevant only to that particular view
     Custom(T),
@@ -318,6 +345,44 @@ impl OutputSignal {
             value,
             width: width.unwrap_or_else(|| msg.len()),
             cursor_col: None,
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Boilerplate trait implementations                                          //
+////////////////////////////////////////////////////////////////////////////////
+
+impl Debug for OutputSignal {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        use OutputSignal::{
+            ClearBottomBar, Close, LeaveBottomBar, NeedsRefresh, NoSuchCmd, Open, Replace,
+            SaveBottomBar, SetBottomBar, ShiftFocus, WaitingForMore,
+        };
+
+        match self {
+            NeedsRefresh(k) => write!(f, "NeedsRefresh({:?})", k),
+            SaveBottomBar => write!(f, "SaveBottomBar"),
+            SetBottomBar {
+                prefix,
+                value,
+                width,
+                cursor_col,
+            } => f
+                .debug_struct("SetBottomBar")
+                .field("prefix", prefix)
+                .field("value", value)
+                .field("width", width)
+                .field("cursor_col", cursor_col)
+                .finish(),
+            LeaveBottomBar => write!(f, "LeaveBottomBar"),
+            ClearBottomBar => write!(f, "ClearBottomBar"),
+            Open(d, _) => write!(f, "Open({:?}, ..)", d),
+            Replace(_) => write!(f, "Replace(_)"),
+            Close => write!(f, "Close"),
+            ShiftFocus(d, n) => write!(f, "ShiftFocus({:?}, {:?})", d, n),
+            NoSuchCmd => write!(f, "NoSuchCmd"),
+            WaitingForMore => write!(f, "WaitingForMore"),
         }
     }
 }

@@ -138,12 +138,12 @@ pub struct File {
 #[derive(Copy, Debug, PartialEq, Clone, Eq, Hash)]
 pub struct HandleId(u64);
 
-/// A locator represents a unique identifier for a
+/// A locator represents a unique identifier for a file
 ///
 /// This is used as the key for the global registry.
 // This will eventually also include external files for collaborative editing
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
-enum Locator {
+pub enum Locator {
     /// A file's absolute, canonicalized path
     Path(PathBuf),
 
@@ -415,6 +415,25 @@ impl Handle {
     pub fn end_edit_block(&mut self) {
         self.file.write().edits.end_edit_block()
     }
+
+    /// Clones the handle. This requires a mutable reference in order to obtain a write lock on the
+    /// underlying file's number of handles.
+    pub fn clone(&mut self) -> Self {
+        let mut guard = self.file.write();
+        guard.n_handles += 1;
+        drop(guard);
+
+        Self {
+            file: self.file.clone(),
+            id: gen_handle_id(),
+            last_diff_id: self.last_diff_id,
+        }
+    }
+
+    /// Returns the locator corresponding to the underlying file.
+    pub fn locator(&self) -> Locator {
+        self.file.read().locator.clone()
+    }
 }
 
 impl File {
@@ -458,7 +477,6 @@ impl File {
 impl ContentProvider for Handle {
     type Deref<'a> = ContentReadGuard<'a>;
     type DerefMut<'a> = ContentWriteGuard<'a>;
-    type RefreshError = io::Error;
 
     fn lock(&mut self) {
         self.file.lock();
@@ -504,14 +522,40 @@ impl ContentProvider for Handle {
                 .make_edit(diff.clone(), EditOwner::Local(self.id));
             let diff_id = file.last_diff_id.get_inc();
             file.diff_history.push((diff_id, diff, Some(self.id)));
+            self.last_diff_id = diff_id;
         }
         res
     }
 
     /// Refreshes the handle, returning all of the diffs that have been applied since the last
     /// interaction with that particular handle.
-    fn refresh(&mut self) -> io::Result<Vec<Diff>> {
-        todo!()
+    fn refresh(&mut self) -> Vec<Diff> {
+        let file = self.file.read();
+        let idx_in_history = file
+            .diff_history
+            .binary_search_by_key(&self.last_diff_id, |&(id, _, _)| id)
+            .map(|i| i + 1)
+            .unwrap_or_else(|i| i);
+
+        log::trace!(
+            ">>> handle::refresh: found idx {}; len {}",
+            idx_in_history,
+            file.diff_history.len()
+        );
+
+        if let Some(id) = file.diff_history.last().map(|&(id, _, _)| id) {
+            self.last_diff_id = id;
+        }
+
+        if idx_in_history < file.diff_history.len() {
+            file.diff_history[idx_in_history..]
+                .iter()
+                .map(|(_, diff, _)| diff)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -543,6 +587,7 @@ impl Drop for Handle {
         // Decrement the counter, like we said we would
         // -> For more info, see documentation for Handle.file and File.n_handles
         file_guard.n_handles -= 1;
+        drop(file_guard);
     }
 }
 
@@ -587,6 +632,17 @@ impl Display for WriteError {
         match self {
             Self::Io(io_err) => write!(f, "Could not write to file: {}", io_err),
             Self::IsUnnamed => write!(f, "Could not write to file; it is unnamed"),
+        }
+    }
+}
+
+impl Display for Locator {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        use Locator::{Local, Path};
+
+        match self {
+            Path(p) => write!(f, "{}", p.to_string_lossy()),
+            Local(_) => write!(f, "[No Name]"),
         }
     }
 }

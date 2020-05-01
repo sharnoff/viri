@@ -5,8 +5,10 @@ use std::io::{self, Write};
 use crossterm::{cursor, style, QueueableCommand};
 
 use crate::event::{KeyEvent, MouseEvent};
+use crate::mode::Direction;
 use crate::runtime::{self as rt, Painter, TermSize};
 use crate::utils;
+use crate::views::split::Horiz;
 use crate::views::{self, ConcreteView, RefreshKind, ViewKind};
 
 /// The primary interface between the runtime and the tree of `View`s
@@ -18,8 +20,10 @@ use crate::views::{self, ConcreteView, RefreshKind, ViewKind};
 /// [`View`]: ../views/trait.View.html
 /// [`handle_rt_event`]: #method.handle_rt_event
 pub struct Container {
-    /// The displayed view. We box it so that any type of view may be used.
-    inner: Box<dyn ConcreteView>,
+    /// The displayed view. We box it so that any type of view may be used. This value will only
+    /// ever temporarily be `None` - it can be assumed to be `Some(_)` everywhere outside the
+    /// places it is obviously not.
+    inner: Option<Box<dyn ConcreteView>>,
 
     /// The current size of the editor
     ///
@@ -127,6 +131,14 @@ impl Container {
             InputMode::Normal => 1,
         }
     }
+
+    fn inner(&self) -> &Box<dyn ConcreteView> {
+        self.inner.as_ref().unwrap()
+    }
+
+    fn inner_mut(&mut self) -> &mut Box<dyn ConcreteView> {
+        self.inner.as_mut().unwrap()
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -158,7 +170,7 @@ impl Container {
                 let painter = Painter::global(self.size);
                 if let Ok(offset) = self.bottom_offset().try_into() {
                     if let Some(mut p) = painter.trim_bot(offset) {
-                        self.inner.refresh_cursor(&mut p);
+                        self.inner().refresh_cursor(&mut p);
                     }
                 }
             }
@@ -170,7 +182,8 @@ impl Container {
         match &self.input_mode {
             InputMode::Normal => {
                 // get the bottom bar from the view
-                let bot_str = self.inner.construct_bottom_text(self.size.width);
+                let width = self.size.width;
+                let bot_str = self.inner_mut().construct_bottom_text(width);
 
                 // And now print it
                 //
@@ -257,7 +270,7 @@ impl Container {
 
                 log::debug!("{}:{}: giving inner signal: {:?}", file!(), line!(), signal);
 
-                self.inner.try_handle(signal)
+                self.inner.as_mut().unwrap().try_handle(signal)
             }
             Resize(size) => {
                 self.size = size;
@@ -303,7 +316,7 @@ impl Container {
         inner.refresh(&mut Painter::global(inner_size));
 
         let mut this = Self {
-            inner,
+            inner: Some(inner),
             size,
             input_mode,
             previous_bottom_bars: HashMap::new(),
@@ -334,11 +347,12 @@ impl Container {
     /// Returns true iff the the resulting signal successfully requested an exit
     fn handle_view_output_exits(&mut self, signal: views::OutputSignal) -> bool {
         use views::OutputSignal::{
-            ClearBottomBar, Close, LeaveBottomBar, NeedsRefresh, NoSuchCmd, SaveBottomBar,
-            SetBottomBar, WaitingForMore,
+            ClearBottomBar, Close, LeaveBottomBar, NeedsRefresh, NoSuchCmd, Open, Replace,
+            SaveBottomBar, SetBottomBar, ShiftFocus, WaitingForMore,
         };
 
         match signal {
+            ShiftFocus(_, _) => (),
             NeedsRefresh(kind) => self.handle_refresh(kind),
             SaveBottomBar => self.save_bottom_bar(),
 
@@ -358,6 +372,13 @@ impl Container {
 
             // TODO - In a later version we'll need to keep track of this
             WaitingForMore => {}
+
+            Replace(new_view) => {
+                self.inner = Some(new_view);
+                self.handle_refresh(RefreshKind::Full);
+            }
+
+            Open(direction, new_view) => self.open_new(direction, new_view),
 
             // If the outer-most view closes, we exit.
             Close => return true,
@@ -392,7 +413,7 @@ impl Container {
                 self.update_cursor();
             }
             Full | Inner if local.is_some() => {
-                self.inner.refresh(local.as_mut().unwrap());
+                self.inner_mut().refresh(local.as_mut().unwrap());
                 self.write_bottom_bar();
                 self.update_cursor();
             }
@@ -501,5 +522,20 @@ impl Container {
                 self.update_cursor();
             }
         }
+    }
+
+    fn open_new(&mut self, direction: Direction, new_inner: Box<dyn ConcreteView>) {
+        use Direction::{Down, Left, Right, Up};
+
+        let old_inner = self.inner.take().unwrap();
+
+        let inner = match direction {
+            Up => Horiz::construct(vec![new_inner, old_inner]),
+            Down => Horiz::construct(vec![old_inner, new_inner]),
+            Left | Right => todo!(),
+        };
+
+        self.inner = Some(Box::new(inner));
+        self.handle_refresh(RefreshKind::Full);
     }
 }
