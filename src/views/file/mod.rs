@@ -306,7 +306,9 @@ impl View {
     }
 
     fn handle_colon_key(&mut self, cmd: &str, key: KeyEvent) -> Option<Vec<OutputSignal>> {
-        use OutputSignal::{ClearBottomBar, LeaveBottomBar, NoSuchCmd, SetBottomBar};
+        use OutputSignal::{
+            ClearBottomBar, LeaveBottomBar, NoSuchCmd, SaveBottomBar, SetBottomBar,
+        };
 
         if key.mods != KeyModifiers::NONE {
             return None;
@@ -363,7 +365,9 @@ impl View {
 
                 // First, we check to see if there's a direct match
                 if let Some(cmds) = cfg.keys.get(&chars) {
-                    return Some(self.execute_group(cmds));
+                    let mut signals = self.execute_group(cmds);
+                    signals.extend_from_slice(&[SaveBottomBar, LeaveBottomBar]);
+                    return Some(signals);
                 }
 
                 let node = cfg.keys.find(&chars);
@@ -373,7 +377,11 @@ impl View {
                     None => no_such_command,
                     Some(n) if n.size() == 0 => no_such_command,
                     Some(n) => match n.try_extract() {
-                        Some(cmds) => Some(self.execute_group(cmds)),
+                        Some(cmds) => {
+                            let mut signals = self.execute_group(cmds);
+                            signals.extend_from_slice(&[SaveBottomBar, LeaveBottomBar]);
+                            return Some(signals);
+                        }
 
                         // This is an ambiguous case, so maybe we flash the bottom bar?
                         None => {

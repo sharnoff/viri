@@ -16,7 +16,7 @@ use crate::prelude::*;
 use crate::runtime::{Painter, TermCoord, TermSize};
 use crate::text::{ContentProvider, Diff, Line};
 
-use super::{OutputSignal, RefreshKind, View};
+use super::{RefreshKind, View};
 
 /// A basic `View` with utilities for extending it
 ///
@@ -162,13 +162,10 @@ impl<P: ContentProvider> ViewBuffer<P> {
             panic!("unexpected `Painter` size; prefix width: {}, current size: {:?}, painter size: {:?}",  prefix_width, self.size, painter.size());
         });
 
-        let content = self.provider.content();
-        let iter = (self.top_row..)
-            .zip(content.iter(self.top_row..))
-            .map(|(i, l)| {
-                let prefix = prefix_fn(self, i);
-                (display_range.clone(), prefix)
-            });
+        let iter = (self.top_row..self.num_lines()).map(|i| {
+            let prefix = prefix_fn(self, i);
+            (display_range.clone(), prefix)
+        });
 
         painter.print_lines(iter)
     }

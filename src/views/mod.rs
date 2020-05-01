@@ -264,7 +264,6 @@ pub enum OutputSignal {
     Close,
     NoSuchCmd,
     WaitingForMore,
-    Nothing,
 }
 
 /// How much of a refresh needs to be done?
