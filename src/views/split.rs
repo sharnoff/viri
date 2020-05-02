@@ -144,6 +144,10 @@ impl View for Horiz {
             // This is safe to unwrap because we already know that it's within the bounds of the
             // painter
             let inner_painter = painter.slice_vertically(top_row..top_row + n_rows).unwrap();
+            let inner_painter = match draw_bottom {
+                true => inner_painter.with_distinct_bottom_bar(),
+                false => inner_painter,
+            };
             view.refresh(&inner_painter);
 
             top_row += n_rows;
@@ -366,7 +370,7 @@ impl Horiz {
             NeedsRefresh(_) => (false, vec![NeedsRefresh(Inner)]),
             Replace(new_view) => {
                 self.inner_views[self.selected_idx].1 = new_view;
-                (false, Vec::new())
+                (false, vec![NeedsRefresh(Inner)])
             }
             Close if self.inner_views.len() == 2 => {
                 self.inner_views.remove(self.selected_idx);
@@ -415,7 +419,18 @@ impl Horiz {
                     self.inner_views.insert(self.selected_idx + 1, (20, v));
                     (false, vec![NeedsRefresh(Full)])
                 }
-                Left | Right => (false, vec![Open(d, v)]),
+                Left => {
+                    let old = self.inner_views.remove(self.selected_idx);
+                    let new = Box::new(Vert::construct(vec![v, old.1]));
+                    self.inner_views.insert(self.selected_idx, (old.0, new));
+                    (false, vec![NeedsRefresh(Full)])
+                }
+                Right => {
+                    let old = self.inner_views.remove(self.selected_idx);
+                    let new = Box::new(Vert::construct(vec![old.1, v]));
+                    self.inner_views.insert(self.selected_idx, (old.0, new));
+                    (false, vec![NeedsRefresh(Full)])
+                }
             },
         }
     }
@@ -584,7 +599,7 @@ impl View for Vert {
         let &mut (w, ref mut v) = &mut self.inner_views[0];
         let mut text = v.construct_bottom_text(w).black().on_white().to_string();
 
-        for &mut (width, ref mut view) in self.inner_views.iter_mut() {
+        for &mut (width, ref mut view) in self.inner_views.iter_mut().skip(1) {
             text += &" ".black().on_white().to_string();
             text += &view
                 .construct_bottom_text(width)
@@ -729,7 +744,7 @@ impl Vert {
             NeedsRefresh(_) => (false, vec![NeedsRefresh(Inner)]),
             Replace(new_view) => {
                 self.inner_views[self.selected_idx].1 = new_view;
-                (false, Vec::new())
+                (false, vec![NeedsRefresh(Inner)])
             }
             Close if self.inner_views.len() == 2 => {
                 self.inner_views.remove(self.selected_idx);
@@ -778,7 +793,18 @@ impl Vert {
                     self.inner_views.insert(self.selected_idx + 1, (20, v));
                     (false, vec![NeedsRefresh(Full)])
                 }
-                Up | Down => (false, vec![Open(d, v)]),
+                Up => {
+                    let old = self.inner_views.remove(self.selected_idx);
+                    let new = Box::new(Horiz::construct(vec![v, old.1]));
+                    self.inner_views.insert(self.selected_idx, (old.0, new));
+                    (false, vec![NeedsRefresh(Full)])
+                }
+                Down => {
+                    let old = self.inner_views.remove(self.selected_idx);
+                    let new = Box::new(Horiz::construct(vec![old.1, v]));
+                    self.inner_views.insert(self.selected_idx, (old.0, new));
+                    (false, vec![NeedsRefresh(Full)])
+                }
             },
         }
     }
