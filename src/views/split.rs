@@ -403,7 +403,20 @@ impl Horiz {
                 ),
                 Left | Right => (false, vec![ShiftFocus(d, n)]),
             },
-            Open(_, _) => todo!(),
+            Open(d, v) => match d {
+                Up => {
+                    // TODO: Instead of assigning some random value here (20), we should actually
+                    // do some proper resizing to produce the most ideal shifting
+                    self.inner_views.insert(self.selected_idx, (20, v));
+                    (false, vec![NeedsRefresh(Full)])
+                }
+                Down => {
+                    // TODO: See above
+                    self.inner_views.insert(self.selected_idx + 1, (20, v));
+                    (false, vec![NeedsRefresh(Full)])
+                }
+                Left | Right => (false, vec![Open(d, v)]),
+            },
         }
     }
 }
@@ -755,7 +768,20 @@ impl Vert {
                 ),
                 Up | Down => (false, vec![ShiftFocus(d, n)]),
             },
-            Open(_, _) => todo!(),
+            Open(d, v) => match d {
+                Left => {
+                    // TODO: Instead of assigning some random value here (20), we should actually
+                    // do some proper resizing to produce the most ideal shifting
+                    self.inner_views.insert(self.selected_idx, (20, v));
+                    (false, vec![NeedsRefresh(Full)])
+                }
+                Right => {
+                    // TODO: See above
+                    self.inner_views.insert(self.selected_idx + 1, (20, v));
+                    (false, vec![NeedsRefresh(Full)])
+                }
+                Up | Down => (false, vec![Open(d, v)]),
+            },
         }
     }
 }
