@@ -286,9 +286,6 @@ pub enum RefreshKind {
     Full,
 }
 
-/// A general command that may be passed to a `View`
-pub type Cmd<T> = mode::Cmd<MetaCmd<T>>;
-
 /// Commands for manipulating the currently-focussed `View`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MetaCmd<T> {

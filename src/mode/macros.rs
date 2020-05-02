@@ -2,38 +2,32 @@
 
 macro_rules! modes {
     (
+        $(#[$modes_attrs:meta])*
+        $modes_vis:vis enum $modes:ident<$param:ident> {
+            $($variant:ident/$sub_mod:ident: $var_ty:ty,)+
+        }
+
         $(#[$kind_attrs:meta])*
         $kind_vis:vis enum $kind:ident = ...;
 
         $(#[$set_attrs:meta])*
         $set_vis:vis struct $set:ident = ...;
-
-        $(#[$modes_attrs:meta])*
-        $modes_vis:vis enum $modes:ident<$param:ident> {
-            $($variant:ident/$field:ident: $var_ty:ty,)+
-        }
     ) => {
-        /// An enumeration over the different types of available modes.
-        ///
-        /// This type implements
-        // FIXME: Document
+        $(pub mod $sub_mod;)*
+
         $(#[$kind_attrs])*
         $kind_vis enum $kind {
             $($variant,)+
         }
 
-        /// A standin type that may be any of the available modes
-        // FIXME: Document
         $(#[$modes_attrs])*
         $modes_vis enum $modes<$param> {
             $($variant($var_ty),)*
         }
 
-        /// A marker for which modes may be transitioned to by a handler
-        // FIXME: Document
         $(#[$set_attrs])*
         $set_vis struct $set {
-            $($field: bool,)+
+            $($sub_mod: bool,)+
         }
 
         $(impl<$param> XFrom<$var_ty> for $modes<$param> {
@@ -80,35 +74,35 @@ macro_rules! modes {
             /// Produces a new set, where no modes are included
             pub fn none() -> Self {
                 Self {
-                    $($field: false,)+
+                    $($sub_mod: false,)+
                 }
             }
 
             /// Produces a new set where all modes are included
             pub fn all() -> Self {
                 Self {
-                    $($field: true,)+
+                    $($sub_mod: true,)+
                 }
             }
 
             /// Marks the given mode as being allowed
             pub fn allow(self, mode: $kind) -> Self {
                 match mode {
-                    $($kind::$variant => Self { $field: true, .. self },)+
+                    $($kind::$variant => Self { $sub_mod: true, .. self },)+
                 }
             }
 
             /// Marks the given mode as being forbidden
             pub fn forbid(self, mode: $kind) -> Self {
                 match mode {
-                    $($kind::$variant => Self { $field: false, .. self },)+
+                    $($kind::$variant => Self { $sub_mod: false, .. self },)+
                 }
             }
 
             /// Returns whether the set contains the given `ModeKind`
             pub fn contains(&self, kind: $kind) -> bool {
                 match kind {
-                    $($kind::$variant => self.$field,)+
+                    $($kind::$variant => self.$sub_mod,)+
                 }
             }
         }

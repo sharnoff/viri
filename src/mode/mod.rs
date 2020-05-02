@@ -1,33 +1,117 @@
 //! A supermodule of the various cursor modes, along with necessary types and abstractions
 //!
 //! This module is best defined by a discussion about what a "mode" actually is. For the purposes
-//! of this module, a mode is an interface: a set of ways in which
-// FIXME: Document
+//! of this module, a mode is an abstract interface: a set of ways in which key-events may be turned
+//! into actions, where the set of possible actions is represented by [`Cmd`]s. This corresponds to
+//! the [`try_handle`] method on the [`Mode`] trait.
+//!
+//! The set of available modes is intentionally limited (See: [Adding new modes]) so that other
+//! simplifications can be made.
+// TODO: Add the following once it has been implemented:
+// "These happen in places that would be difficult to handle otherwise, like configuration."
+//!
+//! ## Adding new modes
+//!
+//! Adding modes must be done internally (not through config files), but there thankfully shouldn't
+//! be many existing files in need of editing. There are essentially two stages to this process:
+//! adding in the definition of and the support for the new mode, and actually integrating it.
+//! Integration may take a variety of forms, from editing config files to changing the source of
+//! individual [`View`]s.
+// TODO: Note: Config files are currently half-baked; this is not actually available.
+//!
+//! The only *required* change to existing files, is adding a single line in 'src/mode/mod.rs',
+//! where this documentation is defined. That line is marked with `@ADD-MODE`, and is part of a
+//! (relatively) large macro expansion. As such, there are only three items that must be provided -
+//! to explain them, we'll look at the entry for "normal" mode.
+//!
+//! The line looks something like this:
+//! ```rust
+//! modes! {
+//!     // -- snip --
+//!     pub enum Modes<T> {
+//!         Normal/normal: normal::Mode<T>,
+//!         // -- snip --
+//!     }
+//!
+//!     // -- snip --
+//! }
+//! ```
+//!
+//! The line has three parts: the "proper name" of the mode (`Normal`), the sub-module it resides
+//! in (`normal`), and the actual mode *type* relative to the current scope (`normal::Mode<T>`). It
+//! is customary to name the public type implementing [`Mode`] as `Mode` itself in the sub-module.
+//! This allows imports like:
+//! ```
+//! use mode::normal::Mode;
+//! ```
+//! instead of `use mode::normal::NormalMode` or `use mode::NormalMode`.
+//!
+//! The proper name of the mode is used as the name of the coresponding variants of [`Modes`] and
+//! [`ModeKind`], and is produced by the `modes` macro (internal).
+//!
+//! [`Cmd`]: enum.Cmd.html
+//! [`try_handle`]: trait.Mode.html#tymethod.try_handle
+//! [`Mode`]: trait.Mode.html
+//! [Adding new modes]: #adding-new-modes
+//! [`View`]: ../view/trait.View.html
+//! [`Modes`]: enum.Modes.html
+//! [`ModeKind`]: enum.ModeKind.html
 
 use crate::event::KeyEvent;
 use crate::prelude::*;
 
 pub mod handler;
-pub mod insert;
-pub mod normal;
 
 #[macro_use]
 mod macros;
 
 pub use handler::Handler;
 
-// This macro is provided in './macros.rs' - Doc comments for the produced types are also given
-// there
+// This macro is provided in 'macros.rs'. Many methods are provided there as well.
 modes! {
-    #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-    pub enum ModeKind = ...;
-
-    #[derive(Copy, Clone, Debug)]
-    pub struct ModeSet = ...;
+    /// A stand-in type for any of the available modes defined in this module
+    ///
+    /// This is used as a concrete representation so that that we can statically define the list of
+    /// available modes, instead of validating whether a mode *exists* at runtime. It should be
+    /// noted that this system is not perfect; attempts to transition to modes that are not allowed
+    /// can happen (see: [`ModeSet`]).
+    // Note: This type is broken down in a fairly simple way. On each line below, we have three
+    // items to look at. Taking the first line as an example:
+    //   Normal/normal: normal::Mode<T>,
+    //    ^^^^   ^^^^    ^^^^^^^^^^^^^
+    // `Normal` gives the name of the variant in `Modes` and in `ModeKind` - in `ModeKind` the
+    // variant is empty, but here it is a single-element tuple containing `normal::Mode<T>`, the
+    // type given by the last item.
+    //
+    // The middle item, `normal`, gives the corresponding field name in `ModeSet`, as well as the
+    // name of the module to import.
     pub enum Modes<T> {
         Normal/normal: normal::Mode<T>,
         Insert/insert: insert::Mode<T>,
+        // @ADD-MODE -- Add your new mode here! For more info, see the module-level documentation
     }
+
+    /// An enumeration over the different types of available modes.
+    ///
+    /// This type implements `XInto<Modes<T>>` for any `T` (see: [`XInto`]) so that it may be
+    /// easily converted. (Note: this is subject to change - it may be reverted simply to `Into`,
+    /// as the extra flexibility provided by `XInto` is not currently needed.)
+    #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+    // An explanation of the type produced is in a line-comment above `Modes` ^
+    pub enum ModeKind = ...;
+
+    /// A marker type to indicate which modes may be transitioned to by a handler
+    ///
+    /// This is primarily used by the [`Handler`] type, but is defined as part of a monolithic
+    /// macro, so it is defined here.
+    ///
+    /// It is unfortunate that errors from attempting to transition between modes occur at runtime,
+    /// but there is not any other (practical) way to ensure this.
+    ///
+    /// [`Handler`]: handler/struct.Handler.html
+    #[derive(Copy, Clone, Debug)]
+    // An explanation of the type produced is in a line-comment above `Modes` ^
+    pub struct ModeSet = ...;
 }
 
 /// A general trait for abstracting over modes
@@ -36,11 +120,27 @@ modes! {
 ///
 /// [module-level documentation]: index.html
 pub trait Mode<T>: Default + XInto<Modes<T>> {
+    /// The name of the mode, if available. This string's length should be equal to its displayed
+    /// width -- the simplest way to ensure this is the case is to compose it entirely of ASCII
+    /// graphic characters.
     const NAME: Option<&'static str>;
 
-    // FIXME: Documentation
+    /// Attmepts to handle the key input, returning a list of commands to be executed if
+    /// successful, or an explanation as to why it was unsuccessful (Note: [`Error`] is used to
+    /// represent fairly routine items).
+    ///
+    /// [`Error`]: enum.Error.html
     fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<T>>, Error>;
+
+    /// Returns the requested cursor styling. For more information, see [`CursorStyle`].
+    ///
+    /// [`CursorStyle`]: struct.CursorStyle.html
     fn cursor_style(&self) -> CursorStyle;
+
+    /// Returns whether the mode is currently expecting input
+    ///
+    /// This should return true if - and only if - the mode is currently in the process of
+    /// interpreting a sequence of inputs
     fn expecting_input(&self) -> bool;
 }
 
@@ -118,12 +218,19 @@ impl<S: XInto<T>, T> XFrom<Cmd<S>> for Cmd<T> {
     }
 }
 
-/// The set of errors allowed as a result of [`Mode::try_handle`] or from [`Handler::handle`]. The
-/// only error related to [`Handler`] is from a mode change being denied.
+/// The set of unsucessful return signals allowed as a result of [`Mode::try_handle`] or from
+/// [`Handler::handle`].
+///
+/// It should be noted that some of the variants here are not errors in the traditional sense;
+/// `NeedsMore` and `NoSuchCommand` are normal returns to indicate status and are used as such.
+/// Conversely, `Failure` and `IllegalMode` are properly errors and should be reported to the user
+/// as such.
+///
+/// The only error related to [`Handler`] is `IllegalMode`.
 ///
 /// [`Mode::try_handle`]: trait.Mode.html#tymethod.try_handle
 /// [`Handler::handle`]: struct.Handler.html#method.handle
-/// [`Handler`]: struct.Handler.html
+/// [`Handler`]: handler/struct.Handler.html
 #[derive(Debug, Clone)]
 pub enum Error {
     /// Signals that the mode is unable to produce a command given the current input, but may be
@@ -199,7 +306,16 @@ pub enum DeleteKind {
     CurrentLine { amount: usize },
 }
 
-/// Represents a logical direction on the screen
+/// A helper type to represent a logical direction on the screen
+///
+/// This is used in a variety of contexts, both within this module and outside it. It's used
+/// immediately here in [`ScrollKind::ByDirection`], but is also present in
+/// [`crate::views::OutputSignal`] where it serves a similar purpose.
+///
+/// [`ScrollKind::ByDirection`]: enum.ScrollKind.html#variant.ByDirection
+/// [`crate::views::OutputSignal`]: ../views/enum.OutputSignal.html
+/// [`Open`]: ../views/enum.OutputSignal.html#variant.Open
+/// [`ShiftFocus`]: ../views/enum.OutputSignal.html#variant.ShiftFocus
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum Direction {
     Up,
