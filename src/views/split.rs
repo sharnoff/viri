@@ -486,8 +486,6 @@ impl View for Vert {
         // This function is largely duplicated from `Horiz`. Each item is explained in detail
         // there; for more information please refer to `Horiz::refresh`.
 
-        log::trace!(">>> refresh vert");
-
         if painter.distinct_bottom_bar() == self.include_bottom_bar {
             self.include_bottom_bar = !painter.distinct_bottom_bar();
         }

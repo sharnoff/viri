@@ -537,12 +537,6 @@ impl ContentProvider for Handle {
             .map(|i| i + 1)
             .unwrap_or_else(|i| i);
 
-        log::trace!(
-            ">>> handle::refresh: found idx {}; len {}",
-            idx_in_history,
-            file.diff_history.len()
-        );
-
         if let Some(id) = file.diff_history.last().map(|&(id, _, _)| id) {
             self.last_diff_id = id;
         }

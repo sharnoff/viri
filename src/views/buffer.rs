@@ -87,7 +87,6 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
             && prefix_width == self.prefix_width
             && painter.size() == self.size
         {
-            log::trace!("no need to refresh");
             return;
         }
 
@@ -127,7 +126,6 @@ impl<P: ContentProvider> View for ViewBuffer<P> {
     fn focus(&mut self) -> Option<RefreshKind> {
         let diffs = self.provider.refresh();
         let ref_kind = self.refresh_diffs(&diffs);
-        log::trace!(">>> buffer focus refresh: {:?}", ref_kind);
         ref_kind
     }
 }
@@ -204,7 +202,6 @@ impl<P: ContentProvider> ViewBuffer<P> {
 
         let content = self.provider.content();
         let lines: Vec<_> = content.iter(self.top_row..).collect();
-        log::trace!(">>> lines.len() = {}", lines.len());
 
         let iter = lines.iter().map(move |l| {
             let (line, Range { mut start, mut end }) = l.display_segment(display_range.clone());
@@ -216,7 +213,6 @@ impl<P: ContentProvider> ViewBuffer<P> {
             ((start as u16..end as u16), line)
         });
 
-        log::trace!(">>> refresing main content; calling painter");
         painter.print_lines(iter);
     }
 }
