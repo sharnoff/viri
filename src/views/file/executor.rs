@@ -46,14 +46,20 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                     }
                     TryClose(_) => Some(vec![Close]),
                     Split(d) => Some(vec![Open(d, self.clone_into_builder())]),
-                    MetaCmd::Open(_, _) => todo!(),
+                    MetaCmd::Open(d, view_kind) => {
+                        // We just pick a random size (10, 10) to give it because it doesn't matter
+                        Some(vec![Open(
+                            d,
+                            view_kind.to_view((10, 10).into(), &[] as &[&str]),
+                        )])
+                    }
                     MetaCmd::ShiftFocus(d, n) => Some(vec![ShiftFocus(d, n)]),
                     Replace(_) => todo!(),
                     Custom(Save) => match self.try_save() {
                         Ok(()) => Some(Vec::new()),
                         Err(err_str) => Some(vec![OutputSignal::error(&err_str, None, true)]),
                     },
-                }
+                };
             }
             Cursor(m, n) => self.buffer.move_cursor(m, n),
             Scroll(kind, n) => self.buffer.scroll(kind, n),
