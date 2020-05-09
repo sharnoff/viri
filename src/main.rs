@@ -1,5 +1,6 @@
+#![allow(incomplete_features)]
 #![feature(generic_associated_types)]
-#![feature(specialization)]
+#![feature(associated_type_bounds)]
 #![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
 #![feature(never_type)]
 #![deny(unused_must_use)]

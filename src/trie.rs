@@ -80,15 +80,22 @@ impl<K: Debug, T: Debug> Debug for Cache<K, T> {
     }
 }
 
+impl<K, T> Trie<K, T> {
+    /// Creates a new, empty `Trie`
+    pub const fn new() -> Self {
+        Trie {
+            inner: None,
+            cache: None,
+        }
+    }
+}
+
 impl<K: Clone + Ord, T> Trie<K, T> {
     /// Creates a `Trie` from an iterator of key-value pairs by repeated insertion
     pub fn from_iter<I: Iterator<Item = (Vec<K>, T)>>(mut iter: I) -> Self {
         let (key, value) = match iter.next() {
             None => {
-                return Trie {
-                    inner: None,
-                    cache: None,
-                }
+                return Self::new();
             }
             Some(pair) => pair,
         };

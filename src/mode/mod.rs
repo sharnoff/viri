@@ -18,6 +18,7 @@
 //! Integration may take a variety of forms, from editing config files to changing the source of
 //! individual [`View`]s.
 // TODO: Note: Config files are currently half-baked; this is not actually available.
+// TODO: Explain how to add configs (or reference the config module)
 //!
 //! The only *required* change to existing files, is adding a single line in 'src/mode/mod.rs',
 //! where this documentation is defined. That line is marked with `@ADD-MODE`, and is part of a
@@ -28,8 +29,8 @@
 //! ```rust
 //! modes! {
 //!     // -- snip --
-//!     pub enum Modes<T> {
-//!         Normal/normal: normal::Mode<T>,
+//!     pub enum Modes<T, Conf> {
+//!         Normal/normal: normal::Mode<T, Conf>,
 //!         // -- snip --
 //!     }
 //!
@@ -57,13 +58,15 @@
 //! [`Modes`]: enum.Modes.html
 //! [`ModeKind`]: enum.ModeKind.html
 
+use crate::config::ConfigPart;
 use crate::event::KeyEvent;
-use crate::prelude::*;
-
-pub mod handler;
+use crate::utils::{XFrom, XInto};
+use serde::{Deserialize, Serialize};
 
 #[macro_use]
 mod macros;
+pub mod config;
+pub mod handler;
 
 pub use handler::Handler;
 
@@ -85,9 +88,9 @@ modes! {
     //
     // The middle item, `normal`, gives the corresponding field name in `ModeSet`, as well as the
     // name of the module to import.
-    pub enum Modes<T> {
-        Normal/normal: normal::Mode<T>,
-        Insert/insert: insert::Mode<T>,
+    pub enum Modes<T, Conf> {
+        // Normal/normal: normal::Mode<T>,
+        Insert/insert: insert::Mode<T, Conf>,
         // @ADD-MODE -- Add your new mode here! For more info, see the module-level documentation
     }
 
@@ -119,7 +122,10 @@ modes! {
 /// For more information on what is meant by a "mode", refer to the [module-level documentation].
 ///
 /// [module-level documentation]: index.html
-pub trait Mode<T>: Default + XInto<Modes<T>> {
+pub trait Mode<Meta, Conf>: Default + XInto<Modes<Meta, Conf>>
+where
+    config::ExtConfig<Conf>: config::ExtendsCfg<Meta> + ConfigPart,
+{
     /// The name of the mode, if available. This string's length should be equal to its displayed
     /// width -- the simplest way to ensure this is the case is to compose it entirely of ASCII
     /// graphic characters.
@@ -130,7 +136,7 @@ pub trait Mode<T>: Default + XInto<Modes<T>> {
     /// represent fairly routine items).
     ///
     /// [`Error`]: enum.Error.html
-    fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<T>>, Error>;
+    fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<Meta>>, Error>;
 
     /// Returns the requested cursor styling. For more information, see [`CursorStyle`].
     ///

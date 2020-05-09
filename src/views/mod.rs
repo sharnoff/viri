@@ -26,13 +26,19 @@
 // These are system-type imports - trait definitions, utilities, and things.
 // They're here to allow everything else to function.
 
+use crate::config::{Build, ConfigPart};
 use crate::container;
-use crate::mode::{self, Direction};
-use crate::prelude::*;
+use crate::event::KeyEvent;
+use crate::mode::config::{dyn_extends_cfg, BaseConfig, ConfigParent, ExtendsCfg};
+use crate::mode::{self, insert, Cmd, Direction};
 use crate::runtime::{Painter, TermSize};
-use crate::utils;
+use crate::trie::Trie;
+use crate::utils::{self, Never, XFrom, XInto};
 use crossterm::style::Colorize;
+use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Formatter};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 //-/////////////////////////////////////////////////////////////////////////-//
 // Header 0: Imports                                                         //
@@ -347,6 +353,105 @@ impl OutputSignal {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Config stuff for `MetaCmd`                                                 //
+////////////////////////////////////////////////////////////////////////////////
+
+/// A builder for mode commands relating to the
+#[derive(Serialize, Deserialize)]
+pub struct ExtBuilder {
+    insert: insert::ExtBuilder<MetaCmd<Never>>,
+}
+
+pub type ExtConfig = mode::config::ExtConfig<MetaCmd<Never>>;
+
+lazy_static::lazy_static! {
+    static ref GLOBAL: Arc<Mutex<ExtConfig>> = Arc::new(Mutex::new(Default::default()));
+}
+
+impl ConfigPart for ExtConfig {
+    type Deref = MutexGuard<'static, Self>;
+    type DerefMut = MutexGuard<'static, Self>;
+
+    fn global() -> Self::Deref {
+        GLOBAL.lock().unwrap()
+    }
+    fn global_mut() -> Self::DerefMut {
+        GLOBAL.lock().unwrap()
+    }
+
+    fn update(&mut self, builder: ExtBuilder) {
+        self.insert.update(builder.insert);
+    }
+}
+
+impl Build for ExtConfig {
+    type Builder = ExtBuilder;
+}
+
+impl Default for ExtConfig {
+    fn default() -> Self {
+        Self {
+            parent: || Box::new(BaseConfig::global()),
+            insert: Default::default(),
+        }
+    }
+}
+
+impl XFrom<ExtBuilder> for ExtConfig {
+    fn xfrom(builder: ExtBuilder) -> Self {
+        Self {
+            parent: || Box::new(BaseConfig::global()),
+            insert: builder.insert.xinto(),
+        }
+    }
+}
+
+fn wrap_config<T>(ext_cfg: Box<dyn ExtendsCfg<MetaCmd<Never>>>) -> Box<dyn ExtendsCfg<MetaCmd<T>>> {
+    let rc: Rc<dyn ExtendsCfg<MetaCmd<Never>>> = ext_cfg.into();
+
+    struct InsertExt {
+        inner: Rc<dyn ExtendsCfg<MetaCmd<Never>>>,
+    }
+
+    impl<T> insert::ExtendsCfg<MetaCmd<T>> for InsertExt {
+        fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<MetaCmd<T>>>)> {
+            self.inner
+                .insert()
+                .keys()
+                .into_iter()
+                .map(|(keys, cmds)| (keys, cmds.xinto()))
+                .collect()
+        }
+    }
+
+    dyn_extends_cfg(
+        move || rc.clone(),
+        // produce_boxed(ext_cfg),
+        |c| Box::new(InsertExt { inner: c }),
+        |c| c.parent().map(wrap_config),
+    )
+}
+
+impl<T: 'static> ExtendsCfg<MetaCmd<T>> for ExtConfig {
+    fn insert<'a>(&'a self) -> Box<dyn 'a + insert::ExtendsCfg<MetaCmd<T>>> {
+        Box::new(&self.insert)
+    }
+
+    fn parent(&self) -> Option<Box<dyn ExtendsCfg<MetaCmd<T>>>> {
+        Some(wrap_config((self.parent)()))
+    }
+}
+
+impl<T> insert::ExtendsCfg<MetaCmd<T>> for insert::ExtConfig<MetaCmd<Never>> {
+    fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<MetaCmd<T>>>)> {
+        self.keys
+            .iter_all_prefix(&[])
+            .map(|(keys, cmds)| (Vec::from(keys), cmds.clone().xinto()))
+            .collect()
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Boilerplate trait implementations                                          //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -380,6 +485,21 @@ impl Debug for OutputSignal {
             ShiftFocus(d, n) => write!(f, "ShiftFocus({:?}, {:?})", d, n),
             NoSuchCmd => write!(f, "NoSuchCmd"),
             WaitingForMore => write!(f, "WaitingForMore"),
+        }
+    }
+}
+
+impl<T> XFrom<MetaCmd<Never>> for MetaCmd<T> {
+    fn xfrom(meta: MetaCmd<Never>) -> Self {
+        use MetaCmd::{Custom, Open, Replace, ShiftFocus, Split, TryClose};
+
+        match meta {
+            TryClose(kind) => TryClose(kind),
+            Split(dir) => Split(dir),
+            Open(dir, kind) => Open(dir, kind),
+            Replace(kind) => Replace(kind),
+            ShiftFocus(dir, n) => ShiftFocus(dir, n),
+            Custom(never) => Custom(never.xinto()),
         }
     }
 }

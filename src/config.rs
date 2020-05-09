@@ -32,6 +32,39 @@ pub trait Build: Default {
     type Builder: for<'a> Deserialize<'a> + Serialize + XInto<Self>;
 }
 
+pub struct DerefChain<D: Deref, T> {
+    pub host: D,
+    pub get: fn(&D::Target) -> &T,
+}
+
+impl<D: Deref, T> Deref for DerefChain<D, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        (self.get)(&self.host)
+    }
+}
+
+pub struct DerefMutChain<D: DerefMut, T> {
+    pub host: D,
+    pub get: fn(&D::Target) -> &T,
+    pub get_mut: fn(&mut D::Target) -> &mut T,
+}
+
+impl<D: DerefMut, T> Deref for DerefMutChain<D, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        (self.get)(&self.host)
+    }
+}
+
+impl<D: DerefMut, T> DerefMut for DerefMutChain<D, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        (self.get_mut)(&mut self.host)
+    }
+}
+
 #[macro_export]
 macro_rules! static_config {
     (
@@ -117,6 +150,5 @@ macro_rules! static_config {
                 }
             }
         }
-
     }
 }

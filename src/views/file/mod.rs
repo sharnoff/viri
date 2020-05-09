@@ -3,8 +3,17 @@ use super::{ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, S
 use crate::config::prelude::*;
 use crate::container::Signal;
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::mode::handler::{self as mode_handler, Executor, Handler as ModeHandler};
-use crate::mode::{normal::Mode as NormalMode, Direction, ModeSet};
+use crate::mode::{
+    self,
+    config::{ConfigParent, ExtendsCfg},
+    handler::{self as mode_handler, Executor, Handler as ModeHandler},
+    insert,
+    // FIXME @ PRE-MERGE
+    insert::Mode as NormalMode,
+    Cmd,
+    Direction,
+    ModeSet,
+};
 use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
 use crate::trie::Trie;
@@ -19,11 +28,11 @@ use handle::{gen_local_id, Handle};
 
 /// The primary file viewer
 pub struct View {
-    handler: ModeHandler<FileExecutor, MetaCmd<FileMeta>>,
+    handler: ModeHandler<FileExecutor, MetaCmd<FileMeta>, MetaCmd<Never>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum FileMeta {
+pub enum FileMeta {
     Save,
 }
 
@@ -412,9 +421,9 @@ impl View {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Colon commands stuff w/ config                                                                 //
-////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+// Colon commands stuff w/ config                                             //
+////////////////////////////////////////////////////////////////////////////////
 
 type ColonCmd = mode_handler::Cmd<super::MetaCmd<FileMeta>>;
 

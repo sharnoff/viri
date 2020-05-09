@@ -1,18 +1,23 @@
 //! Items for abstraction over mode execution
 
-use crate::event::KeyEvent;
-use crate::prelude::*;
-
+use super::config::{ExtConfig, ExtendsCfg};
 use super::{CursorStyle, DeleteKind, Error, Mode, ModeSet, Modes, Movement, ScrollKind};
+use crate::config::ConfigPart;
+use crate::event::KeyEvent;
+use crate::utils::{Monad, XInto};
+use serde::{Deserialize, Serialize};
 
 /// A generic handler for managing switching between multiple modes
-pub struct Handler<E: Executor<Meta>, Meta: 'static> {
+pub struct Handler<E: Executor<Meta>, Meta: 'static, Conf: 'static>
+where
+    ExtConfig<Conf>: ExtendsCfg<Meta> + ConfigPart,
+{
     /// The set of modes that we're allowed to transition to
     allowed_modes: ModeSet,
 
     /// The stack of modes - this is typically never has a size greater than two, but phrasing it
     /// this way allows greater generalization and code that is more understandable.
-    mode_stack: Vec<Modes<Meta>>,
+    mode_stack: Vec<Modes<Meta, Conf>>,
 
     /// The executor responsible for handling the commands produced by the current mode
     executor: E,
@@ -76,15 +81,21 @@ pub trait Executor<T> {
     fn post(&mut self) {}
 }
 
-impl<Meta: 'static, E: Executor<Meta>> Handler<E, Meta> {
+impl<E, Meta, Conf> Handler<E, Meta, Conf>
+where
+    ExtConfig<Conf>: ExtendsCfg<Meta> + ConfigPart,
+    Meta: 'static + Clone,
+    Conf: 'static,
+    E: Executor<Meta>,
+{
     /// Constructs a new `Handler` from an executor with the given initial mode and set of modes
     /// that may be transitioned to
     ///
     /// If the initial mode is not within the set of allowed modes, this function will panic. This
     /// is a simple `assert!`, so be mindful that you will not be handheld while shooting yourself
     /// in the foot.
-    pub fn new(executor: E, init: impl Mode<Meta>, allowed_modes: ModeSet) -> Self {
-        let modes: Modes<_> = init.xinto();
+    pub fn new(executor: E, init: impl Mode<Meta, Conf>, allowed_modes: ModeSet) -> Self {
+        let modes: Modes<_, _> = init.xinto();
 
         assert!(allowed_modes.contains(modes.kind()));
 
@@ -186,7 +197,7 @@ impl<Meta: 'static, E: Executor<Meta>> Handler<E, Meta> {
         self.current().cursor_style()
     }
 
-    fn current(&self) -> &Modes<Meta> {
+    fn current(&self) -> &Modes<Meta, Conf> {
         self.mode_stack.last().unwrap()
     }
 }

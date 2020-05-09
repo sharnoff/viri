@@ -1,36 +1,58 @@
 // TODO: Module-level documentation
 
-use crate::config::prelude::*;
-use crate::prelude::*;
-use std::marker::PhantomData;
-
+use super::config;
 use super::{Cmd, CursorStyle, Error, HorizMove, Movement};
+use crate::config::{ConfigPart, DerefChain, DerefMutChain};
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::prelude::*;
 use crate::trie::Trie;
+use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Debug)]
-pub struct Mode<T> {
+pub struct Mode<T, Conf>
+where
+    config::ExtConfig<Conf>: config::ExtendsCfg<T> + ConfigPart,
+{
     key_stack: Vec<KeyEvent>,
+    get_conf: fn() -> <config::ExtConfig<Conf> as ConfigPart>::Deref,
     _marker: PhantomData<T>,
 }
 
-impl<T> Default for Mode<T> {
+impl<T, Conf> Default for Mode<T, Conf>
+where
+    config::ExtConfig<Conf>: config::ExtendsCfg<T> + ConfigPart,
+{
     fn default() -> Self {
         Self {
             key_stack: Vec::new(),
+            get_conf: <config::ExtConfig<Conf> as ConfigPart>::global,
             _marker: PhantomData,
         }
     }
 }
 
-impl<T> super::Mode<T> for Mode<T> {
+impl<T, Conf> super::Mode<T, Conf> for Mode<T, Conf>
+where
+    config::ExtConfig<Conf>: config::ExtendsCfg<T> + ConfigPart,
+    T: Clone,
+    Conf: 'static,
+{
     const NAME: Option<&'static str> = Some("-- INSERT --");
 
     fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<T>>, Error> {
         self.key_stack.push(key);
 
-        let cfg = Config::global();
-        let node = cfg.keys.find(&self.key_stack);
+        // First get the most extended config, then recursively get its parent configs
+        // The parent configurations are ordered from base -> extension, so we build a new Trie in
+        // that order
+        let ext_cfg = (self.get_conf)();
+        let cfgs = config::get_all(Box::new(ext_cfg));
+        let cfg = Trie::from_iter(cfgs.iter().map(|c| c.insert().keys()).flatten());
+
+        // let cfg = Config::global();
+        let node = cfg.find(&self.key_stack);
 
         match node {
             None if self.key_stack.len() > 1 => {
@@ -39,7 +61,7 @@ impl<T> super::Mode<T> for Mode<T> {
             }
             Some(n) if n.size() == 1 => {
                 self.key_stack.truncate(0);
-                return Ok(n.extract().clone().xinto());
+                return Ok(n.extract().clone());
             }
             Some(n) if n.size() > 1 => {
                 // ^ TODO: This isn't technically true... it could be possible to unwrap this
@@ -74,6 +96,10 @@ impl<T> super::Mode<T> for Mode<T> {
         true
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Config stuff                                                               //
+////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Builder {
@@ -153,4 +179,89 @@ fn default_keybindings() -> Trie<KeyEvent, Vec<Cmd<Never>>> {
     ];
 
     Trie::from_iter(keys.into_iter())
+}
+
+pub trait ExtendsCfg<T> {
+    fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<T>>)>;
+}
+
+impl<T: Clone> ExtendsCfg<T> for Config {
+    fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<T>>)> {
+        self.keys
+            .iter_all_prefix(&[])
+            .map(|(keys, cmds)| (Vec::from(keys), cmds.clone().xinto()))
+            .collect()
+    }
+}
+
+impl<D, T> ExtendsCfg<T> for D
+where
+    D: Deref,
+    D::Target: ExtendsCfg<T>,
+{
+    fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<T>>)> {
+        self.deref().keys()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExtBuilder<T> {
+    pub keys: Option<Vec<(Vec<KeyEvent>, Vec<Cmd<T>>)>>,
+}
+
+#[derive(Debug)]
+pub struct ExtConfig<T> {
+    pub keys: Trie<KeyEvent, Vec<Cmd<T>>>,
+}
+
+impl<T> Default for ExtConfig<T> {
+    fn default() -> Self {
+        Self { keys: Trie::new() }
+    }
+}
+
+impl<T> ConfigPart for ExtConfig<T>
+where
+    config::ExtConfig<T>: ConfigPart,
+    T: Serialize + for<'a> Deserialize<'a>,
+{
+    type Deref = DerefChain<<config::ExtConfig<T> as ConfigPart>::Deref, Self>;
+    type DerefMut = DerefMutChain<<config::ExtConfig<T> as ConfigPart>::DerefMut, Self>;
+
+    fn global() -> Self::Deref {
+        DerefChain {
+            host: <config::ExtConfig<T> as ConfigPart>::global(),
+            get: |ext| &ext.insert,
+        }
+    }
+
+    fn global_mut() -> Self::DerefMut {
+        DerefMutChain {
+            host: <config::ExtConfig<T> as ConfigPart>::global_mut(),
+            get: |ext| &ext.insert,
+            get_mut: |ext| &mut ext.insert,
+        }
+    }
+
+    fn update(&mut self, builder: Self::Builder) {
+        todo!()
+    }
+}
+
+impl<T> Build for ExtConfig<T>
+where
+    T: Serialize + for<'a> Deserialize<'a>,
+{
+    type Builder = ExtBuilder<T>;
+}
+
+impl<T> XFrom<ExtBuilder<T>> for ExtConfig<T> {
+    fn xfrom(builder: ExtBuilder<T>) -> ExtConfig<T> {
+        Self {
+            keys: builder
+                .keys
+                .map(|ks| Trie::from_iter(ks.into_iter()))
+                .unwrap_or_else(Trie::new),
+        }
+    }
 }

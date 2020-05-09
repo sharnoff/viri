@@ -1,9 +1,9 @@
-//! A collection of macros used for generating mode-switching boilerplate
+//! A collection of macros used for generating boilerplate involving all possible modes
 
 macro_rules! modes {
     (
         $(#[$modes_attrs:meta])*
-        $modes_vis:vis enum $modes:ident<$param:ident> {
+        $modes_vis:vis enum $modes:ident<$param:ident, Conf> {
             $($variant:ident/$sub_mod:ident: $var_ty:ty,)+
         }
 
@@ -21,7 +21,9 @@ macro_rules! modes {
         }
 
         $(#[$modes_attrs])*
-        $modes_vis enum $modes<$param> {
+        $modes_vis enum $modes<$param, Conf>
+        where config::ExtConfig<Conf>: config::ExtendsCfg<$param> + ConfigPart,
+        {
             $($variant($var_ty),)*
         }
 
@@ -30,13 +32,17 @@ macro_rules! modes {
             $($sub_mod: bool,)+
         }
 
-        $(impl<$param> XFrom<$var_ty> for $modes<$param> {
+        $(impl<$param, Conf> XFrom<$var_ty> for $modes<$param, Conf>
+        where config::ExtConfig<Conf>: config::ExtendsCfg<$param> + ConfigPart,
+        {
             fn xfrom(mode: $var_ty) -> Self {
                 Self::$variant(mode)
             }
         })+
 
-        impl<T> XFrom<$kind> for $modes<T> {
+        impl<T, Conf> XFrom<$kind> for $modes<T, Conf>
+        where config::ExtConfig<Conf>: config::ExtendsCfg<$param> + ConfigPart,
+        {
             fn xfrom(kind: $kind) -> Self {
                 match kind {
                     $($kind::$variant => Self::$variant(<$var_ty>::default()),)+
@@ -44,7 +50,9 @@ macro_rules! modes {
             }
         }
 
-        impl<T> $modes<T> {
+        impl<T, Conf> $modes<T, Conf>
+        where config::ExtConfig<Conf>: config::ExtendsCfg<$param> + ConfigPart,
+        {
             fn kind(&self) -> $kind {
                 match self {
                     $(Self::$variant(_) => $kind::$variant,)+
@@ -52,7 +60,11 @@ macro_rules! modes {
             }
         }
 
-        impl<$param: 'static> $modes<$param> {
+        impl<$param: 'static, Conf> $modes<$param, Conf>
+        where config::ExtConfig<Conf>: config::ExtendsCfg<$param> + ConfigPart,
+              $param: Clone,
+              Conf: 'static,
+        {
             fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<$param>>, Error> {
                 match self { $(Self::$variant(m) => m.try_handle(key),)+ }
             }
@@ -66,7 +78,7 @@ macro_rules! modes {
             }
 
             fn try_name(&self) -> Option<&'static str> {
-                match self { $(Self::$variant(_) => <$var_ty as Mode<_>>::NAME,)+ }
+                match self { $(Self::$variant(_) => <$var_ty as Mode<_,_>>::NAME,)+ }
             }
         }
 
@@ -105,6 +117,29 @@ macro_rules! modes {
                     $($kind::$variant => self.$sub_mod,)+
                 }
             }
+        }
+    }
+}
+
+macro_rules! mode_config_types {
+    (
+        $(#[$base_attrs:meta])*
+        $base_vis:vis struct $base_cfg:ident {
+            $($field_vis:vis $sub_mod:ident: $base_ty:ty => $ext_ty:ty,)+
+        }
+
+        $(#[$ext_attrs:meta])*
+        $ext_vis:vis struct $ext_cfg:ident<$param:ident> = ...;
+    ) => {
+        $(#[$base_attrs])*
+        $base_vis struct $base_cfg {
+            $($field_vis $sub_mod: $base_ty,)+
+        }
+
+        $(#[$ext_attrs])*
+        $ext_vis struct $ext_cfg<$param> {
+            pub parent: ConfigParent<$param>,
+            $($field_vis $sub_mod: $ext_ty,)+
         }
     }
 }
