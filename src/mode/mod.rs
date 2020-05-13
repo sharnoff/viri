@@ -89,7 +89,7 @@ modes! {
     // The middle item, `normal`, gives the corresponding field name in `ModeSet`, as well as the
     // name of the module to import.
     pub enum Modes<T, Conf> {
-        // Normal/normal: normal::Mode<T>,
+        Normal/normal: normal::Mode<T, Conf>,
         Insert/insert: insert::Mode<T, Conf>,
         // @ADD-MODE -- Add your new mode here! For more info, see the module-level documentation
     }

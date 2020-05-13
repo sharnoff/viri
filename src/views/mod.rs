@@ -29,8 +29,8 @@
 use crate::config::{Build, ConfigPart};
 use crate::container;
 use crate::event::KeyEvent;
-use crate::mode::config::{dyn_extends_cfg, BaseConfig, ConfigParent, ExtendsCfg};
-use crate::mode::{self, insert, Cmd, Direction};
+use crate::mode::config::{dyn_extends_cfg, BaseConfig, ExtendsCfg};
+use crate::mode::{self, insert, normal, Cmd, Direction};
 use crate::runtime::{Painter, TermSize};
 use crate::trie::Trie;
 use crate::utils::{self, Never, XFrom, XInto};
@@ -360,6 +360,7 @@ impl OutputSignal {
 #[derive(Serialize, Deserialize)]
 pub struct ExtBuilder {
     insert: insert::ExtBuilder<MetaCmd<Never>>,
+    normal: normal::ExtBuilder<MetaCmd<Never>>,
 }
 
 pub type ExtConfig = mode::config::ExtConfig<MetaCmd<Never>>;
@@ -393,8 +394,31 @@ impl Default for ExtConfig {
         Self {
             parent: || Box::new(BaseConfig::global()),
             insert: Default::default(),
+            normal: normal::ExtConfig {
+                keys: default_normal_keybindings(),
+            },
         }
     }
+}
+
+#[rustfmt::skip]
+fn default_normal_keybindings() -> Trie<KeyEvent, Vec<Cmd<MetaCmd<Never>>>> {
+    use Cmd::Other;
+    use MetaCmd::ShiftFocus;
+    use Direction::{Up, Down, Left, Right};
+
+    let keys = vec![
+        (vec![KeyEvent::ctrl('w'), KeyEvent::none('k')],
+            vec![Other(ShiftFocus(Up, 1))]),
+        (vec![KeyEvent::ctrl('w'), KeyEvent::none('j')],
+            vec![Other(ShiftFocus(Down, 1))]),
+        (vec![KeyEvent::ctrl('w'), KeyEvent::none('h')],
+            vec![Other(ShiftFocus(Left, 1))]),
+        (vec![KeyEvent::ctrl('w'), KeyEvent::none('l')],
+            vec![Other(ShiftFocus(Right, 1))]),
+    ];
+
+    Trie::from_iter(keys.into_iter())
 }
 
 impl XFrom<ExtBuilder> for ExtConfig {
@@ -402,6 +426,7 @@ impl XFrom<ExtBuilder> for ExtConfig {
         Self {
             parent: || Box::new(BaseConfig::global()),
             insert: builder.insert.xinto(),
+            normal: builder.normal.xinto(),
         }
     }
 }
@@ -410,6 +435,10 @@ fn wrap_config<T>(ext_cfg: Box<dyn ExtendsCfg<MetaCmd<Never>>>) -> Box<dyn Exten
     let rc: Rc<dyn ExtendsCfg<MetaCmd<Never>>> = ext_cfg.into();
 
     struct InsertExt {
+        inner: Rc<dyn ExtendsCfg<MetaCmd<Never>>>,
+    }
+
+    struct NormalExt {
         inner: Rc<dyn ExtendsCfg<MetaCmd<Never>>>,
     }
 
@@ -424,10 +453,22 @@ fn wrap_config<T>(ext_cfg: Box<dyn ExtendsCfg<MetaCmd<Never>>>) -> Box<dyn Exten
         }
     }
 
+    impl<T> normal::ExtendsCfg<MetaCmd<T>> for NormalExt {
+        fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<MetaCmd<T>>>)> {
+            self.inner
+                .normal()
+                .keys()
+                .into_iter()
+                .map(|(keys, cmds)| (keys, cmds.xinto()))
+                .collect()
+        }
+    }
+
     dyn_extends_cfg(
         move || rc.clone(),
         // produce_boxed(ext_cfg),
         |c| Box::new(InsertExt { inner: c }),
+        |c| Box::new(NormalExt { inner: c }),
         |c| c.parent().map(wrap_config),
     )
 }
@@ -437,12 +478,25 @@ impl<T: 'static> ExtendsCfg<MetaCmd<T>> for ExtConfig {
         Box::new(&self.insert)
     }
 
+    fn normal<'a>(&'a self) -> Box<dyn 'a + normal::ExtendsCfg<MetaCmd<T>>> {
+        Box::new(&self.normal)
+    }
+
     fn parent(&self) -> Option<Box<dyn ExtendsCfg<MetaCmd<T>>>> {
         Some(wrap_config((self.parent)()))
     }
 }
 
 impl<T> insert::ExtendsCfg<MetaCmd<T>> for insert::ExtConfig<MetaCmd<Never>> {
+    fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<MetaCmd<T>>>)> {
+        self.keys
+            .iter_all_prefix(&[])
+            .map(|(keys, cmds)| (Vec::from(keys), cmds.clone().xinto()))
+            .collect()
+    }
+}
+
+impl<T> normal::ExtendsCfg<MetaCmd<T>> for normal::ExtConfig<MetaCmd<Never>> {
     fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<MetaCmd<T>>>)> {
         self.keys
             .iter_all_prefix(&[])

@@ -2,11 +2,9 @@
 //!
 //! Currently a work in progress
 
+use serde::{Serialize, Serializer};
 use std::fmt::{self, Debug};
 use std::{mem, slice};
-
-use crate::prelude::*;
-use serde::Serializer;
 
 #[derive(Debug)]
 pub struct Trie<K, T> {

@@ -11,9 +11,10 @@
 //! [`KeyModifiers`]: struct.KeyModifiers.html
 //! [`MouseEvent`]: enum.MouseEvent.html
 
-use crate::prelude::*;
+use crate::utils::{XFrom, XInto};
 use crossterm::event;
 pub use crossterm::event::MouseButton;
+use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct KeyEvent {

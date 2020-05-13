@@ -15,7 +15,6 @@ mod raw;
 pub mod sizes;
 pub mod utf8;
 
-use std::error::Error;
 use std::fmt::{self, Debug, Formatter};
 use std::ops::{Bound, Deref, DerefMut, Range, RangeBounds};
 use std::sync::Arc;

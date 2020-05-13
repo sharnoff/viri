@@ -1,17 +1,13 @@
 //! Deletion-related `KeyEvent` parsing for "normal" mode
 
-use std::marker::PhantomData;
-
-use crate::event::KeyEvent;
-use crate::mode::HorizMove::LineBoundary;
-use crate::mode::{Cmd, DeleteKind, Movement};
-#[allow(unused_imports)]
-use crate::prelude::*;
-
 use super::combinators::{chain, numerical, set, single, wrap, Set, SetResult};
 use super::movement::Parser as MoveParser;
 use super::ParseResult::{self, Failed, NeedsMore, Success};
 use super::{ParseState, Priority};
+use crate::event::KeyEvent;
+use crate::mode::HorizMove::LineBoundary;
+use crate::mode::{Cmd, DeleteKind, Movement};
+use std::marker::PhantomData;
 
 /// A parser for handling all types of deletion functionality
 pub struct Parser<T> {

@@ -1,13 +1,14 @@
-/// The types and functions associated with the running of the editor
-///
-/// These are largely concerned with the events loop and the internal handlers (e.g. the panic
-/// handler).
+//! The types and functions associated with the running of the editor
+//!
+//! These are largely concerned with the events loop and the internal handlers (e.g. the panic
+//! handler).
+
+use crate::event::{KeyEvent, MouseEvent};
+use crate::utils::XInto;
+use serde::{Deserialize, Serialize};
 use std::io::{self, stderr};
 use std::panic::{catch_unwind, resume_unwind, UnwindSafe};
 use std::process;
-
-use crate::event::{KeyEvent, MouseEvent};
-use crate::prelude::*;
 
 mod painter;
 pub mod panic;

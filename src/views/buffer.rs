@@ -3,20 +3,19 @@
 //! Additionally provided are the modules `normal_mode` and `insert_mode`, which define generic
 //! handlers for typical normal and insert modes.
 
+use super::{RefreshKind, View};
+use crate::config::{Build, ConfigPart};
+use crate::mode::{CharPredicate, CursorStyle, DeleteKind, Direction, Movement, ScrollKind};
+use crate::runtime::{Painter, TermCoord, TermSize};
+use crate::text::{ContentProvider, Diff, Line};
+use crate::utils::XFrom;
+use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::fmt::{self, Debug, Formatter};
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::{Range, RangeInclusive};
-use std::sync::Mutex;
-
-use crate::config::prelude::*;
-use crate::mode::{CharPredicate, CursorStyle, DeleteKind, Direction, Movement, ScrollKind};
-use crate::prelude::*;
-use crate::runtime::{Painter, TermCoord, TermSize};
-use crate::text::{ContentProvider, Diff, Line};
-
-use super::{RefreshKind, View};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// A basic `View` with utilities for extending it
 ///

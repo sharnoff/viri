@@ -1,10 +1,8 @@
 //! Various traits, types, and macros to help with configuring the editor
 
-pub mod prelude {
-    pub use std::sync::{Arc, Mutex, MutexGuard};
-}
-
-use crate::prelude::*;
+use crate::utils::XInto;
+use serde::{Deserialize, Serialize};
+use std::ops::{Deref, DerefMut};
 
 pub trait Configurable<Config: ConfigPart> {
     fn update(&mut self, config: &Config);

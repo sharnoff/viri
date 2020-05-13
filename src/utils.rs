@@ -2,7 +2,7 @@
 //!
 //! This is more-or-less a miscellaneous collection.
 
-use crate::prelude::*;
+use serde::{Deserialize, Serialize};
 
 /// A generic fallible type
 pub trait Monad {

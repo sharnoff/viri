@@ -60,9 +60,9 @@ macro_rules! modes {
             }
         }
 
-        impl<$param: 'static, Conf> $modes<$param, Conf>
+        impl<$param, Conf> $modes<$param, Conf>
         where config::ExtConfig<Conf>: config::ExtendsCfg<$param> + ConfigPart,
-              $param: Clone,
+              $param: 'static + Clone,
               Conf: 'static,
         {
             fn try_handle(&mut self, key: KeyEvent) -> Result<Vec<Cmd<$param>>, Error> {

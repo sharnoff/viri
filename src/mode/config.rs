@@ -16,7 +16,7 @@
 //! [`Cmd<!>`]: ../enum.Cmd.html
 //! [`views::file`]: ../../views/file/index.html
 
-use super::insert;
+use super::{insert, normal};
 use crate::config::{Build, ConfigPart};
 use crate::utils::{XFrom, XInto};
 use serde::{Deserialize, Serialize};
@@ -28,8 +28,8 @@ mode_config_types! {
     // TODO: Document
     #[derive(Default)]
     pub struct BaseConfig {
-        // normal: normal::Config => normal::ExtConfig<T>,
         pub insert: insert::Config => insert::ExtConfig<T>,
+        pub normal: normal::Config => normal::ExtConfig<T>,
     }
 
     pub struct ExtConfig<T> = ...;
@@ -37,7 +37,7 @@ mode_config_types! {
 
 pub trait ExtendsCfg<T> {
     fn insert<'a>(&'a self) -> Box<dyn 'a + insert::ExtendsCfg<T>>;
-    // fn normal(&self) -> Box<dyn normal::ExtendsCfg<T>>;
+    fn normal<'a>(&'a self) -> Box<dyn 'a + normal::ExtendsCfg<T>>;
 
     fn parent(&self) -> Option<Box<dyn ExtendsCfg<T>>>;
 }
@@ -45,6 +45,10 @@ pub trait ExtendsCfg<T> {
 impl<T: Clone> ExtendsCfg<T> for BaseConfig {
     fn insert<'a>(&'a self) -> Box<dyn 'a + insert::ExtendsCfg<T>> {
         Box::new(&self.insert)
+    }
+
+    fn normal<'a>(&'a self) -> Box<dyn 'a + normal::ExtendsCfg<T>> {
+        Box::new(&self.normal)
     }
 
     fn parent<'a>(&'a self) -> Option<Box<dyn ExtendsCfg<T>>> {
@@ -61,35 +65,47 @@ where
         self.deref().insert()
     }
 
+    fn normal<'a>(&'a self) -> Box<dyn 'a + normal::ExtendsCfg<T>> {
+        self.deref().normal()
+    }
+
     fn parent(&self) -> Option<Box<dyn ExtendsCfg<T>>> {
         self.deref().parent()
     }
 }
 
-pub fn dyn_extends_cfg<AuxFn, Aux, IFn, PFn, T>(
+pub fn dyn_extends_cfg<AuxFn, Aux, IFn, NFn, PFn, T>(
     aux: AuxFn,
     insert: IFn,
+    normal: NFn,
     parent: PFn,
 ) -> Box<dyn ExtendsCfg<T>>
 where
     IFn: 'static + Fn(Aux) -> Box<dyn insert::ExtendsCfg<T>>,
+    NFn: 'static + Fn(Aux) -> Box<dyn normal::ExtendsCfg<T>>,
     PFn: 'static + Fn(Aux) -> Option<Box<dyn ExtendsCfg<T>>>,
     AuxFn: 'static + Fn() -> Aux,
 {
-    struct DynExt<AuxFn, IFn, PFn> {
+    struct DynExt<AuxFn, IFn, NFn, PFn> {
         aux: AuxFn,
         insert: IFn,
+        normal: NFn,
         parent: PFn,
     }
 
-    impl<Aux, AuxFn, IFn, PFn, T> ExtendsCfg<T> for DynExt<AuxFn, IFn, PFn>
+    impl<Aux, AuxFn, IFn, NFn, PFn, T> ExtendsCfg<T> for DynExt<AuxFn, IFn, NFn, PFn>
     where
         IFn: Fn(Aux) -> Box<dyn insert::ExtendsCfg<T>>,
+        NFn: Fn(Aux) -> Box<dyn normal::ExtendsCfg<T>>,
         PFn: Fn(Aux) -> Option<Box<dyn ExtendsCfg<T>>>,
         AuxFn: 'static + Fn() -> Aux,
     {
         fn insert<'a>(&'a self) -> Box<dyn 'a + insert::ExtendsCfg<T>> {
             (self.insert)((self.aux)())
+        }
+
+        fn normal<'a>(&'a self) -> Box<dyn 'a + normal::ExtendsCfg<T>> {
+            (self.normal)((self.aux)())
         }
 
         fn parent(&self) -> Option<Box<dyn ExtendsCfg<T>>> {
@@ -100,6 +116,7 @@ where
     Box::new(DynExt {
         aux,
         insert,
+        normal,
         parent,
     })
 }
@@ -118,8 +135,8 @@ pub fn get_all<'a, T>(ext_cfg: Box<dyn 'a + ExtendsCfg<T>>) -> Vec<Box<dyn 'a + 
 
 #[derive(Serialize, Deserialize)]
 pub struct BaseConfigBuilder {
-    // normal: normal::Builder,
     insert: insert::Builder,
+    normal: normal::Builder,
 }
 
 lazy_static::lazy_static! {
@@ -139,6 +156,7 @@ impl ConfigPart for BaseConfig {
 
     fn update(&mut self, builder: BaseConfigBuilder) {
         self.insert.update(builder.insert);
+        self.normal.update(builder.normal);
     }
 }
 
@@ -150,6 +168,7 @@ impl XFrom<BaseConfigBuilder> for BaseConfig {
     fn xfrom(builder: BaseConfigBuilder) -> Self {
         Self {
             insert: builder.insert.xinto(),
+            normal: builder.normal.xinto(),
         }
     }
 }

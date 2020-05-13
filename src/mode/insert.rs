@@ -2,12 +2,13 @@
 
 use super::config;
 use super::{Cmd, CursorStyle, Error, HorizMove, Movement};
-use crate::config::{ConfigPart, DerefChain, DerefMutChain};
+use crate::config::{Build, ConfigPart, DerefChain, DerefMutChain};
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::prelude::*;
 use crate::trie::Trie;
+use crate::utils::{Never, XFrom, XInto};
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Debug)]
@@ -98,7 +99,7 @@ where
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Config stuff                                                               //
+// Base Config stuff                                                          //
 ////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -180,6 +181,10 @@ fn default_keybindings() -> Trie<KeyEvent, Vec<Cmd<Never>>> {
 
     Trie::from_iter(keys.into_iter())
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Config extensions                                                          //
+////////////////////////////////////////////////////////////////////////////////
 
 pub trait ExtendsCfg<T> {
     fn keys(&self) -> Vec<(Vec<KeyEvent>, Vec<Cmd<T>>)>;

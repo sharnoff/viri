@@ -1,23 +1,19 @@
 use super::buffer::ViewBuffer;
 use super::{ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler};
-use crate::config::prelude::*;
+use crate::config::{Build, ConfigPart};
 use crate::container::Signal;
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::mode::{
-    self,
-    config::{ConfigParent, ExtendsCfg},
     handler::{self as mode_handler, Executor, Handler as ModeHandler},
-    insert,
-    // FIXME @ PRE-MERGE
-    insert::Mode as NormalMode,
-    Cmd,
-    Direction,
-    ModeSet,
+    normal::Mode as NormalMode,
+    Direction, ModeSet,
 };
-use crate::prelude::*;
 use crate::runtime::{Painter, TermSize};
 use crate::trie::Trie;
+use crate::utils::{Never, XFrom};
 use crossterm::style::Colorize;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 mod edits;
 mod executor;
@@ -467,9 +463,9 @@ impl XFrom<Builder> for Config {
 #[rustfmt::skip]
 fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
     use mode_handler::Cmd::Other;
-    use super::MetaCmd::{TryClose, Custom, Split, ShiftFocus};
+    use super::MetaCmd::{TryClose, Custom, Split};
     use super::ExitKind::{ReqSave, NoSave};
-    use Direction::{Down, Left, Right, Up};
+    use Direction::{Down, Left};
     use FileMeta::Save;
 
     let keys = vec![
@@ -481,12 +477,6 @@ fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
         // Splits
         ("sp", vec![Other(Split(Down))]),
         ("vs", vec![Other(Split(Left))]),
-        
-        // Temporary, until config is sorted
-        ("up", vec![Other(ShiftFocus(Up, 1))]),
-        ("down", vec![Other(ShiftFocus(Down, 1))]),
-        ("left", vec![Other(ShiftFocus(Left, 1))]),
-        ("right", vec![Other(ShiftFocus(Right, 1))]),
     ];
 
     Trie::from_iter(keys.into_iter().map(|(key,cmd)| (key.chars().collect(), cmd)))

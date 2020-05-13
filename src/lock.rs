@@ -12,15 +12,13 @@
 //! [`RawLock`]: struct.Lock.html
 //! [`ArcLock`]: struct.ArcLock.html
 
-use crate::prelude::*;
-
-use std::cell::UnsafeCell;
-use std::fmt::{self, Debug, Formatter};
-use std::sync::Arc;
-use std::thread::{self, ThreadId};
-
 use lock_api::RawMutex as _;
 use parking_lot::{Mutex, RawMutex, RawRwLock};
+use std::cell::UnsafeCell;
+use std::fmt::{self, Debug, Formatter};
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+use std::thread::{self, ThreadId};
 
 /// A type identical to `parking_lot`'s `RwLock`
 ///

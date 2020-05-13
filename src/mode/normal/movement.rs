@@ -1,14 +1,14 @@
 //! Movement-related `KeyEvent` parsing for "normal" mode
 
-use std::collections::HashMap;
-
-use crate::config::prelude::*;
-use crate::event::KeyEvent;
-use crate::mode::Movement;
-use crate::prelude::*;
-
 use super::ParseResult::{Failed, Success};
 use super::{ParseResult, ParseState, Priority};
+use crate::config::{Build, ConfigPart};
+use crate::event::KeyEvent;
+use crate::mode::Movement;
+use crate::utils::XFrom;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The base parser for wrapping different types of movements
 ///
