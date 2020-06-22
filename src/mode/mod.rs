@@ -6,9 +6,8 @@
 //! the [`try_handle`] method on the [`Mode`] trait.
 //!
 //! The set of available modes is intentionally limited (See: [Adding new modes]) so that other
-//! simplifications can be made.
-// TODO: Add the following once it has been implemented:
-// "These happen in places that would be difficult to handle otherwise, like configuration."
+//! simplifications can be made. These happen in places that would be difficult to handle
+//! otherwise, like configuration.
 //!
 //! ## Adding new modes
 //!
@@ -203,9 +202,11 @@ pub enum Cmd<T> {
 }
 
 impl<S: XInto<T>, T> XFrom<Cmd<S>> for Cmd<T> {
-    #[rustfmt::skip]
     fn xfrom(cmd: Cmd<S>) -> Self {
-        use Cmd::{ChangeMode, Cursor, Delete, EnterMode, ExitMode, Insert, Other, Scroll, Undo, Redo, StartEditBlock, EndEditBlock};
+        use Cmd::{
+            ChangeMode, Cursor, Delete, EndEditBlock, EnterMode, ExitMode, Insert, Other, Redo,
+            Scroll, StartEditBlock, Undo,
+        };
 
         match cmd {
             Cursor(m, n) => Cursor(m, n),

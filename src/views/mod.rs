@@ -466,10 +466,9 @@ fn wrap_config<T>(ext_cfg: Box<dyn ExtendsCfg<MetaCmd<Never>>>) -> Box<dyn Exten
 
     dyn_extends_cfg(
         move || rc.clone(),
-        // produce_boxed(ext_cfg),
+        |c| c.parent().map(wrap_config),
         |c| Box::new(InsertExt { inner: c }),
         |c| Box::new(NormalExt { inner: c }),
-        |c| c.parent().map(wrap_config),
     )
 }
 
