@@ -186,7 +186,7 @@ macro_rules! mode_config_types {
 
         $(#[$ext_attrs])*
         $ext_vis struct $ext_cfg<T> {
-            pub parent: ConfigParent<T>,
+            pub parent: fn() -> Box<dyn $trait<T>>,
             // Expands to:
             //   pub insert: insert::ExtConfig<T>,
             //   pub normal: normal::ExtConfig<T>,
@@ -205,6 +205,7 @@ macro_rules! mode_config_types {
         }
 
         // A helper function for creating manual trait objects for extension traits
+        $(#[$dyn_attrs])*
         $dyn_vis fn $dyn_fn<Aux, AuxFn, ParentFn, $($fn_param),+, T>(
             aux_fn: AuxFn,
             parent: ParentFn,
