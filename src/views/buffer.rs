@@ -385,8 +385,14 @@ impl<P: ContentProvider> ViewBuffer<P> {
         refresh
     }
 
-    /// Scrolls the buffer by `amount` lines/columns in the direction given
-    pub fn scroll(&mut self, kind: ScrollKind, amount: usize) -> Option<RefreshKind> {
+    /// Scrolls the buffer by `amount` lines/columns in the direction given. `lock_cursor` has the
+    /// meaning exactly defined by the field with the same name in the scroll movement variant.
+    pub fn scroll(
+        &mut self,
+        kind: ScrollKind,
+        amount: usize,
+        lock_cursor: bool,
+    ) -> Option<RefreshKind> {
         if amount == 0 {
             return None;
         }
@@ -404,22 +410,40 @@ impl<P: ContentProvider> ViewBuffer<P> {
         if new_row != old_row {
             changed = true;
 
-            // Drag the cursor to the new row
             self.top_row = new_row;
-            if new_row < old_row {
-                let max_row = self.size().height - 1;
+            if lock_cursor {
+                // A locked cursor means that it won't move on-screen. The only thing left to do is
+                // to ensure that it doesn't escape the text. This can only happen while scrolling
+                // down, so we'll simply set the cursor row to itself and the minimum of what's
+                // allowed.
 
-                self.cursor.row = (self
-                    .cursor
-                    .row
-                    .saturating_add((old_row - new_row).try_into().unwrap_or(std::u16::MAX)))
-                .min(max_row);
+                self.cursor.row =
+                    (self.cursor.row).min((self.num_lines() - self.top_row - 1) as u16);
             } else {
-                // old_row < new_row
-                self.cursor.row = self
-                    .cursor
-                    .row
-                    .saturating_sub((new_row - old_row).try_into().unwrap_or(std::u16::MAX));
+                // If the cursor wasn't locked at the same on-screen position, we need to move it
+                // by the corresponding amount up or down, but we also can't let it leave the
+                // screen. In essence, we're dragging it along.
+
+                if new_row < old_row {
+                    // This means we scrolled up - the cursor can't be below the bottom edge of the
+                    // view
+                    self.cursor.row = (self.cursor.row)
+                        // We add the difference to the cursor's row to attempt to move it *down*
+                        // (because it should appear to not move). This might sometimes be too far,
+                        // so we need to make this a saturating add. It'll get cleaned up by the
+                        // `min` in a moment.
+                        .saturating_add((old_row - new_row).try_into().unwrap_or(u16::MAX))
+                        // We can't have the cursor too far down
+                        .min(self.size().height - 1);
+                } else {
+                    // old_row < new_row
+                    //
+                    // We scrolled down - the cursor can't go too far up. Thankfully, "too far" is
+                    // negative, so we can just use saturating substitution to guarantee it stays
+                    // greater than or equal to zero
+                    self.cursor.row = (self.cursor.row)
+                        .saturating_sub((new_row - old_row).try_into().unwrap_or(u16::MAX));
+                }
             }
         }
 

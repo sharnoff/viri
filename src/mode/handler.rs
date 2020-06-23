@@ -33,7 +33,13 @@ pub enum Cmd<T> {
     Cursor(Movement, usize),
 
     /// A scrolling movement, given by the type of scrolling and number of repetitions
-    Scroll(ScrollKind, usize),
+    Scroll {
+        kind: ScrollKind,
+        amount: usize,
+        /// Whether to keep the cursor at the same position on the screen while scrolling the text
+        /// beneath it - if true, the cursor will also move with the scrolling.
+        lock_cursor: bool,
+    },
 
     /// An insertion of the given string at the current cursor position
     Insert(String),
@@ -124,7 +130,15 @@ where
         for cmd in cmds.into_iter() {
             let cmd = match cmd {
                 Cursor(m, n) => Cmd::Cursor(m, n),
-                Scroll(kind, n) => Cmd::Scroll(kind, n),
+                Scroll {
+                    kind,
+                    amount,
+                    lock_cursor,
+                } => Cmd::Scroll {
+                    kind,
+                    amount,
+                    lock_cursor,
+                },
                 Insert(s) => Cmd::Insert(s),
                 Delete(kind) => Cmd::Delete(kind),
                 Undo(n) => Cmd::Undo(n),

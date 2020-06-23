@@ -19,12 +19,24 @@ impl<T: 'static> Parser<T> {
 
         let up = wrap(
             numerical(single(KeyEvent::ctrl('y'), Priority::Builtin)),
-            |(n, _)| vec![Scroll(ByDirection(Up), n.unwrap_or(1))],
+            |(n, _)| {
+                vec![Scroll {
+                    kind: ByDirection(Up),
+                    amount: n.unwrap_or(1),
+                    lock_cursor: false,
+                }]
+            },
         );
 
         let down = wrap(
             numerical(single(KeyEvent::ctrl('e'), Priority::Builtin)),
-            |(n, _)| vec![Scroll(ByDirection(Down), n.unwrap_or(1))],
+            |(n, _)| {
+                vec![Scroll {
+                    kind: ByDirection(Down),
+                    amount: n.unwrap_or(1),
+                    lock_cursor: false,
+                }]
+            },
         );
 
         let left = wrap(
@@ -34,10 +46,11 @@ impl<T: 'static> Parser<T> {
                 Priority::Builtin,
             ),
             |((n, _), (m, _))| {
-                vec![Scroll(
-                    ByDirection(Left),
-                    n.unwrap_or(1).saturating_mul(m.unwrap_or(1)),
-                )]
+                vec![Scroll {
+                    kind: ByDirection(Left),
+                    amount: n.unwrap_or(1).saturating_mul(m.unwrap_or(1)),
+                    lock_cursor: false,
+                }]
             },
         );
 
@@ -48,10 +61,11 @@ impl<T: 'static> Parser<T> {
                 Priority::Builtin,
             ),
             |((n, _), (m, _))| {
-                vec![Scroll(
-                    ByDirection(Right),
-                    n.unwrap_or(1).saturating_mul(m.unwrap_or(1)),
-                )]
+                vec![Scroll {
+                    kind: ByDirection(Right),
+                    amount: n.unwrap_or(1).saturating_mul(m.unwrap_or(1)),
+                    lock_cursor: false,
+                }]
             },
         );
 
@@ -61,22 +75,34 @@ impl<T: 'static> Parser<T> {
                 single(KeyEvent::none('z'), Priority::Builtin),
                 Priority::Builtin,
             ),
-            |_| vec![Scroll(VerticalCenter, 1)],
+            |_| {
+                vec![Scroll {
+                    kind: VerticalCenter,
+                    amount: 1,
+                    lock_cursor: false,
+                }]
+            },
         );
 
         let half_page_up = wrap(
             numerical(single(KeyEvent::ctrl('u'), Priority::Builtin)),
             |(n, _)| {
-                log::trace!("half page up!");
-                vec![Scroll(UpPage(0.5), n.unwrap_or(1))]
+                vec![Scroll {
+                    kind: UpPage(0.5),
+                    amount: n.unwrap_or(1),
+                    lock_cursor: true,
+                }]
             },
         );
 
         let half_page_down = wrap(
             numerical(single(KeyEvent::ctrl('d'), Priority::Builtin)),
             |(n, _)| {
-                log::trace!("half page down!");
-                vec![Scroll(DownPage(0.5), n.unwrap_or(1))]
+                vec![Scroll {
+                    kind: DownPage(0.5),
+                    amount: n.unwrap_or(1),
+                    lock_cursor: true,
+                }]
             },
         );
 

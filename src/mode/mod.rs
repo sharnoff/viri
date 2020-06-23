@@ -158,7 +158,13 @@ pub enum Cmd<T> {
     Cursor(Movement, usize),
 
     /// A scrolling movement, given by the type of scrolling and number of repetitions
-    Scroll(ScrollKind, usize),
+    Scroll {
+        kind: ScrollKind,
+        amount: usize,
+        /// Whether to keep the cursor at the same position on the screen while scrolling the text
+        /// beneath it - if true, the cursor will also move with the scrolling.
+        lock_cursor: bool,
+    },
 
     /// An insertion of the given string at the current cursor position
     Insert(String),
@@ -210,7 +216,15 @@ impl<S: XInto<T>, T> XFrom<Cmd<S>> for Cmd<T> {
 
         match cmd {
             Cursor(m, n) => Cursor(m, n),
-            Scroll(d, n) => Scroll(d, n),
+            Scroll {
+                kind,
+                amount,
+                lock_cursor,
+            } => Scroll {
+                kind,
+                amount,
+                lock_cursor,
+            },
             Insert(s) => Insert(s),
             Delete(kind) => Delete(kind),
             StartEditBlock => StartEditBlock,
