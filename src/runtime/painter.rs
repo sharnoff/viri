@@ -341,7 +341,9 @@ impl<'a> Painter<'a> {
         let mut line_indexes = 0..(window.rows.end - window.rows.start) as usize;
 
         let mut stdout = io::stdout();
-        for (i, (segment, line)) in (&mut line_indexes).zip(iter) {
+        // We put the index on the right-hand side so that when `iter` runs out, the next item in
+        // `line_indexes` will give the first index that we didn't draw.
+        for ((segment, line), i) in iter.zip(&mut line_indexes) {
             let i: u16 = i.try_into().unwrap();
 
             stdout
