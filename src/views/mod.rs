@@ -81,16 +81,17 @@ viewkind! {
     }
 }
 
-// Defined in 'src/config.rs'. The real function signature isn't *quite* this.
-/*
-read_config! {
+// Defined in 'src/config.rs'. The real function signature isn't *quite* this, but it's
+// approximately the same.
+read_config_fn! {
+    pub static CONFIG_LOCATION: &'static str = "views";
+
     pub fn read_config(cfg_str: &str) {
-        struct {
-            file: file::FileConfig,
+        struct ViewsConfig {
+            file: file::Config,
         }
     }
 }
-*/
 
 //-/////////////////////////////////////////////////////////////////////////-///
 // Header 2: Type Definitions                                                 //

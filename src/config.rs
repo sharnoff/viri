@@ -150,3 +150,67 @@ macro_rules! static_config {
         }
     }
 }
+
+#[macro_export]
+macro_rules! read_config_fn {
+    (
+        $(#[$loc_attrs:meta])*
+        pub static CONFIG_LOCATION: &'static str = $location:expr;
+
+        $(#[$fn_attrs:meta])*
+        pub fn read_config(cfg_str: &str) {
+            struct $builder:ident {
+                $($field:ident: $cfg_ty:ty,)*
+            }
+        }
+    ) => {
+        $(#[$loc_attrs])*
+        pub static CONFIG_LOCATION: &'static str = $location;
+
+        $(#[$fn_attrs])*
+        pub fn read_config(cfg_str: &str) -> serde_yaml::Result<()> {
+            use $crate::config::Build;
+
+            #[derive(serde::Serialize, serde::Deserialize)]
+            struct $builder {
+                $($field: Option<<$cfg_ty as Build>::Builder>,)*
+            }
+
+            let all: $builder = serde_yaml::from_str(&cfg_str)?;
+
+            $(if let Some(f) = all.$field {
+                <$cfg_ty>::global_mut().update(f);
+            })*
+
+            Ok(())
+        }
+    }
+}
+
+macro_rules! load_configs {
+    (cfg_dir = $dir:expr, force = $force:expr, mod [$($sub_mod:ident),*$(,)?]) => {{
+        $({
+            let cfg_file = $dir.join($sub_mod::CONFIG_LOCATION);
+            match std::fs::read_to_string(&cfg_file) {
+                // Failed to read
+                Err(e) => {
+                    if $force {
+                        eprintln!("viri: failed to start, could not read required config file {:?}: {}", &cfg_file, e);
+                        std::process::exit(1);
+                    } else {
+                        eprintln!("viri: warning: could not open config file {:?}: {}", &cfg_file, e);
+                    }
+                }
+
+                // Successful read, now parse
+                Ok(s) => match $sub_mod::read_config(&s) {
+                    Err(e) => {
+                        eprintln!("viri: failed to parse config file {:?}: {}", &cfg_file, e);
+                        std::process::exit(1);
+                    }
+                    Ok(()) => (),
+                }
+            }
+        })*
+    }}
+}

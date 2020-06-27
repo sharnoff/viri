@@ -97,25 +97,8 @@ fn main() {
     });
 
     // Now we'll try to load view configs
-    if let Some(cfg_dir) = cfg_dir {
-        let cfg_file = cfg_dir.join("views.yml");
-        let read_result = fs::read_to_string(&cfg_file);
-
-        match read_result {
-            Err(e) => {
-                if force_cfg {
-                    eprintln!(
-                        "Viri: Failed to open, could not read specified config file {:?}: {}",
-                        &cfg_file, e
-                    );
-                    process::exit(1);
-                }
-            }
-            Ok(_s) => (), /*if let Err(e) = views::read_config(&s) {
-                              eprintln!("Viri: Failed to parse config file {:?}: {}", &cfg_file, e);
-                              process::exit(1);
-                          }*/
-        }
+    if let Some(dir) = cfg_dir.as_ref() {
+        load_configs!(cfg_dir = dir, force = false, mod [views]);
     }
 
     logger::init();

@@ -424,14 +424,14 @@ impl View {
 type ColonCmd = mode_handler::Cmd<super::MetaCmd<FileMeta>>;
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Builder {
+pub struct Builder {
     keys: Option<Vec<(String, Vec<ColonCmd>)>>,
 }
 
 static_config! {
     static GLOBAL;
     @Builder = Builder;
-    struct Config {
+    pub struct Config {
         pub keys: Trie<char, Vec<ColonCmd>> = default_keybindings(),
     }
 
