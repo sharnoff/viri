@@ -5,7 +5,7 @@ use crate::config::{Build, ConfigPart, DerefChain, DerefMutChain};
 use crate::event::KeyEvent;
 use crate::mode::config;
 use crate::trie::Trie;
-use crate::utils::{Never, XFrom, XInto};
+use crate::utils::{Never, OpaqueOption, XFrom, XInto};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Formatter};
 use std::marker::PhantomData;
@@ -142,29 +142,8 @@ where
     config::ExtConfig<Conf>: config::ExtendsCfg<T> + ConfigPart,
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        enum OpaqueOption {
-            Some,
-            None,
-        }
-
-        impl Debug for OpaqueOption {
-            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                match self {
-                    Self::Some => f.write_str("Some(...)"),
-                    Self::None => f.write_str("None"),
-                }
-            }
-        }
-
-        fn opaque<T>(opt: Option<T>) -> OpaqueOption {
-            match opt {
-                Some(_) => OpaqueOption::Some,
-                None => OpaqueOption::None,
-            }
-        }
-
         f.debug_struct("normal::Mode")
-            .field("parsers", &opaque(self.parsers.as_ref()))
+            .field("parsers", &OpaqueOption::from(&self.parsers))
             .finish()
     }
 }

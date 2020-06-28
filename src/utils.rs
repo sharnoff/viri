@@ -3,6 +3,7 @@
 //! This is more-or-less a miscellaneous collection.
 
 use serde::{Deserialize, Serialize};
+use std::fmt::{self, Debug, Formatter};
 
 /// A generic fallible type
 pub trait Monad {
@@ -88,4 +89,36 @@ const BLANK_SIZE: usize = u16::MAX as usize;
 /// Provides a string consisting exactly of `length` spaces.
 pub fn blank_str(length: u16) -> &'static str {
     unsafe { &std::str::from_utf8_unchecked(&BLANK)[..length as usize] }
+}
+
+/// A helper value for providing a `Debug` implementation for `Option`s that otherwise wouldn't
+///
+/// This is for use in a couple places in order to provide a debug implementation that otherwise
+/// wouldn't be available, for `Option<T>` where `T` doesn't implement `Debug` (e.g. for function
+/// pointers or trait objects).
+///
+/// These can be created by the implementation of `From` for `&Option<T>`.
+///
+/// The debug implementation simply outputs `None` or `Some(...)`.
+pub enum OpaqueOption {
+    Some,
+    None,
+}
+
+impl<T> From<&Option<T>> for OpaqueOption {
+    fn from(opt: &Option<T>) -> OpaqueOption {
+        match opt {
+            &Some(_) => OpaqueOption::Some,
+            &None => OpaqueOption::None,
+        }
+    }
+}
+
+impl Debug for OpaqueOption {
+    fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Some => fmt.write_str("Some(...)"),
+            Self::None => fmt.write_str("None"),
+        }
+    }
 }
