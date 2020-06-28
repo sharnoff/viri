@@ -706,6 +706,11 @@ pub fn set_rt_param_validator(
             match entry.value.as_ref().map(|v| (v, is_valid(&v))) {
                 None | Some((_, Ok(_))) => Ok(()),
                 Some((v, Err(msg))) => {
+                    log::warn!(
+                        "warning: discarding value for runtime parameter `{}` as new validator fails with: {}",
+                        param,
+                        msg,
+                    );
                     let res = Err((v.clone(), msg));
                     entry.value = None;
                     res
@@ -714,6 +719,20 @@ pub fn set_rt_param_validator(
         }
     }
 }
+
+macro_rules! require_param {
+    ($($param:expr $(=> $is_valid:expr)?),*$(,)?) => {{
+        $(
+            $crate::container::register_rt_param($param);
+            // TODO: It might be better to not unwrap here, and instead
+            $($crate::container::set_rt_param_validator($param, $is_valid).unwrap();)?
+        )*
+    }}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Boilerplate implementations                                                //
+////////////////////////////////////////////////////////////////////////////////
 
 impl Debug for RTParamInfo {
     fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {

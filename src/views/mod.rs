@@ -63,7 +63,9 @@ pub mod split;
 // Header 1: Initialization                                                  //
 //                                                                           //
 // This section defines the various functions that are used for setting up   //
-// the various `View`s and the ability to switch between them.               //
+// the various `View`s and the ability to switch between them. It            //
+// additionally provides the `init` function that's called by `main` to do   //
+// a little bit of setup.                                                    //
 //                                                                           //
 // General overview (TODO)                                                   //
 //                                                                           //
@@ -91,6 +93,10 @@ read_config_fn! {
             file: file::Config,
         }
     }
+}
+
+pub fn init() {
+    buffer::init();
 }
 
 //-/////////////////////////////////////////////////////////////////////////-///

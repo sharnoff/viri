@@ -15,7 +15,27 @@ use std::fmt::{self, Debug, Formatter};
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::{Range, RangeInclusive};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
+
+pub fn init() {
+    fn try_parse<T: FromStr>(s: &str) -> Result<(), String>
+    where
+        <T as FromStr>::Err: fmt::Display,
+    {
+        match T::from_str(s) {
+            Ok(_) => Ok(()),
+            // FIXME: This should have a custom error message
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    // FIXME: These aren't actually implemented yet, but should be soon
+    require_param! {
+        "tabstop" => try_parse::<usize>,
+        "color_line_numbers" => try_parse::<bool>,
+    }
+}
 
 /// A basic `View` with utilities for extending it
 ///

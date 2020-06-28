@@ -25,8 +25,9 @@ extern crate uuid;
 
 #[macro_use]
 mod config;
-
+#[macro_use]
 mod container;
+
 mod event;
 mod lock;
 mod logger;
@@ -69,6 +70,11 @@ fn main() {
         }
     };
 
+    // Run some initializers. `logger` must go first because everything else might attempt to log
+    // warnings or errors.
+    logger::init();
+    views::init();
+
     // try to load the config
     let main_config = cfg_dir.clone().and_then(|cfg_dir| {
         let cfg_file = cfg_dir.join("viri.yml");
@@ -100,8 +106,6 @@ fn main() {
     if let Some(dir) = cfg_dir.as_ref() {
         load_configs!(cfg_dir = dir, force = false, mod [views]);
     }
-
-    logger::init();
 
     // Get the log file, either from the args or a config file
     let log_file_opt = matches.value_of("log").or_else(|| {
