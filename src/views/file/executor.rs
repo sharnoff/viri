@@ -1,7 +1,7 @@
 //! Definitions for the `FileExecutor` type
 
 use super::handle::Handle;
-use super::FileMeta;
+use super::{FileMeta, Params};
 use crate::mode::handler::{Cmd, Executor};
 use crate::mode::{self, CursorStyle};
 use crate::text::ContentProvider;
@@ -11,6 +11,7 @@ use crate::views::{ConcreteView, ExitKind, MetaCmd, OutputSignal};
 /// The internal `Executor` that allows handling of mode switching within the main `View`
 pub(super) struct FileExecutor {
     pub(super) buffer: ViewBuffer<Handle>,
+    pub(super) params: Params,
 }
 
 impl Executor<MetaCmd<FileMeta>> for FileExecutor {
@@ -165,14 +166,13 @@ impl FileExecutor {
 
     fn clone_into_builder(&mut self) -> Box<dyn ConcreteView> {
         let file = self.buffer.provider_mut().clone();
-        // We'll just pass it a random size - it'll be resized on the first refresh anyways
-        let size = (10, 10).into();
 
-        let mut buffer = ViewBuffer::new(size, file);
-        buffer.set_prefix(super::line_num_width, super::line_num_prefix);
         Box::new(super::View {
             handler: super::ModeHandler::new(
-                FileExecutor { buffer },
+                FileExecutor {
+                    buffer: self.buffer.clone_from_provider(file),
+                    params: self.params.clone(),
+                },
                 super::NormalMode::default(),
                 super::ModeSet::all(),
             ),

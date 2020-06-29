@@ -33,7 +33,6 @@ pub fn init() {
     // FIXME: These aren't actually implemented yet, but should be soon
     require_param! {
         "tabstop" => try_parse::<usize>,
-        "color_line_numbers" => try_parse::<bool>,
     }
 }
 
@@ -258,6 +257,12 @@ impl<P: ContentProvider> ViewBuffer<P> {
         }
     }
 
+    /// Creates a new `ViewBuffer` as a copy of this one, with the given `ContentProvider` as a
+    /// replacement
+    pub fn clone_from_provider(&self, provider: P) -> Self {
+        Self { provider, ..*self }
+    }
+
     /// Gives immutable access to the content provider for this buffer
     pub fn provider(&self) -> &P {
         &self.provider
@@ -335,13 +340,18 @@ impl<P: ContentProvider> ViewBuffer<P> {
         width: fn(&Self) -> u16,
         prefix: fn(&Self, usize) -> String,
     ) -> Option<RefreshKind> {
-        let old_width = self.prefix_width;
+        let old_fns = self.prefix_fns;
         self.prefix_width = width(self);
         self.prefix_fns = Some((width, prefix));
 
-        match self.prefix_width == old_width {
-            true => None,
-            false => Some(RefreshKind::Full),
+        let changed = match old_fns {
+            Some((_, f)) => f as usize != prefix as usize,
+            None => true,
+        };
+
+        match changed {
+            false => None,
+            true => Some(RefreshKind::Full),
         }
     }
 

@@ -13,6 +13,8 @@ use crate::trie::Trie;
 use crate::utils::{Never, XFrom};
 use crossterm::style::Colorize;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 mod edits;
@@ -25,6 +27,64 @@ use handle::{gen_local_id, Handle};
 /// The primary file viewer
 pub struct View {
     handler: ModeHandler<FileExecutor, MetaCmd<FileMeta>, MetaCmd<Never>>,
+}
+
+macro_rules! params {
+    (
+        $(#[$attrs:meta])*
+        $vis:vis struct $name:ident {
+            $($field:ident: $field_ty:ty = $default:expr,)*
+        }
+    ) => {
+        $(#[$attrs])*
+        $vis struct $name {
+            $($field: Option<$field_ty>,)*
+        }
+
+        macro_rules! get_param {
+            $(
+            ($view:expr, $field) => {{
+                use $crate::container::get_runtime_param;
+                use std::str::FromStr;
+
+                match $view.handler.executor().params.$field.as_ref() {
+                    Some(v) => v.clone(),
+                    None => match get_runtime_param(stringify!($field)) {
+                        Some(s) => <$field_ty>::from_str(&s).unwrap(),
+                        None => $default,
+                    }
+                }
+            }};
+            )*
+        }
+
+        pub fn init() {
+            require_param! {
+                $(stringify!($field) => try_parse::<$field_ty>,)*
+            }
+        }
+    }
+}
+
+fn try_parse<T: FromStr>(s: &str) -> Result<(), String>
+where
+    <T as FromStr>::Err: Display,
+{
+    match T::from_str(s) {
+        Ok(_) => Ok(()),
+        // FIXME: This should have a custom error message
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+params! {
+    /// The runtime parameters available for the file viewer
+    #[derive(Debug, Clone, Default)]
+    struct Params {
+        show_line_numbers: bool = true,
+        color_line_numbers: bool = true,
+        align_line_no_left: bool = false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +194,7 @@ impl ConstructedView for View {
                 handler: ModeHandler::new(
                     FileExecutor {
                         buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
+                        params: Params::default(),
                     },
                     NormalMode::default(),
                     ModeSet::all(),
@@ -162,6 +223,7 @@ impl ConstructedView for View {
                     handler: ModeHandler::new(
                         FileExecutor {
                             buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
+                            params: Params::default(),
                         },
                         NormalMode::default(),
                         ModeSet::all(),
@@ -171,16 +233,23 @@ impl ConstructedView for View {
         };
 
         let mut buffer = ViewBuffer::new(size, file);
-        buffer.set_prefix(line_num_width, line_num_prefix);
 
         // buffer.set_prefix(None);
-        Self {
+        let mut this = Self {
             handler: ModeHandler::new(
-                FileExecutor { buffer },
+                FileExecutor {
+                    buffer,
+                    params: Params::default(),
+                },
                 NormalMode::default(),
                 ModeSet::all(),
             ),
-        }
+        };
+
+        let (width_fn, prefix_fn) = this.prefix_fn_ptrs();
+        this.buffer_mut().set_prefix(width_fn, prefix_fn);
+
+        this
     }
 }
 
@@ -189,32 +258,38 @@ fn line_num_width(buf: &ViewBuffer<Handle>) -> u16 {
     // value is 1, so we have a padding factor of 2 to account for both sides.
     const PADDING_FACTOR: u16 = 2;
 
-    let width = (buf.num_lines() as f64).log10().ceil();
+    let width = (buf.num_lines() + 1).to_string().len() as u16;
 
-    if width > (u16::MAX - PADDING_FACTOR) as f64 || width < 0.0 || width.is_nan() {
-        return 0;
+    match width.checked_add(PADDING_FACTOR) {
+        Some(w) => w,
+        None => 0,
     }
-
-    width as u16 + PADDING_FACTOR
 }
 
-fn line_num_prefix(buf: &ViewBuffer<Handle>, line: usize) -> String {
-    const ALIGN_LINE_NO_LEFT: bool = false;
-
+fn line_num_prefix(
+    buf: &ViewBuffer<Handle>,
+    line: usize,
+    align_left: bool,
+    colored: bool,
+) -> String {
     // Sometimes `width` might return zero - if, for instance, the value is outside the maximum
     // range of a `u16`. This won't happen in practice, but we'll catch it here anyways.
     //
     // This function should also never be called if that is the case, but we'll still be defensive
-    // becaues it doesn't have much cost.
-    let width = line_num_width(buf);
+    // because it doesn't have much cost.
+    let width = line_num_width(buf) as usize;
     if width == 0 {
         return String::new();
     }
 
-    if ALIGN_LINE_NO_LEFT {
-        format!(" {:<3} ", line + 1).yellow().to_string()
-    } else {
-        format!(" {:>3} ", line + 1).yellow().to_string()
+    let line_no_str = match align_left {
+        true => format!(" {:<width$} ", line + 1, width = width - 2),
+        false => format!(" {:>width$} ", line + 1, width = width - 2),
+    };
+
+    match colored {
+        true => line_no_str.yellow().to_string(),
+        false => line_no_str,
     }
 }
 
@@ -414,6 +489,29 @@ impl View {
 
             _ => None,
         }
+    }
+
+    fn prefix_fn_ptrs(
+        &self,
+    ) -> (
+        fn(&ViewBuffer<Handle>) -> u16,
+        fn(&ViewBuffer<Handle>, usize) -> String,
+    ) {
+        if !get_param!(self, show_line_numbers) {
+            return (|_| 0, |_, _| "".into());
+        }
+
+        let colored = get_param!(self, color_line_numbers);
+        let align_left = get_param!(self, align_line_no_left);
+
+        let prefix: fn(&ViewBuffer<Handle>, usize) -> String = match (align_left, colored) {
+            (true, true) => |buf, line| line_num_prefix(buf, line, true, true),
+            (true, false) => |buf, line| line_num_prefix(buf, line, true, false),
+            (false, true) => |buf, line| line_num_prefix(buf, line, false, true),
+            (false, false) => |buf, line| line_num_prefix(buf, line, false, false),
+        };
+
+        (line_num_width, prefix)
     }
 }
 
