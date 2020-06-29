@@ -1,7 +1,7 @@
 use super::buffer::ViewBuffer;
 use super::{ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler};
 use crate::config::{Build, ConfigPart};
-use crate::container::Signal;
+use crate::container::{self, Signal};
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::mode::{
     handler::{self as mode_handler, Executor, Handler as ModeHandler},
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
+use unicode_width::UnicodeWidthStr;
 
 mod edits;
 mod executor;
@@ -44,7 +45,7 @@ macro_rules! params {
         macro_rules! get_param {
             $(
             ($view:expr, $field) => {{
-                use $crate::container::get_runtime_param;
+                use $crate::container::params::get_runtime_param;
                 use std::str::FromStr;
 
                 match $view.handler.executor().params.$field.as_ref() {
@@ -105,6 +106,9 @@ impl View {
 
 impl super::View for View {
     fn refresh(&mut self, painter: &Painter) {
+        let (width_fn, prefix_fn) = self.prefix_fn_ptrs();
+        self.buffer_mut().set_prefix(width_fn, prefix_fn);
+
         self.buffer_mut().refresh(painter)
     }
 
@@ -442,6 +446,29 @@ impl View {
 
             // We'll attempt to use this command
             KeyCode::Enter => {
+                // The first thing that we check is whether this command is already defined as a
+                // top-level command by the container.
+                //
+                // If it isn't, we'll check it as one of our commands.
+                if let Some(res) = container::cmd::try_exec_cmd(cmd) {
+                    match res {
+                        Err(msg) => {
+                            let width = UnicodeWidthStr::width(&msg as &str);
+
+                            return Some(vec![
+                                LeaveBottomBar,
+                                SetBottomBar {
+                                    prefix: None,
+                                    value: msg.red().to_string(),
+                                    width,
+                                    cursor_col: None,
+                                },
+                            ]);
+                        }
+                        Ok(()) => return Some(vec![SaveBottomBar, LeaveBottomBar]),
+                    }
+                }
+
                 let cfg = Config::global();
                 let chars: Vec<_> = cmd.chars().collect();
 

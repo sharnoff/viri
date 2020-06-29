@@ -128,6 +128,9 @@ pub trait View {
     ///
     /// The painter handles drawing to the correct location on the screen. Note that the provided
     /// size of the painter may not equal the previous size; this must be accounted for.
+    ///
+    /// The second argument, `force` indicates that the `View` should redraw entirely, regardless
+    /// of whatever may still be the same.
     fn refresh(&mut self, painter: &Painter);
 
     /// Sets the position of the cursor through the painter

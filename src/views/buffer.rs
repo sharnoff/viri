@@ -335,11 +335,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
     /// same `ViewBuffer`. `prefix` gives the actual generated prefix, which should have a width
     /// equal to the output of `width`. The second argument to `prefix` is the line number,
     /// starting from zero.
-    pub fn set_prefix(
-        &mut self,
-        width: fn(&Self) -> u16,
-        prefix: fn(&Self, usize) -> String,
-    ) -> Option<RefreshKind> {
+    pub fn set_prefix(&mut self, width: fn(&Self) -> u16, prefix: fn(&Self, usize) -> String) {
         let old_fns = self.prefix_fns;
         self.prefix_width = width(self);
         self.prefix_fns = Some((width, prefix));
@@ -349,10 +345,12 @@ impl<P: ContentProvider> ViewBuffer<P> {
             None => true,
         };
 
-        match changed {
+        let refresh = match changed {
             false => None,
             true => Some(RefreshKind::Full),
-        }
+        };
+
+        self.needs_refresh = self.needs_refresh.max(refresh);
     }
 
     /// Shifts all relevant context by the diffs, in order. Currently this will simply move the
@@ -396,9 +394,9 @@ impl<P: ContentProvider> ViewBuffer<P> {
         self.move_cursor_row_unchecked(new_row);
         self.try_move_virtual_cursor();
 
-        // Currently, we aren't tracking where the actually occur, so we'll just do a full refresh.
-        // In the future, we could do smart things like choosing to not change the display if the
-        // diff doesn't affect what's on-screen
+        // Currently, we aren't tracking where the diffs actually occur, so we'll just do a full
+        // refresh. In the future, we could do smart things like choosing to not change the display
+        // if the diff doesn't affect what's on-screen
         self.needs_refresh = self.needs_refresh.max(Some(RefreshKind::Full));
         Some(RefreshKind::Full)
     }
