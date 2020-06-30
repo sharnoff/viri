@@ -64,6 +64,21 @@ macro_rules! params {
                 $(stringify!($field) => try_parse::<$field_ty>,)*
             }
         }
+
+        impl View {
+            fn try_set_local(&mut self, args: &str) -> Result<(), String> {
+                let (param, val) = container::cmd::parse_set_args(args)?;
+
+                match &param as &str {
+                    $(
+                    stringify!($field) => self.handler.executor_mut().params.$field = Some(<$field_ty>::from_str(&val).map_err(|e| e.to_string())?),
+                    )*
+                    _ => return Err(format!("Unknown local parameter '{}'", param)),
+                }
+
+                Ok(())
+            }
+        }
     }
 }
 
@@ -236,9 +251,8 @@ impl ConstructedView for View {
             }
         };
 
-        let mut buffer = ViewBuffer::new(size, file);
+        let buffer = ViewBuffer::new(size, file);
 
-        // buffer.set_prefix(None);
         let mut this = Self {
             handler: ModeHandler::new(
                 FileExecutor {
@@ -338,11 +352,7 @@ impl SignalHandler for View {
             else {
                 if outs.last().unwrap().is_none() {
                     // FIXME: This is temporary and should be replaced with proper error handling.
-                    let last = OutputSignal::error(
-                        "Failed to execute one or more commands",
-                        None,
-                        true,
-                    );
+                    let last = OutputSignal::error("Failed to execute one or more commands", true);
 
                     // Get rid of the last element
                     outs.pop();
@@ -451,22 +461,7 @@ impl View {
                 //
                 // If it isn't, we'll check it as one of our commands.
                 if let Some(res) = container::cmd::try_exec_cmd(cmd) {
-                    match res {
-                        Err(msg) => {
-                            let width = UnicodeWidthStr::width(&msg as &str);
-
-                            return Some(vec![
-                                LeaveBottomBar,
-                                SetBottomBar {
-                                    prefix: None,
-                                    value: msg.red().to_string(),
-                                    width,
-                                    cursor_col: None,
-                                },
-                            ]);
-                        }
-                        Ok(()) => return Some(vec![SaveBottomBar, LeaveBottomBar]),
-                    }
+                    return Some(self.handle_container_res(res));
                 }
 
                 let cfg = Config::global();
@@ -516,6 +511,49 @@ impl View {
 
             _ => None,
         }
+    }
+
+    fn handle_container_res(
+        &mut self,
+        res: Result<Option<container::cmd::Cmd>, String>,
+    ) -> Vec<OutputSignal> {
+        use super::ExitKind::{NoSave, ReqSave};
+        use super::MetaCmd::TryClose;
+        use container::cmd::Cmd::{ForceQuit, Quit, SetLocal};
+        use mode_handler::Cmd::Other;
+        use OutputSignal::{LeaveBottomBar, NeedsRefresh, SaveBottomBar};
+
+        let cmd = match res {
+            Err(msg) => return vec![LeaveBottomBar, OutputSignal::error(&msg, true)],
+            Ok(None) => return vec![SaveBottomBar, LeaveBottomBar],
+            Ok(Some(cmd)) => cmd,
+        };
+
+        let style = self.handler.cursor_style();
+
+        let mut sigs = match cmd {
+            Quit { .. } => self
+                .handler
+                .executor_mut()
+                .execute(Other(TryClose(ReqSave)), style)
+                .unwrap(),
+            ForceQuit { .. } => self
+                .handler
+                .executor_mut()
+                .execute(Other(TryClose(NoSave)), style)
+                .unwrap(),
+            SetLocal { args } => match self.try_set_local(args) {
+                Ok(()) => {
+                    self.buffer_mut().require_refresh();
+                    vec![NeedsRefresh(RefreshKind::Full)]
+                }
+                Err(msg) => return vec![LeaveBottomBar, OutputSignal::error(&msg, true)],
+            },
+        };
+
+        sigs.push(SaveBottomBar);
+        sigs.push(LeaveBottomBar);
+        sigs
     }
 
     fn prefix_fn_ptrs(
@@ -589,13 +627,11 @@ impl XFrom<Builder> for Config {
 fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
     use mode_handler::Cmd::Other;
     use super::MetaCmd::{TryClose, Custom, Split};
-    use super::ExitKind::{ReqSave, NoSave};
+    use super::ExitKind::ReqSave;
     use Direction::{Down, Left};
     use FileMeta::Save;
 
     let keys = vec![
-        ("q", vec![Other(TryClose(ReqSave))]),
-        ("q!", vec![Other(TryClose(NoSave))]),
         ("w", vec![Other(Custom(Save))]),
         ("wq", vec![Other(Custom(Save)), Other(TryClose(ReqSave))]),
 

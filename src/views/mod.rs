@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Formatter};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
+use unicode_width::UnicodeWidthStr;
 
 //-/////////////////////////////////////////////////////////////////////////-//
 // Header 0: Imports                                                         //
@@ -348,16 +349,18 @@ impl OutputSignal {
     /// If `format` is true, the message will be made red. Otherwise, the formatting will be left
     /// as is. `width` should give the displayed width of the message - if not given, it will be
     /// assumed to be equal to `msg.len()`
-    pub fn error(msg: &str, width: Option<usize>, format: bool) -> OutputSignal {
+    pub fn error(msg: &str, format: bool) -> OutputSignal {
+        let width = UnicodeWidthStr::width(msg);
+
         let value = match format {
-            true => String::from(msg).red().to_string(),
+            true => msg.red().to_string(),
             false => msg.into(),
         };
 
         Self::SetBottomBar {
             prefix: None,
             value,
-            width: width.unwrap_or_else(|| msg.len()),
+            width,
             cursor_col: None,
         }
     }

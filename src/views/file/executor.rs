@@ -43,7 +43,7 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
             Other(o) => {
                 return match o {
                     TryClose(ReqSave) if self.unsaved() => {
-                        Some(vec![OutputSignal::error(UNSAVED, None, true)])
+                        Some(vec![OutputSignal::error(UNSAVED, true)])
                     }
                     TryClose(_) => Some(vec![Close]),
                     Split(d) => Some(vec![Open(d, self.clone_into_builder())]),
@@ -58,7 +58,7 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                     Replace(_) => todo!(),
                     Custom(Save) => match self.try_save() {
                         Ok(()) => Some(Vec::new()),
-                        Err(err_str) => Some(vec![OutputSignal::error(&err_str, None, true)]),
+                        Err(err_str) => Some(vec![OutputSignal::error(&err_str, true)]),
                     },
                 };
             }
@@ -80,7 +80,7 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
 
                 return if at_oldest && diffs.is_empty() {
                     // We don't need to include 'refresh' because there weren't any diffs
-                    Some(vec![OutputSignal::error(AT_OLDEST_CHANGE, None, false)])
+                    Some(vec![OutputSignal::error(AT_OLDEST_CHANGE, false)])
                 } else if let Some(refresh_signal) = refresh {
                     Some(vec![refresh_signal])
                 } else {
@@ -97,7 +97,7 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                 let refresh = self.buffer.refresh_diffs(&diffs).map(NeedsRefresh);
 
                 return if at_newest && diffs.is_empty() {
-                    Some(vec![OutputSignal::error(AT_NEWEST_CHANGE, None, false)])
+                    Some(vec![OutputSignal::error(AT_NEWEST_CHANGE, false)])
                 } else if let Some(refresh_signal) = refresh {
                     Some(vec![refresh_signal])
                 } else {
@@ -128,7 +128,7 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
         match err {
             NeedsMore => Some(vec![WaitingForMore]),
             NoSuchCommand => Some(vec![NoSuchCmd]),
-            Failure { msg } => Some(vec![OutputSignal::error(&msg, None, true)]),
+            Failure { msg } => Some(vec![OutputSignal::error(&msg, true)]),
             IllegalMode(_) => None,
         }
     }

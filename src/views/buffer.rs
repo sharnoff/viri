@@ -278,6 +278,12 @@ impl<P: ContentProvider> ViewBuffer<P> {
         self.set_allow_after(style.allow_after);
     }
 
+    /// Invalidates the current refresh status so that the next call to `View::refresh` will
+    /// trigger a full refresh
+    pub fn require_refresh(&mut self) {
+        self.needs_refresh = Some(RefreshKind::Full);
+    }
+
     /// Returns the on-screen position of the cursor *within the buffer*
     pub fn cursor_pos(&self) -> TermCoord {
         self.cursor

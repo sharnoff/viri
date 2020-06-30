@@ -4,17 +4,89 @@
 
 use super::params::set_runtime_param;
 
-pub fn try_exec_cmd(cmd: &str) -> Option<Result<(), String>> {
-    let splits = cmd.splitn(2, ' ').collect::<Vec<_>>();
-    match &splits as &[_] {
-        [_, _, _, ..] => unreachable!(),
-        ["set", args] => Some(exec_set_cmd(args)),
-        ["set"] => Some(exec_set_cmd("")),
-        _ => None,
+macro_rules! cmds {
+    (
+        $(#[$fn_doc:meta])*
+        $fn_vis:vis fn $fn_name:ident(...) { ... }
+
+        $(#[$attrs:meta])*
+        $vis:vis enum $cmd:ident<'a> {
+            $($name:expr $(=> @$call:ident())? $(=> $variant:ident ~ $valid:expr)?,)+
+        }
+    ) => {
+        $(#[$attrs])*
+        $vis enum $cmd<'a> {
+            $($($variant { args: &'a str },)?)+
+        }
+
+        $(#[$fn_doc])*
+        $fn_vis fn $fn_name<'a>(cmd: &'a str) -> Option<Result<Option<$cmd<'a>>, String>> {
+            use $cmd::*;
+
+            let splits = cmd.splitn(2, ' ').collect::<Vec<_>>();
+
+            match &splits as &[_] {
+                $(
+                [$name, args] => {
+                    $(Some($call(args).map(|_| None)))?
+                    $(Some($valid(args).map(|_| Some($variant { args }))))?
+                }
+                [$name] => {
+                    $(Some($call("").map(|_| None)))?
+                    $(Some($valid("").map(|_| Some($variant { args: "" }))))?
+                }
+                )+
+                _ => None,
+            }
+        }
+    }
+}
+
+cmds! {
+    pub fn try_exec_cmd(...) { ... }
+
+    /// The set of commands from colon mode that must be handled individually by each `View`
+    pub enum Cmd<'a> {
+        "set" => @exec_set_cmd(),
+        "setlocal" => SetLocal ~ yes_args("setlocal"),
+        "q" => Quit ~ no_args("quit"),
+        // "wq" => WriteQuit ~ yes_args("write-quit"),
+        "q!" => ForceQuit ~ no_args("force-quit"),
+        // "qa" => QuitAll ~ no_args("quit-all"),
+        // "wqa" => WriteQuitAll ~ no_args("write-quit-all"),
+        // "qa!" => ForceQuitAll ~ no_args("force-quit-all"),
+    }
+}
+
+/// A helper function for returning an error if there are arguments to the
+fn no_args(name: &'static str) -> impl Fn(&str) -> Result<(), String> {
+    move |args| {
+        if args == "" || args.chars().all(char::is_whitespace) {
+            return Ok(());
+        }
+
+        Err(format!("error: command '{}' takes no arguments", name))
+    }
+}
+
+fn yes_args(name: &'static str) -> impl Fn(&str) -> Result<(), String> {
+    move |args| {
+        if args == "" || args.chars().all(char::is_whitespace) {
+            return Err(format!("error: command '{}' requires an argument", name));
+        }
+
+        Ok(())
     }
 }
 
 fn exec_set_cmd(args: &str) -> Result<(), String> {
+    let (param, val) = parse_set_args(args)?;
+
+    // FIXME: Unescape the string provided here
+    set_runtime_param(&param, val)
+}
+
+pub fn parse_set_args<'a>(args: &'a str) -> Result<(String, String), String> {
     // We have a couple different options here.
     //
     // Typical usage of the set command either be: `set <param>=<value>` or `set <param> <value>`,
@@ -53,7 +125,7 @@ fn exec_set_cmd(args: &str) -> Result<(), String> {
 
         // If there aren't any characters left, we'll return - but only if the user explicitly
         // indicates they want an empty vlaue
-        None if chars[i] == '=' => return set_runtime_param(&param, "".into()),
+        None if chars[i] == '=' => return Ok((param, String::new())),
 
         // Otherwise, chars[i] = ' ', which means that they had a trailing space after the
         // parameter, but nothing beyond that. We'll return an error indicating their mistake
@@ -102,5 +174,5 @@ fn exec_set_cmd(args: &str) -> Result<(), String> {
     }
 
     // FIXME: Unescape the string provided here
-    set_runtime_param(&param, chars[start..i].iter().collect())
+    Ok((param, chars[start..i].iter().collect()))
 }

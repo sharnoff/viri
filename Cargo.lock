@@ -83,7 +83,7 @@ dependencies = [
 [[package]]
 name = "crossterm"
 version = "0.17.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+source = "git+https://github.com/sharnoff/crossterm?branch=impl-style-'a-str#9f89c53cb12760ce7e2ef3763989fdcfb7f6d5fd"
 dependencies = [
  "bitflags 1.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "crossterm_winapi 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -426,7 +426,7 @@ version = "0.1.0"
 dependencies = [
  "backtrace 0.3.42 (registry+https://github.com/rust-lang/crates.io-index)",
  "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "crossterm 0.17.5 (registry+https://github.com/rust-lang/crates.io-index)",
+ "crossterm 0.17.5 (git+https://github.com/sharnoff/crossterm?branch=impl-style-'a-str)",
  "lazy_static 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.66 (registry+https://github.com/rust-lang/crates.io-index)",
  "lock_api 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -505,7 +505,7 @@ dependencies = [
 "checksum cfg-if 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)" = "4785bdd1c96b2a846b2bd7cc02e86b6b3dbf14e7e53446c4f54c92a361040822"
 "checksum clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)" = "5067f5bb2d80ef5d68b4c87db81601f0b75bca627bc2ef76b141d7b846a3c6d9"
 "checksum cloudabi 0.0.3 (registry+https://github.com/rust-lang/crates.io-index)" = "ddfc5b9aa5d4507acaf872de71051dfd0e309860e88966e1051e462a077aac4f"
-"checksum crossterm 0.17.5 (registry+https://github.com/rust-lang/crates.io-index)" = "9851d20b9809e561297ec3ca85d7cba3a57507fe8d01d07ba7b52469e1c89a11"
+"checksum crossterm 0.17.5 (git+https://github.com/sharnoff/crossterm?branch=impl-style-'a-str)" = "<none>"
 "checksum crossterm_winapi 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)" = "057b7146d02fb50175fd7dbe5158f6097f33d02831f43b4ee8ae4ddf67b68f5c"
 "checksum dtoa 0.4.5 (registry+https://github.com/rust-lang/crates.io-index)" = "4358a9e11b9a09cf52383b451b49a169e8d797b68aa02301ff586d70d9661ea3"
 "checksum fuchsia-zircon 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)" = "2e9763c69ebaae630ba35f74888db465e49e259ba1bc0eda7d06f4a067615d82"
