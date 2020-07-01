@@ -22,5 +22,5 @@ fn load_syntax() {
 }
 
 fn load_themes() {
-    todo!();
+    // todo!();
 }

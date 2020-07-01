@@ -7,6 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+ansi_term = "0.12"
 backtrace = "0.3"
 clap = { version = "2.33", features = ["yaml"] }
 # crossterm = { version = "0.17", features = ["serde"] }

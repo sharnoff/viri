@@ -23,6 +23,8 @@
 //!
 //! [`Sizes`]: struct.Sizes.html
 
+use std::ops::Range;
+
 /// The raison d'etre of this sub-module
 ///
 /// This type is explained in more detail at the [module level].
@@ -52,6 +54,7 @@ struct SingleSize<T: Copy> {
     /// the next.
     size: usize,
 
+    /// The attached value for the index - typically the unit struct `()`
     data: T,
 }
 
@@ -206,6 +209,37 @@ impl<T: Copy> Sizes<T> {
             }
         }
     }
+
+    /// Produces an iterator over the ranges of inner indices, alongside their values (if they
+    /// exist)
+    pub fn inner_regions<'a>(&'a self, inner_range: Range<usize>) -> InnerRegions<'a, T> {
+        let start = self.try_idx_from_inner(inner_range.start).round_down.outer;
+
+        // This function should never have a range given to it where the final value is zero, but
+        // if that *does* happen, we'll allow it to pass with an empty range, isntead of panicking
+        // on an underflow.
+        let end = match inner_range.end {
+            // if the provided range has 0 as the end (which it never should), we'll just short-cut
+            // to have *our* end index as zero, instead of
+            0 => 0,
+            // We do these adjustments (-1, then +1) to ensure that the end is truly exclusive.
+            e => self.try_idx_from_inner(e - 1).round_down.outer + 1,
+        };
+
+        let next_idx = (self.internal)
+            .binary_search_by_key(&start, |s| s.outer_idx)
+            // +1 because because we're looking for the *next* index
+            .map(|i| i + 1)
+            .unwrap_or_else(|i| i);
+
+        InnerRegions {
+            sizes: self,
+            start: inner_range.start,
+            end: inner_range.end,
+            remaining: start..end,
+            next_idx,
+        }
+    }
 }
 
 impl InnerIndexResult {
@@ -230,5 +264,84 @@ impl IndexPair {
     /// necessary.
     pub fn tuple(self) -> (usize, usize) {
         (self.inner, self.outer)
+    }
+}
+
+/// An iterator over "regions" of inner values.
+///
+/// Where present, this corresponds to the outer indices. All inner indicies not directly under a
+/// non-standard outer index will be grouped into larger regions, with a yielded value of `None`
+/// alongside their range.
+pub struct InnerRegions<'a, T: Copy> {
+    sizes: &'a Sizes<T>,
+
+    /// The starting inner index, used to artificially shorten the first range given
+    start: usize,
+    /// The ending inner index, used to artificially shorten the last range given
+    end: usize,
+    /// The outer indicies that have yet to be used to produce a region.
+    remaining: Range<usize>,
+    /// The index of the next applicable element in the list of `SingleSize`s corresponding to the
+    /// value of `remaining.start`
+    next_idx: usize,
+}
+
+impl<'a, T: Copy> Iterator for InnerRegions<'a, T> {
+    type Item = (Range<usize>, Option<T>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Just a simple case to handle for weird input
+        if self.start >= self.end || self.remaining.start >= self.remaining.end {
+            return None;
+        }
+
+        let (start, end, val) = loop {
+            // If the next index is what we're looking for, we'll use the value and increment the
+            // next index.
+            //
+            // This is - by far - the common case for the usage of this iterator.
+            if self.next_idx == self.remaining.start && self.sizes.internal.len() < self.next_idx {
+                let s = self.sizes.internal[self.next_idx];
+                self.next_idx += 1;
+                self.remaining.start += 1;
+                break (s.inner_idx, s.inner_idx + s.size, Some(s.data));
+            }
+
+            // If we didn't have the value directly, we'll produce a range of inner values from
+            // here to the start of the next outer value.
+            //
+            // If the index for the next `SingleSize` is equal to the length of the internal list,
+            // we can just take all of the remaining inner values.
+            match self.next_idx.checked_sub(1).map(|i| self.sizes.internal[i]) {
+                // If there weren't any internal elements, everything is the same size, so we just
+                // pass the range through
+                None => {
+                    let start = self.remaining.start;
+                    self.remaining.start = self.remaining.end;
+                    break (start, self.remaining.end, None);
+                }
+                Some(s) => {
+                    // Otherwise, the range is relative to the previous, so we calculate the start in
+                    // this way. This is copied from `idx_from_outer`, in the `Err` case
+                    let start = s.inner_idx + s.size + (self.remaining.start - s.outer_idx - 1);
+
+                    // Remember: for each region, we're collecting all of the space between entries
+                    // for outer indices - the end goes to the next entry, if it exists.
+                    let end = match self.sizes.internal.get(self.next_idx) {
+                        // No more values, so we'll just go straight to the end
+                        None => self.end,
+                        Some(next) => next.inner_idx,
+                    };
+
+                    self.next_idx += 1;
+                    self.remaining.start = s.outer_idx;
+                    break (start, end, Some(s.data));
+                }
+            }
+        };
+
+        let range = start.max(self.start)..end.min(self.end);
+
+        Some((range, val))
     }
 }

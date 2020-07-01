@@ -10,10 +10,10 @@
 //   https://softwareengineering.stackexchange.com/questions/370088/is-the-bom-optional-for-utf-16-and-utf-32
 
 use crate::utils::OpaqueOption;
+use ansi_term::{ANSIStrings, Style};
 use std::fmt::{self, Debug, Formatter};
 use std::ops::{Bound, Deref, DerefMut, Range, RangeBounds};
 use std::sync::{Arc, Mutex};
-use syntect::highlighting::Style;
 
 mod cache;
 pub mod diff;
@@ -67,7 +67,8 @@ pub struct Lines {
 ///
 /// The returned vector should give the styling for each line in turn, starting at the initial line
 /// and ending at the requested line. The styling for each line is given by the inner `Vec`, which
-/// has the ranges of each style - overlapping ranges will trigger a panic.
+/// has the ranges of each style. If the ranges do not exactly cover the byte ranges of the line
+/// without overlapping, a panic will be triggered.
 ///
 /// [`StyleRequest`]: struct.StyleRequest.html
 // TODO: Return an outer SmallVec here because the vast majority of cases will only be a single
@@ -115,12 +116,6 @@ struct InternalLine {
     /// Goes from logical character indexes (outer) to indexes in the raw bytes (inner)
     raw_bytes: Sizes<()>,
 
-    /// Goes from characters in the *rendered text* (outer) to indexes in the bytes of the rendered
-    /// text (inner)
-    ///
-    /// When acquring both this lock and `rendered`, this lock should always be acquired *second*.
-    rendered_bytes: Mutex<Sizes<()>>,
-
     /// Goes from logical characters in the text (outer) to the characters that they are displayed
     /// as in the rendered text (inner).
     chars: Sizes<()>,
@@ -133,22 +128,22 @@ struct InternalLine {
     /// logical character.
     widths: Sizes<()>,
 
+    /// Goes from displayed characters (outer) to their indexes in the raw displayed bytes (inner)
+    rendered_bytes: Sizes<()>,
+
     /// Goes from styling (outer) to logical characters (inner).
     ///
-    /// This is allowed to not be present, in which case the value will be re-computed on use. In
-    /// certain cases, this computation will have failed, which is what the additional boolean
-    /// indicates - if true, the style is empty (and therefore the result of a failed computation).
-    styling: Option<(Sizes<Style>, bool)>,
+    /// This is allowed to not be present, in which case the value will be re-computed on use.
+    styling: Mutex<Option<Sizes<Style>>>,
 
     /// The total *displayed* width of the line, in columns
     total_width: usize,
 
-    /// The line as it should be displayed on the screen, alongside its
+    /// The text of the line as it should be displayed on-screen, without styling.
     ///
-    /// The option will be `None` if it it has not yet been calculated, which can be remedied by a
-    /// call to `render`. This is wrapped in a `Mutex` to allow recalculation in immutable
-    /// contexts.
-    rendered: Mutex<Option<String>>,
+    /// This is given as an `Option` so that `None` may indicate that the text is exactly what's
+    /// present in `raw`.
+    rendered: Option<String>,
 
     /// The raw bytes of the line
     ///
@@ -168,15 +163,6 @@ struct InternalLine {
 pub struct Line<D: Deref<Target = Lines>> {
     idx: usize,
     lines: D,
-}
-
-impl<D: Deref<Target = Lines>> Debug for Line<D> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.debug_struct("Line")
-            .field("idx", &self.idx)
-            .field("inner", self.inner())
-            .finish()
-    }
 }
 
 /// The types of encodings available for source files
@@ -317,8 +303,6 @@ pub trait ContentProvider: Sized {
             })
             .collect();
 
-        this.cache.invalidate_past_line(start_line);
-
         if new_lines.len() == end_line - start_line {
             this.lines[start_line..end_line].clone_from_slice(&new_lines);
         } else {
@@ -327,6 +311,19 @@ pub trait ContentProvider: Sized {
             this_lines.extend_from_slice(&new_lines);
             this_lines.extend_from_slice(&this.lines[end_line..]);
             this.lines = this_lines;
+        }
+
+        // Cache invalidation: We'll do it for the actual cache, as well as for the individual
+        // rendered texts on each line
+        this.cache.invalidate_past_line(start_line);
+        for line in &mut this.lines[start_line..] {
+            let mut style_guard = line.styling.lock().unwrap();
+            match style_guard.is_some() {
+                true => *style_guard = None,
+                // If the styling is `None`, we can stop our cache invalidation early becaues each
+                // styled line requires the previous line to be styled as well
+                false => break,
+            }
         }
 
         this.cache.resize(this.lines.len());
@@ -738,6 +735,63 @@ impl Lines {
 
         self.collect_range(byte_idx..(byte_idx + diff::CTX_LEN).min(self.total_bytes()))
     }
+
+    /// Ensures that all of the styling - up to `line_idx` are up-to-date. I.e. that `styling` is
+    /// not `None`
+    fn update_styling(&self, line_idx: usize) {
+        // TODO: This can actually be updated by multiple threads at the same time, in which case
+        // work will be duplicated. This probably isn't a big deal, but we might want to add just a
+        // little bit of checking to ensure that another thread attempting to update the styling as
+        // well will block until this is done.
+
+        // We can - in theory - have any number of previous lines to update as well, but the common
+        // case will be that we only need to update a single line.
+        //
+        // Because of this, a linear search is actually a reasonable way to do it.
+        //
+        // Practically speaking, it doesn't matter that we do a simple linear run through all
+        // of the lines. We *could* use a binary search, but updating the styling will often
+        // involve parsing, which is significantly more expensive -- and the interface for
+        // binary search means that we're highly likely to use it incorrectly
+        let start_line = line_idx
+            - (self.lines[..line_idx])
+                .iter()
+                .rev()
+                .take_while(|l| l.styling.lock().unwrap().is_none())
+                .count();
+
+        match &self.styler {
+            None => self.lines[start_line..=line_idx]
+                .iter()
+                .for_each(|l| *l.styling.lock().unwrap() = Some(Sizes::new())),
+            Some(styler) => {
+                let request = StyleRequest {
+                    first_todo: start_line,
+                    requested: line_idx,
+                };
+                let styles = styler(&self, request)
+                    .into_iter()
+                    .chain(std::iter::repeat(Vec::new()));
+
+                for (line, ranges) in self.lines[start_line..=line_idx].iter().zip(styles) {
+                    // Convert the ranges into a `Sizes`
+                    //
+                    // The individual ranges are actually given as *byte ranges*, so we need to
+                    // convert those to character ranges as they're expected in the
+                    // `InternalLine.styling` before we put those into the `Sizes`
+                    let mut sizes = Sizes::new();
+                    for (style, range) in ranges {
+                        let start = line.raw_bytes.idx_from_outer(range.start);
+                        let end = line.raw_bytes.idx_from_outer(range.end);
+
+                        sizes.append_by_inner_idx(start, end - start, style);
+                    }
+
+                    *line.styling.lock().unwrap() = Some(sizes);
+                }
+            }
+        }
+    }
 }
 
 impl<D: Deref<Target = Lines>> Line<D> {
@@ -770,7 +824,11 @@ impl<D: Deref<Target = Lines>> Line<D> {
     ///
     /// All indexes are given in widths
     pub fn display_segment(&self, range: Range<usize>) -> (String, Range<usize>) {
-        self.inner().display_segment(range)
+        if self.inner().styling.lock().unwrap().is_none() {
+            self.lines.update_styling(self.idx);
+        }
+
+        self.inner().display_segment(range, self.lines.tabstop)
     }
 
     /// Returns the result of rounding the width both left and right to the nearest character
@@ -933,16 +991,16 @@ impl InternalLine {
     ) -> Self {
         let mut line = InternalLine {
             raw_bytes: Sizes::new(),
-            rendered_bytes: Mutex::new(Sizes::new()),
+            rendered_bytes: Sizes::new(),
             chars: Sizes::new(),
             widths: Sizes::new(),
-            styling: None,
+            styling: Mutex::new(None),
             total_width: 0,
-            rendered: Mutex::new(None),
+            rendered: None,
             raw: Raw::from_range(arc, range),
         };
 
-        line.render(tabstop, repr_kind);
+        line.recompute(tabstop, repr_kind);
         line
     }
 
@@ -952,35 +1010,34 @@ impl InternalLine {
     fn from_bytes(bytes: &[u8], tabstop: usize, repr_kind: ReprKind) -> Self {
         let mut line = InternalLine {
             raw_bytes: Sizes::new(),
-            rendered_bytes: Mutex::new(Sizes::new()),
+            rendered_bytes: Sizes::new(),
             chars: Sizes::new(),
             widths: Sizes::new(),
-            styling: None,
+            styling: Mutex::new(None),
             total_width: 0,
-            rendered: Mutex::new(None),
+            rendered: None,
             raw: Raw::from(Vec::from(bytes)),
         };
 
-        line.render(tabstop, repr_kind);
+        line.recompute(tabstop, repr_kind);
         line
     }
 
-    // TODO: This needs developer documentation - it actually does a lot more than just render the
-    // line - it actually sets *all* of the fields of `self` except for `raw`.
-    fn render(&mut self, tabstop: usize, repr_kind: ReprKind) {
+    /// (Re-)Computes the various additional information stored alongside the line, with the
+    /// notable exception of styling.
+    fn recompute(&mut self, tabstop: usize, repr_kind: ReprKind) {
         match repr_kind {
-            ReprKind::Utf8 => self.render_utf8(tabstop),
+            ReprKind::Utf8 => self.recompute_utf8(tabstop),
         }
     }
 
-    // TODO: This function is a bit of a mess - it could use some refactoring/comments
-    // TODO: this currently does not take styling into account
-    fn render_utf8(&mut self, tabstop: usize) {
-        let mut rendered = String::new();
+    // A version of `compute_sizes` specialized to utf8
+    fn recompute_utf8(&mut self, tabstop: usize) {
+        let mut rendered: Option<String> = None;
         let mut raw_bytes = Sizes::new();
-        let rendered_bytes = Sizes::new(); // Currently not used, but provided for completeness
         let mut chars = Sizes::new();
         let mut widths = Sizes::new();
+        let mut rendered_bytes = Sizes::new();
 
         // We're going to iteratively read bytes from the internal buffer.
         // * `idx`          -> our byte index in `self.raw`.
@@ -990,6 +1047,7 @@ impl InternalLine {
         //                     in the rendered text
         // * `width`        -> our index in the rendered width
         let mut idx = 0_usize;
+        let mut rendered_idx = 0_usize;
         let mut char_count = 0_usize;
         let mut group_count = 0_usize;
         let mut current_width = 0_usize;
@@ -1007,35 +1065,60 @@ impl InternalLine {
 
             match char_display(tabstop, current_width, parse_res.map(|(c, _)| c)) {
                 CharFormat::Normal(c) => {
-                    rendered.push(c);
-                    current_width += 1;
+                    if let Some(r) = rendered.as_mut() {
+                        r.push(c);
+                    }
+                    rendered_idx += 1;
                     group_count += 1;
+                    current_width += 1;
                 }
                 CharFormat::Wide(c, width) => {
-                    rendered.push(c);
+                    if let Some(r) = rendered.as_mut() {
+                        r.push(c);
+                    }
+
                     widths.append_by_inner_idx(char_count, width, ());
+                    rendered_bytes.append_by_inner_idx(rendered_idx, consumed, ());
+                    rendered_idx += consumed;
                     current_width += width;
                     group_count += 1;
                 }
                 CharFormat::StrLit(s, width) => {
-                    rendered.push_str(s.as_ref());
+                    let rendered_ref = match rendered.as_mut() {
+                        Some(r) => r,
+                        None => {
+                            // Create the rendered string if it hasn't been made already.
+                            //
+                            // This is safe to unwrap because we have already validated
+                            // it up to this point as being utf8
+                            let s = std::str::from_utf8(&self.raw[..idx]).unwrap();
+                            let r = String::from(s);
+                            // Store the string in the outer scope
+                            rendered = Some(r);
+                            rendered.as_mut().unwrap()
+                        }
+                    };
+
+                    // No need to add to `rendered_bytes` because `StrLit` will always return ascii
+                    // strings
+
+                    rendered_ref.push_str(s.as_ref());
                     widths.append_by_inner_idx(current_width, width, ());
                     chars.append_by_inner_idx(group_count, width, ());
+                    rendered_idx += s.len();
                     current_width += width;
                     group_count += width;
                 }
             }
 
-            idx += consumed;
-            char_count += 1;
+            idx += consumed
         }
 
-        *self.rendered.lock().unwrap() = Some(rendered);
-
+        self.rendered = rendered;
         self.raw_bytes = raw_bytes;
-        *self.rendered_bytes.lock().unwrap() = rendered_bytes;
         self.chars = chars;
         self.widths = widths;
+        self.rendered_bytes = rendered_bytes;
         self.total_width = current_width;
     }
 
@@ -1044,27 +1127,24 @@ impl InternalLine {
     //
     // A note on semantics: If the given range is empty (or if there is nothing to display), the
     // returned range sets both values equal to the end of the original range.
-    fn display_segment(&self, mut range: Range<usize>) -> (String, Range<usize>) {
+    fn display_segment(&self, mut range: Range<usize>, tabstop: usize) -> (String, Range<usize>) {
         if range.start >= self.total_width {
             // See the semantics note above.
             return (String::new(), (range.end..range.end));
         }
 
+        // Get some initial values that we'll use later out of the way.
+        let rendered: &str = match self.rendered.as_ref() {
+            None => unsafe { std::str::from_utf8_unchecked(&self.raw) },
+            Some(s) => &s,
+        };
+        let style_guard = self.styling.lock().unwrap();
+        let styling = style_guard.as_ref().unwrap();
+
         // Clamp the high value of the range so that we stay within our indexes. We'll keep the
         // initial value for later.
         let init_end = range.end;
         range.end = range.end.min(self.total_width);
-
-        let rendered_guard = self.rendered.lock().unwrap();
-        if rendered_guard.is_none() {
-            // Re-render the line
-            drop(rendered_guard);
-            // self.render();
-            todo!()
-            // rendered_guard = self.rendered.lock().unwrap();
-        }
-
-        let rendered = rendered_guard.as_ref().unwrap();
 
         // search for start/end index
         let (start_width, start_group) =
@@ -1075,21 +1155,25 @@ impl InternalLine {
         let start_char = self.chars.idx_from_outer(start_group);
         let end_char = self.chars.idx_from_outer(end_group);
 
-        // Now, find those in byte positions
-        let rendered_bytes = self.rendered_bytes.lock().unwrap();
-
-        let start_byte = rendered_bytes.idx_from_outer(start_char);
-        let end_byte = rendered_bytes.idx_from_outer(end_char);
-
-        if start_byte >= end_byte {
+        if start_char >= end_char {
             // See the note on semantics above the function definition
             return (String::new(), init_end..init_end);
         }
 
-        (
-            rendered[start_byte..end_byte].into(),
-            start_width..end_width,
-        )
+        // And now we'll produce the final output with styling on the line
+        let mut style_regions = Vec::new();
+        for (range, opt_style) in styling.inner_regions(start_char..end_char) {
+            // FIXME: This is *really* inefficient... :(
+            let start_byte = self.rendered_bytes.idx_from_outer(range.start);
+            let end_byte = self.rendered_bytes.idx_from_outer(range.end);
+
+            let style = opt_style.unwrap_or_default();
+            style_regions.push(style.paint(&rendered[start_byte..end_byte]));
+        }
+
+        let segment = ANSIStrings(&style_regions).to_string();
+
+        (segment, start_width..end_width)
     }
 
     // The semantics of this function are described where it is publicly exposed.
@@ -1276,19 +1360,27 @@ impl Debug for Lines {
     }
 }
 
+impl<D: Deref<Target = Lines>> Debug for Line<D> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("Line")
+            .field("idx", &self.idx)
+            .field("inner", self.inner())
+            .finish()
+    }
+}
+
 impl Clone for InternalLine {
     fn clone(&self) -> Self {
-        let rendered: Option<String> = self.rendered.lock().unwrap().clone();
-        let rendered_bytes: Sizes<()> = self.rendered_bytes.lock().unwrap().clone();
+        let styling = self.styling.lock().unwrap().clone();
 
         InternalLine {
             raw_bytes: self.raw_bytes.clone(),
-            rendered_bytes: Mutex::new(rendered_bytes),
+            rendered_bytes: self.rendered_bytes.clone(),
             chars: self.chars.clone(),
             widths: self.widths.clone(),
-            styling: self.styling.clone(),
+            styling: Mutex::new(styling),
             total_width: self.total_width.clone(),
-            rendered: Mutex::new(rendered),
+            rendered: self.rendered.clone(),
             raw: self.raw.clone(),
         }
     }
