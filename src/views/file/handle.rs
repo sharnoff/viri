@@ -268,7 +268,7 @@ impl Handle {
         Handle {
             file: ArcLock::new(File {
                 locator,
-                content: Lines::empty(TABSTOP, REPR_KIND),
+                content: Lines::empty(TABSTOP, REPR_KIND, None),
                 n_handles: 1,
                 unsaved: false,
                 edits: Edits::new(),
@@ -448,7 +448,7 @@ impl File {
 
         Ok(File {
             locator: Locator::Path(path),
-            content: Lines::from_arc(Arc::new(content), TABSTOP, REPR_KIND),
+            content: Lines::from_arc(Arc::new(content), TABSTOP, REPR_KIND, None),
             n_handles: 0,
             unsaved: false,
             edits: Edits::new(),
