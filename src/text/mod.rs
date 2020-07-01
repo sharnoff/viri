@@ -48,22 +48,43 @@ pub struct Lines {
 }
 
 /// The internal structure used to represent individual lines
+///
+/// There's a few things to note here about the various intermediate representations used in the
+/// operations on this type.
+///
+/// Broadly speaking, there are three endpoints: (1) the raw bytes in the file, (2) the raw bytes
+/// of the rendered text, and (3) the width - in columns - of segments of the line. The first two
+/// of these are stored directly, and we produce the third by a series of passes through [`Sizes`]
+/// to convert values.
+///
+/// In the documentation for the fields of this type, there's a common notion of *logical
+/// characters* vs. *displayed characters*. Logical characters represent single characters (or
+/// invalid bytes) in the source, whereas displayed characters represent those that are actually
+/// shown on-screen. This distinction exists because some logical characters might be displayed as
+/// multiple characters - primarily tabs or non-displayable characters. Tabs, for example, are a
+/// single logical character, but are displayed as repeated spaces.
+///
+/// [`Sizes`]: sizes/struct.Sizes.html
 #[derive(Debug, Clone)]
 struct InternalLine {
-    /// Goes from character indexes (outer) to indexes in the raw bytes (inner)
-    raw_bytes: Sizes,
+    /// Goes from logical character indexes (outer) to indexes in the raw bytes (inner)
+    raw_bytes: Sizes<()>,
 
     /// Goes from characters in the *rendered text* (outer) to indexes in the bytes of the rendered
     /// text (inner)
-    rendered_bytes: Sizes,
+    rendered_bytes: Sizes<()>,
 
     /// Goes from logical characters in the text (outer) to the characters that they are displayed
     /// as in the rendered text (inner).
-    chars: Sizes,
+    chars: Sizes<()>,
 
     /// Goes from logical characters (outer) to their widths (in columns) in the rendered text
     /// (inner).
-    widths: Sizes,
+    ///
+    /// The width is tracked at this level so that all functions relative to displayed width can be
+    /// aligned per-character, instead of allowing the possibility of splitting in the middle of a
+    /// logical character.
+    widths: Sizes<()>,
 
     /// The total *displayed* width of the line, in columns
     total_width: usize,
@@ -916,7 +937,7 @@ impl InternalLine {
             };
 
             if consumed != 1 {
-                raw_bytes.append_by_inner_idx(idx, consumed);
+                raw_bytes.append_by_inner_idx(idx, consumed, ());
             }
 
             match char_display(tabstop, current_width, parse_res.map(|(c, _)| c)) {
@@ -932,7 +953,7 @@ impl InternalLine {
                         r.push(c);
                     }
 
-                    widths.append_by_inner_idx(char_count, width);
+                    widths.append_by_inner_idx(char_count, width, ());
                     current_width += width;
                     group_count += 1;
                 }
@@ -953,8 +974,8 @@ impl InternalLine {
                     };
 
                     rendered_ref.push_str(s.as_ref());
-                    widths.append_by_inner_idx(current_width, width);
-                    chars.append_by_inner_idx(group_count, width);
+                    widths.append_by_inner_idx(current_width, width, ());
+                    chars.append_by_inner_idx(group_count, width, ());
                     current_width += width;
                     group_count += width;
                 }

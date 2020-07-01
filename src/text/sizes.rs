@@ -18,6 +18,9 @@
 //! of bytes, so the outer indexing scheme would be the characters and the inner one would be their
 //! indices in whatever encoded text they represent.
 //!
+//! The `Sizes` type also has an associated type parameter - this is to allow data (e.g. color for
+//! syntax highlighting) to be stored inside each outer index.
+//!
 //! [`Sizes`]: struct.Sizes.html
 
 /// The raison d'etre of this sub-module
@@ -27,14 +30,14 @@
 /// [module level]: index.html
 // TODO: Allow a second option: to store *every* size we're tracking
 #[derive(Debug, Clone)]
-pub struct Sizes {
+pub struct Sizes<T: Copy> {
     // Tracks individual occurances of non-standard sizes
-    internal: Vec<SingleSize>,
+    internal: Vec<SingleSize<T>>,
 }
 
 /// A singly mapped value with a non-standard inner index size
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-struct SingleSize {
+struct SingleSize<T: Copy> {
     /// The outer index of the value
     ///
     /// The distinction between inner and outer indexes is given at the module-level.
@@ -48,6 +51,8 @@ struct SingleSize {
     /// The *inner* size of the value - i.e. the difference in inner indices between this value and
     /// the next.
     size: usize,
+
+    data: T,
 }
 
 /// The result of indexing by inner index
@@ -88,7 +93,7 @@ pub struct IndexPair {
     pub outer: usize,
 }
 
-impl Sizes {
+impl<T: Copy> Sizes<T> {
     /// Creates a new, blank `Sizes`
     pub const fn new() -> Self {
         Self {
@@ -119,7 +124,7 @@ impl Sizes {
     */
 
     /// Adds a new, non-standard value to the end of the [`Sizes`] by its inner index
-    pub fn append_by_inner_idx(&mut self, inner_idx: usize, size: usize) {
+    pub fn append_by_inner_idx(&mut self, inner_idx: usize, size: usize, data: T) {
         let outer_idx = match self.internal.last() {
             // If there aren't any previous non-standard values, the outer index will be equal to
             // the inner index
@@ -135,6 +140,7 @@ impl Sizes {
             outer_idx,
             inner_idx,
             size,
+            data,
         });
     }
 
