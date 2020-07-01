@@ -16,11 +16,14 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
-use unicode_width::UnicodeWidthStr;
+
+#[macro_use]
+mod macros;
 
 mod edits;
 mod executor;
 mod handle;
+mod syntax;
 
 use executor::FileExecutor;
 use handle::{gen_local_id, Handle};
@@ -30,56 +33,9 @@ pub struct View {
     handler: ModeHandler<FileExecutor, MetaCmd<FileMeta>, MetaCmd<Never>>,
 }
 
-macro_rules! params {
-    (
-        $(#[$attrs:meta])*
-        $vis:vis struct $name:ident {
-            $($field:ident: $field_ty:ty = $default:expr,)*
-        }
-    ) => {
-        $(#[$attrs])*
-        $vis struct $name {
-            $($field: Option<$field_ty>,)*
-        }
-
-        macro_rules! get_param {
-            $(
-            ($view:expr, $field) => {{
-                use $crate::container::params::get_runtime_param;
-                use std::str::FromStr;
-
-                match $view.handler.executor().params.$field.as_ref() {
-                    Some(v) => v.clone(),
-                    None => match get_runtime_param(stringify!($field)) {
-                        Some(s) => <$field_ty>::from_str(&s).unwrap(),
-                        None => $default,
-                    }
-                }
-            }};
-            )*
-        }
-
-        pub fn init() {
-            require_param! {
-                $(stringify!($field) => try_parse::<$field_ty>,)*
-            }
-        }
-
-        impl View {
-            fn try_set_local(&mut self, args: &str) -> Result<(), String> {
-                let (param, val) = container::cmd::parse_set_args(args)?;
-
-                match &param as &str {
-                    $(
-                    stringify!($field) => self.handler.executor_mut().params.$field = Some(<$field_ty>::from_str(&val).map_err(|e| e.to_string())?),
-                    )*
-                    _ => return Err(format!("Unknown local parameter '{}'", param)),
-                }
-
-                Ok(())
-            }
-        }
-    }
+pub fn init() {
+    register_params();
+    syntax::init();
 }
 
 fn try_parse<T: FromStr>(s: &str) -> Result<(), String>
