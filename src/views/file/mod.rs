@@ -168,7 +168,7 @@ impl ConstructedView for View {
             return Self {
                 handler: ModeHandler::new(
                     FileExecutor {
-                        buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
+                        buffer: ViewBuffer::new(size, Handle::blank(gen_local_id(), None)),
                         params: Params::default(),
                     },
                     NormalMode::default(),
@@ -197,7 +197,10 @@ impl ConstructedView for View {
                 return Self {
                     handler: ModeHandler::new(
                         FileExecutor {
-                            buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
+                            buffer: ViewBuffer::new(
+                                size,
+                                Handle::blank(gen_local_id(), Some(path)),
+                            ),
                             params: Params::default(),
                         },
                         NormalMode::default(),

@@ -980,6 +980,11 @@ impl<D: Deref<Target = Lines>> Line<D> {
             right_idx: right_char,
         }
     }
+
+    /// Gives access to the raw contents of the line as a string, if it is valid utf8
+    pub fn try_as_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.inner().raw).ok()
+    }
 }
 
 impl InternalLine {

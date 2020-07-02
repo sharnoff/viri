@@ -10,6 +10,11 @@
 //! [`Handle`]: struct.Handle.html
 //! [`file::View`]: ../struct.View.html
 
+use super::edits::{EditOwner, Edits};
+use super::syntax;
+use crate::lock::{ArcLock, ReadGuard, RwLock, WriteGuard};
+use crate::text::{diff, ContentProvider, Diff, Lines, ReprKind};
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::env::current_dir;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -20,11 +25,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-
-use super::edits::{EditOwner, Edits};
-use crate::lock::{ArcLock, ReadGuard, RwLock, WriteGuard};
-use crate::text::{diff, ContentProvider, Diff, Lines, ReprKind};
-use lazy_static::lazy_static;
 
 lazy_static! {
     /// A global registry to store all of the files that have been opened during this session
@@ -244,7 +244,7 @@ fn make_absolute<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
 }
 
 impl Handle {
-    pub fn blank(id: LocalId) -> Handle {
+    pub fn blank(id: LocalId, path: Option<&str>) -> Handle {
         let locator = Locator::Local(id);
         let handle_id = gen_handle_id();
 
@@ -265,10 +265,16 @@ impl Handle {
         const TABSTOP: usize = 4;
         const REPR_KIND: ReprKind = ReprKind::Utf8;
 
+        let styler = path
+            // Get the exension
+            .and_then(|s| Path::new(s).extension().map(|ext| ext.to_str().unwrap()))
+            // TODO: handle the error more gracefully here than just ".ok()"
+            .and_then(|ext| syntax::styler_callback(ext).ok());
+
         Handle {
             file: ArcLock::new(File {
                 locator,
-                content: Lines::empty(TABSTOP, REPR_KIND, None),
+                content: Lines::empty(TABSTOP, REPR_KIND, styler),
                 n_handles: 1,
                 unsaved: false,
                 edits: Edits::new(),
@@ -437,7 +443,7 @@ impl Handle {
 }
 
 impl File {
-    fn open(path: PathBuf) -> io::Result<Self> {
+    fn open(path: PathBuf) -> io::Result<File> {
         let content = fs::read(&path)?;
 
         // These are here for now, until we allow setting them independently via some sort of
@@ -446,9 +452,14 @@ impl File {
         const TABSTOP: usize = 4;
         const REPR_KIND: ReprKind = ReprKind::Utf8;
 
+        let styler = path
+            .extension()
+            // TODO: Better error handling here than just ".ok()"
+            .and_then(|ext| syntax::styler_callback(ext.to_str()?).ok());
+
         Ok(File {
             locator: Locator::Path(path),
-            content: Lines::from_arc(Arc::new(content), TABSTOP, REPR_KIND, None),
+            content: Lines::from_arc(Arc::new(content), TABSTOP, REPR_KIND, styler),
             n_handles: 0,
             unsaved: false,
             edits: Edits::new(),

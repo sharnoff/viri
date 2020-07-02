@@ -21,7 +21,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
 unicode-width = "0.1.7"
 uuid = { version = "0.8", features = ["v4"] }
-syntect = "4.2.0"
+# Syntect comes with many things turned on by default - we don't need all of those,
+# so we manually include the few things that we *do* need
+syntect = { version = "4.2.0", features = ["regex-onig", "parsing"] }
 
 [profile.dev]
 panic = "unwind"
