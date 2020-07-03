@@ -66,6 +66,12 @@ pub struct ViewBuffer<P: ContentProvider> {
     /// The position of the cursor *within* the view
     cursor: TermCoord,
 
+    /// The index of the cursor in the bytes of the file
+    ///
+    /// This is used when handling external diffs, so that we can avoid out-of-bounds accesses of
+    /// where the cursor *previously* was
+    cursor_byte_idx: usize,
+
     /// The line displayed as the top row, starting from 0
     top_row: usize,
 
@@ -249,6 +255,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             size,
             pos: None,
             cursor: (0, 0).into(),
+            cursor_byte_idx: 0,
             top_row: 0,
             left_col: 0,
             allow_cursor_after: false,
@@ -377,14 +384,13 @@ impl<P: ContentProvider> ViewBuffer<P> {
         let content = self.provider.content();
 
         // Shift the cursor index by the amount given by all of the diffs
-        let mut cursor_byte_idx = content.byte_index(self.current_row(), self.current_col());
         for d in diffs {
-            cursor_byte_idx = d.shift_idx(cursor_byte_idx);
+            self.cursor_byte_idx = d.shift_idx(self.cursor_byte_idx);
         }
 
         // Generate new cursor index. We unwrap here because the diffs should already be applied to
         // the content. If they aren't this is a hard error.
-        let (new_row, new_char) = content.line_pair_from_byte(cursor_byte_idx);
+        let (new_row, new_char) = content.line_pair_from_byte(self.cursor_byte_idx);
 
         let line = content.line(new_row);
         let mut new_col = line.width_idx_from_char(new_char);
@@ -1519,7 +1525,9 @@ impl<P: ContentProvider> ViewBuffer<P> {
 
             // This needs to be a special case because we usually move to 'column - 1', which
             // obviously isn't an option here.
-            return self.move_cursor_column_unchecked(0);
+            let refresh = self.move_cursor_column_unchecked(0);
+            self.update_cursor_byte_idx();
+            return refresh;
         }
 
         let line_width = line.width();
@@ -1528,10 +1536,14 @@ impl<P: ContentProvider> ViewBuffer<P> {
         // calling `self.move_cursor_column_unchecked(line.width())`
         if self.virtual_col >= line_width && self.allow_cursor_after {
             drop(line);
-            return self.move_cursor_column_unchecked(line_width);
+            let refresh = self.move_cursor_column_unchecked(line_width);
+            self.update_cursor_byte_idx();
+            return refresh;
         } else if self.virtual_col >= line_width {
             drop(line);
-            return self.move_cursor_column_unchecked(line_width - 1);
+            let refresh = self.move_cursor_column_unchecked(line_width - 1);
+            self.update_cursor_byte_idx();
+            return refresh;
         }
 
         // We now need to find the nearest character boundary to move to
@@ -1539,7 +1551,19 @@ impl<P: ContentProvider> ViewBuffer<P> {
         drop(line);
 
         // For simplicity, we always round down
-        return self.move_cursor_column_unchecked(round_down);
+        let refresh = self.move_cursor_column_unchecked(round_down);
+        self.update_cursor_byte_idx();
+        refresh
+    }
+
+    /// Updates the current byte index of the cursor to correspond to the row and column values
+    ///
+    /// This *must* be called after updating the cursor position.
+    fn update_cursor_byte_idx(&mut self) {
+        self.cursor_byte_idx = self
+            .provider
+            .content()
+            .byte_index(self.current_row(), self.current_col());
     }
 }
 
