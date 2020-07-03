@@ -356,8 +356,11 @@ impl Horiz {
         };
         use RefreshKind::{Full, Inner};
 
+        // Produces an output signal with an *additional* cursor refresh signal if there is not one
+        // already
         fn to_signal(refresh: Option<RefreshKind>) -> Vec<OutputSignal> {
-            refresh.map(|r| vec![NeedsRefresh(r)]).unwrap_or(Vec::new())
+            refresh.map(|r| vec![NeedsRefresh(r)])
+                .unwrap_or_else(|| vec![NeedsRefresh(RefreshKind::Cursor)])
         }
 
         match signal {
@@ -730,8 +733,11 @@ impl Vert {
         };
         use RefreshKind::{Full, Inner};
 
+        // Produces an output signal with an *additional* cursor refresh signal if there is not one
+        // already
         fn to_signal(refresh: Option<RefreshKind>) -> Vec<OutputSignal> {
-            refresh.map(|r| vec![NeedsRefresh(r)]).unwrap_or(Vec::new())
+            refresh.map(|r| vec![NeedsRefresh(r)])
+                .unwrap_or_else(|| vec![NeedsRefresh(RefreshKind::Cursor)])
         }
 
         match signal {
