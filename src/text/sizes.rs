@@ -96,7 +96,7 @@ pub struct IndexPair {
     pub outer: usize,
 }
 
-impl<T: Copy> Sizes<T> {
+impl<T: Copy + std::fmt::Debug> Sizes<T> {
     /// Creates a new, blank `Sizes`
     pub const fn new() -> Self {
         Self {
@@ -104,11 +104,8 @@ impl<T: Copy> Sizes<T> {
         }
     }
 
-    /*
-    // Note: Disabled because it wasn't used.
-
-    /// Adds a new, non-standard value to the end of the [`Sizes`] by its outer index
-    pub fn append_by_outer_idx(&mut self, outer_idx: usize, size: usize) {
+    /// Adds a new, non-standard value to the end of the `Sizes` by its outer index
+    pub fn append_by_outer_idx(&mut self, outer_idx: usize, size: usize, data: T) {
         let inner_idx = match self.internal.last() {
             None => outer_idx,
             Some(s) => {
@@ -122,11 +119,11 @@ impl<T: Copy> Sizes<T> {
             outer_idx,
             inner_idx,
             size,
+            data,
         });
     }
-    */
 
-    /// Adds a new, non-standard value to the end of the [`Sizes`] by its inner index
+    /// Adds a new, non-standard value to the end of the `Sizes` by its inner index
     pub fn append_by_inner_idx(&mut self, inner_idx: usize, size: usize, data: T) {
         let outer_idx = match self.internal.last() {
             // If there aren't any previous non-standard values, the outer index will be equal to

@@ -77,8 +77,8 @@ where
         // There weren't any commands that we could apply here, so we'll insert a character.
         // BUT! Only if the character has no modifiers. Other sorts of control flow (like line
         // breaks, deleting, etc. are provided by the commands)
-        if key.mods == KeyModifiers::NONE {
-            if let (KeyCode::Char(c), true) = (key.code, key.mods == KeyModifiers::NONE) {
+        if key.mods == KeyModifiers::NONE || key.mods == KeyModifiers::SHIFT {
+            if let KeyCode::Char(c) = key.code {
                 let insert = Cmd::Insert(c.to_string());
                 let shift = Cmd::Cursor(Movement::Right(HorizMove::Const), 1);
                 return Ok(vec![insert, shift]);

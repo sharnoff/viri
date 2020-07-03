@@ -603,7 +603,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         self.provider.lock();
 
         let cur_row = self.current_row();
-        let cur_char = self
+        let cur_width = self
             .current_line()
             .char_idx_from_width(self.current_col())
             .0;
@@ -611,55 +611,53 @@ impl<P: ContentProvider> ViewBuffer<P> {
         // temporarily enable `allow_cursor_after` so that we can do proper deletion
         let old_allow_after = mem::replace(&mut self.allow_cursor_after, true);
 
-        let (new_row, new_char) = self.simulate_movement(movement, amount, true)?;
+        let (new_row, new_width) = self.simulate_movement(movement, amount, true)?;
 
         // re-enable whetever `allow_cursor_after` we had before
         self.allow_cursor_after = old_allow_after;
 
-        if (new_row, new_char) == (cur_row, cur_char) {
+        if (new_row, new_width) == (cur_row, cur_width) {
             return None;
         }
 
-        let (fwd, mut lo_row, mut lo_char, mut hi_row, mut hi_char) =
-            match (cur_row, cur_char) < (new_row, new_char) {
-                true => (true, cur_row, cur_char, new_row, new_char),
-                false => (false, new_row, new_char, cur_row, cur_char),
+        let (fwd, mut lo_row, mut lo_col, mut hi_row, mut hi_col) =
+            match (cur_row, cur_width) < (new_row, new_width) {
+                true => (true, cur_row, cur_width, new_row, new_width),
+                false => (false, new_row, new_width, cur_row, cur_width),
             };
 
         // Handle `{to,from}_inclusive`
         if fwd && !from_inclusive || !fwd && !to_inclusive {
-            // attmept to add to lo_char
-            if self.provider.line(lo_row).num_chars() == lo_char {
+            // attmept to add to lo_col
+            if self.provider.line(lo_row).width() == lo_col {
                 if self.num_lines() == lo_row + 1 {
                     return None;
                 }
 
-                lo_char = 0;
+                lo_col = 0;
                 lo_row += 1;
             } else {
-                lo_char += 1;
+                lo_col += 1;
             }
         }
 
         if fwd && to_inclusive || !fwd && from_inclusive {
-            // attempt to add to hi_char
-            if self.provider.line(hi_row).num_chars() == hi_char {
+            // attempt to add to hi_width
+            if self.provider.line(hi_row).width() == hi_col {
                 if hi_row == self.num_lines() {
                     // do nothing
                 } else {
-                    hi_char = 0;
+                    hi_col = 0;
                     hi_row += 1;
                 }
             } else {
-                hi_char += 1;
+                hi_col += 1;
             }
         }
 
         // Convert the two pairs into byte indices
         let content = self.provider.content();
 
-        let lo_col = content.line(lo_row).width_idx_from_char(lo_char);
-        let hi_col = content.line(hi_row).width_idx_from_char(hi_char);
         let lo_byte_idx = content.byte_index(lo_row, lo_col);
         let hi_byte_idx = content.byte_index(hi_row, hi_col);
 

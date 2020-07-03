@@ -122,7 +122,7 @@ impl ConstructedView for View {
                 "File tree viewer\n",
                 "  └─{}\n", // <- Current path
                 "===================================================\n",
-                "..\n", // <- The parent directory, which is done separately
+                "../\n", // <- The parent directory, which is done separately
                 "{}",   // <- the rest of the directories
                 "{}",   // <- all symlinks
                 "{}",   // <- all of the files

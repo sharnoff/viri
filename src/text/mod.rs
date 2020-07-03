@@ -14,6 +14,7 @@ use ansi_term::{ANSIStrings, Style};
 use std::fmt::{self, Debug, Formatter};
 use std::ops::{Bound, Deref, DerefMut, Range, RangeBounds};
 use std::sync::{Arc, Mutex};
+use unicode_width::UnicodeWidthChar;
 
 mod cache;
 pub mod diff;
@@ -781,10 +782,22 @@ impl Lines {
                     // `InternalLine.styling` before we put those into the `Sizes`
                     let mut sizes = Sizes::new();
                     for (style, range) in ranges {
-                        let start = line.raw_bytes.idx_from_outer(range.start);
-                        let end = line.raw_bytes.idx_from_outer(range.end);
+                        let start_group = (line.raw_bytes)
+                            .try_idx_from_inner(range.start)
+                            .round_down
+                            .outer;
+                        let end_group = (line.raw_bytes)
+                            .try_idx_from_inner(range.end)
+                            .round_down
+                            .outer;
 
-                        sizes.append_by_inner_idx(start, end - start, style);
+                        let start_char = line.chars.idx_from_outer(start_group);
+                        let end_char = line.chars.idx_from_outer(end_group);
+
+                        let start_byte = line.rendered_bytes.idx_from_outer(start_char);
+                        let end_byte = line.rendered_bytes.idx_from_outer(end_char);
+
+                        sizes.append_by_inner_idx(start_byte, end_byte - start_byte, style);
                     }
 
                     *line.styling.lock().unwrap() = Some(sizes);
@@ -1048,13 +1061,10 @@ impl InternalLine {
         // * `idx`          -> our byte index in `self.raw`.
         // * `rendered_idx` -> our byte index in the rendered string.
         // * `char_count`   -> the number of characters (from raw) we've seen
-        // * `group_count`  -> the number of characters (including their expansions
-        //                     in the rendered text
         // * `width`        -> our index in the rendered width
         let mut idx = 0_usize;
         let mut rendered_idx = 0_usize;
         let mut char_count = 0_usize;
-        let mut group_count = 0_usize;
         let mut current_width = 0_usize;
 
         while idx < self.raw.len() {
@@ -1073,22 +1083,22 @@ impl InternalLine {
                     if let Some(r) = rendered.as_mut() {
                         r.push(c);
                     }
-                    rendered_idx += 1;
-                    group_count += 1;
-                    current_width += 1;
-                }
-                CharFormat::Wide(c, width) => {
-                    if let Some(r) = rendered.as_mut() {
-                        r.push(c);
+
+                    let width = c.width().unwrap();
+                    assert!(width != 0);
+
+                    if width != 1 {
+                        widths.append_by_inner_idx(char_count, width, ());
                     }
 
-                    widths.append_by_inner_idx(char_count, width, ());
-                    rendered_bytes.append_by_inner_idx(rendered_idx, consumed, ());
+                    if consumed != 1 {
+                        rendered_bytes.append_by_inner_idx(rendered_idx, consumed, ());
+                    }
+
                     rendered_idx += consumed;
                     current_width += width;
-                    group_count += 1;
                 }
-                CharFormat::StrLit(s, width) => {
+                CharFormat::StrLit(s) => {
                     let rendered_ref = match rendered.as_mut() {
                         Some(r) => r,
                         None => {
@@ -1104,19 +1114,20 @@ impl InternalLine {
                         }
                     };
 
+                    rendered_ref.push_str(s.as_ref());
+
                     // No need to add to `rendered_bytes` because `StrLit` will always return ascii
                     // strings
 
-                    rendered_ref.push_str(s.as_ref());
-                    widths.append_by_inner_idx(current_width, width, ());
-                    chars.append_by_inner_idx(group_count, width, ());
+                    widths.append_by_inner_idx(current_width, s.len(), ());
+                    chars.append_by_outer_idx(char_count, s.len(), ());
                     rendered_idx += s.len();
-                    current_width += width;
-                    group_count += width;
+                    current_width += s.len();
                 }
             }
 
-            idx += consumed
+            char_count += 1;
+            idx += consumed;
         }
 
         self.rendered = rendered;
@@ -1165,15 +1176,14 @@ impl InternalLine {
             return (String::new(), init_end..init_end);
         }
 
+        let start_byte = self.rendered_bytes.idx_from_outer(start_char);
+        let end_byte = self.rendered_bytes.idx_from_outer(end_char);
+
         // And now we'll produce the final output with styling on the line
         let mut style_regions = Vec::new();
-        for (range, opt_style) in styling.inner_regions(start_char..end_char) {
-            // FIXME: This is *really* inefficient... :(
-            let start_byte = self.rendered_bytes.idx_from_outer(range.start);
-            let end_byte = self.rendered_bytes.idx_from_outer(range.end);
-
+        for (range, opt_style) in styling.inner_regions(start_byte..end_byte) {
             let style = opt_style.unwrap_or_default();
-            style_regions.push(style.paint(&rendered[start_byte..end_byte]));
+            style_regions.push(style.paint(&rendered[range]));
         }
 
         let segment = ANSIStrings(&style_regions).to_string();
@@ -1187,7 +1197,7 @@ impl InternalLine {
         if width_idx > self.total_width {
             panic!(
                 "index out of bounds: the width is {} but the index is {}",
-                width_idx, self.total_width
+                self.total_width, width_idx
             );
         }
 
@@ -1203,7 +1213,8 @@ impl InternalLine {
 fn char_display(tabstop: usize, current_width: usize, result: Result<char, u8>) -> CharFormat {
     match result {
         Ok(c) => {
-            if c.is_ascii_graphic() || c == ' ' {
+            if c.width().is_some() {
+                // if c.is_ascii_graphic() || c == ' ' {
                 CharFormat::Normal(c)
             } else {
                 match c {
@@ -1213,7 +1224,7 @@ fn char_display(tabstop: usize, current_width: usize, result: Result<char, u8>) 
                             w => w,
                         };
 
-                        CharFormat::StrLit((&" ").repeat(tab_width), tab_width)
+                        CharFormat::StrLit((&" ").repeat(tab_width))
                     }
                     // TODO: Add more support for other characters
                     _ => {
@@ -1226,26 +1237,22 @@ fn char_display(tabstop: usize, current_width: usize, result: Result<char, u8>) 
                         let s = format!("{:#x}", c as u32);
                         // This gets us something like: "0x236a", which we then
                         // convert to a nice unicode format with:
-                        let s = format!("<U+{}>", &s[2..]);
-                        let len = s.len();
-                        CharFormat::StrLit(s, len)
+                        CharFormat::StrLit(format!("<U+{}>", &s[2..]))
                     }
                 }
             }
         }
-        Err(byte) => {
-            let s = format!("<{:#x}>", byte);
-            let len = s.len();
-            CharFormat::StrLit(s, len)
-        }
+        Err(byte) => CharFormat::StrLit(format!("<{:#x}>", byte)),
     }
 }
 
 // An internal type used for constructing the metadata required by InternalLine
 enum CharFormat {
+    /// A character that may be displayed as-is
     Normal(char),
-    Wide(char, usize),
-    StrLit(String, usize),
+    /// The substitution for a character that *cannot* be directly displayed, alongside what should
+    /// be displayed with it. The string here *must* be ASCII.
+    StrLit(String),
 }
 
 /// An iterator over lines
