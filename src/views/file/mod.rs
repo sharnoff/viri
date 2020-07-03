@@ -1,5 +1,7 @@
 use super::buffer::ViewBuffer;
-use super::{ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler};
+use super::{
+    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, ViewKind,
+};
 use crate::config::{Build, ConfigPart};
 use crate::container::{self, Signal};
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -294,7 +296,7 @@ impl SignalHandler for View {
                 //
                 // Currently, the only other type we'll allow is "command" mode, where text is
                 // entered via the bottom bar with a colon.
-                if k.code == KeyCode::Char(':') && k.mods == KeyModifiers::NONE {
+                if k.code == KeyCode::Char(':') {
                     return Some(vec![SetBottomBar {
                         prefix: Some(':'),
                         value: String::new(),
@@ -365,7 +367,7 @@ impl View {
             ClearBottomBar, LeaveBottomBar, NoSuchCmd, SaveBottomBar, SetBottomBar,
         };
 
-        if key.mods != KeyModifiers::NONE {
+        if !(key.mods == KeyModifiers::NONE || key.mods == KeyModifiers::SHIFT) {
             return None;
         }
 
@@ -585,9 +587,9 @@ impl XFrom<Builder> for Config {
 #[rustfmt::skip]
 fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
     use mode_handler::Cmd::Other;
-    use super::MetaCmd::{TryClose, Custom, Split};
+    use super::MetaCmd::{TryClose, Custom, Split, Replace, Open};
     use super::ExitKind::ReqSave;
-    use Direction::{Down, Left};
+    use Direction::{Down, Left, Up};
     use FileMeta::Save;
 
     let keys = vec![
@@ -597,6 +599,11 @@ fn default_keybindings() -> Trie<char, Vec<ColonCmd>> {
         // Splits
         ("sp", vec![Other(Split(Down))]),
         ("vs", vec![Other(Split(Left))]),
+
+        // Opening the file tree
+        ("Ex", vec![Other(Replace(ViewKind::FileTree))]),
+        ("Ve", vec![Other(Open(Left, ViewKind::FileTree))]),
+        ("Se", vec![Other(Open(Up, ViewKind::FileTree))]),
     ];
 
     Trie::from_iter(keys.into_iter().map(|(key,cmd)| (key.chars().collect(), cmd)))

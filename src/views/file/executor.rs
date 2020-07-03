@@ -1,9 +1,9 @@
 //! Definitions for the `FileExecutor` type
 
-use super::handle::Handle;
+use super::handle::{Handle, Locator};
 use super::{FileMeta, Params};
 use crate::mode::handler::{Cmd, Executor};
-use crate::mode::{self, CursorStyle};
+use crate::mode::{self, CursorStyle, Direction};
 use crate::text::ContentProvider;
 use crate::views::buffer::ViewBuffer;
 use crate::views::{ConcreteView, ExitKind, MetaCmd, OutputSignal};
@@ -27,8 +27,8 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
         };
         use ExitKind::ReqSave;
         use FileMeta::Save;
-        use MetaCmd::{Custom, Replace, Split, TryClose};
-        use OutputSignal::{Close, NeedsRefresh, Open, ShiftFocus};
+        use MetaCmd::{Custom, Split, TryClose};
+        use OutputSignal::{Close, NeedsRefresh, Open, Replace, ShiftFocus};
 
         // Getting a few definitions out of the way
         //
@@ -42,7 +42,9 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
         let refresh = match cmd {
             Other(o) => {
                 return match o {
-                    TryClose(ReqSave) if self.unsaved() => {
+                    TryClose(ReqSave)
+                        if self.unsaved() && !self.buffer.provider().open_elsewhere() =>
+                    {
                         Some(vec![OutputSignal::error(UNSAVED, true)])
                     }
                     TryClose(_) => Some(vec![Close]),
@@ -55,7 +57,30 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                         )])
                     }
                     MetaCmd::ShiftFocus(d, n) => Some(vec![ShiftFocus(d, n)]),
-                    Replace(_) => todo!(),
+                    MetaCmd::Replace(view_kind) => {
+                        // If we're asked to replace but there's unsaved changes we can't ignore,
+                        // we don't want to get rid of it - we'll split upwards or leftwards by the
+                        // direction that's largest
+                        let dims = self.buffer.size();
+                        let path = match self.buffer.provider().locator() {
+                            Locator::Path(p) => vec![p.to_string_lossy().into_owned()],
+                            _ => Vec::new(),
+                        };
+
+                        let new_view = view_kind.to_view(dims, &path);
+
+                        if self.unsaved() && !self.buffer.provider().open_elsewhere() {
+                            let dir = match dims.width > dims.height {
+                                true => Direction::Left,
+                                false => Direction::Up,
+                            };
+
+                            Some(vec![Open(dir, new_view)])
+                        } else {
+                            // Otherwise, we just replace directly
+                            Some(vec![Replace(new_view)])
+                        }
+                    }
                     Custom(Save) => match self.try_save() {
                         Ok(()) => Some(Vec::new()),
                         Err(err_str) => Some(vec![OutputSignal::error(&err_str, true)]),

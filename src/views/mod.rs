@@ -56,6 +56,7 @@ use unicode_width::UnicodeWidthStr;
 // Builtin modules:
 mod buffer;
 mod file;
+mod filetree;
 pub mod split;
 
 // mod your_mod;
@@ -80,6 +81,7 @@ mod macros;
 viewkind! {
     pub enum ViewKind {
         File: file::View,
+        FileTree: filetree::View,
         // Foo: your_mod::Foo,
     }
 }

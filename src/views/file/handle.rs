@@ -440,6 +440,12 @@ impl Handle {
     pub fn locator(&self) -> Locator {
         self.file.read().locator.clone()
     }
+
+    /// Returns whether the handle is open in another view - i.e. whether it's okay to close this
+    /// handle with unsaved changes
+    pub fn open_elsewhere(&self) -> bool {
+        self.file.read().n_handles > 1
+    }
 }
 
 impl File {
