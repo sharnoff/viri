@@ -62,14 +62,18 @@ fn to_ansi(style: highlighting::Style) -> ansi_term::Style {
         Some(RGB(c.r, c.g, c.b))
     };
 
+    /*
     let background = {
         let c = style.background;
         Some(RGB(c.r, c.g, c.b))
     };
+    */
 
     ansi_term::Style {
         foreground,
-        background,
+        // Currently, we'll ignore the background. Otherwise, we end up with a weird look of
+        // an artificial background - NOT what we want.
+        background: None,
         is_bold: style.font_style.contains(FontStyle::BOLD),
         is_dimmed: false,
         is_italic: style.font_style.contains(FontStyle::ITALIC),

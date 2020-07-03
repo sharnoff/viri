@@ -228,8 +228,6 @@ impl<T: Copy> Sizes<T> {
 
         let next_idx = (self.internal)
             .binary_search_by_key(&start, |s| s.outer_idx)
-            // +1 because because we're looking for the *next* index
-            .map(|i| i + 1)
             .unwrap_or_else(|i| i);
 
         InnerRegions {
@@ -272,6 +270,7 @@ impl IndexPair {
 /// Where present, this corresponds to the outer indices. All inner indicies not directly under a
 /// non-standard outer index will be grouped into larger regions, with a yielded value of `None`
 /// alongside their range.
+#[derive(Debug)]
 pub struct InnerRegions<'a, T: Copy> {
     sizes: &'a Sizes<T>,
 
@@ -286,7 +285,7 @@ pub struct InnerRegions<'a, T: Copy> {
     next_idx: usize,
 }
 
-impl<'a, T: Copy> Iterator for InnerRegions<'a, T> {
+impl<'a, T: std::fmt::Debug + Copy> Iterator for InnerRegions<'a, T> {
     type Item = (Range<usize>, Option<T>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -300,7 +299,8 @@ impl<'a, T: Copy> Iterator for InnerRegions<'a, T> {
             // next index.
             //
             // This is - by far - the common case for the usage of this iterator.
-            if self.next_idx == self.remaining.start && self.sizes.internal.len() < self.next_idx {
+            let exact_outer_idx = self.sizes.internal.get(self.next_idx).map(|s| s.outer_idx);
+            if exact_outer_idx == Some(self.remaining.start) {
                 let s = self.sizes.internal[self.next_idx];
                 self.next_idx += 1;
                 self.remaining.start += 1;
@@ -313,29 +313,41 @@ impl<'a, T: Copy> Iterator for InnerRegions<'a, T> {
             // If the index for the next `SingleSize` is equal to the length of the internal list,
             // we can just take all of the remaining inner values.
             match self.next_idx.checked_sub(1).map(|i| self.sizes.internal[i]) {
-                // If there weren't any internal elements, everything is the same size, so we just
-                // pass the range through
+                // If the subtraction failed, `next_idx` is zero.
                 None => {
-                    let start = self.remaining.start;
-                    self.remaining.start = self.remaining.end;
-                    break (start, self.remaining.end, None);
+                    // If there aren't any elements, we just give the entire range.
+                    if self.sizes.internal.is_empty() {
+                        let start = self.remaining.start;
+                        self.remaining.start = self.remaining.end;
+                        break (start, self.remaining.end, None);
+                    }
+
+                    // Otherwise, we look to the next outer index to get the end point for this
+                    // region.
+                    //
+                    // The start is zero because we know we're at the beginning of the range.
+                    // Similarly, the end is equal to the inner index of the first group
+                    let start = 0;
+                    let end = self.sizes.internal[self.next_idx].inner_idx;
+                    self.remaining.start = self.sizes.internal[self.next_idx].outer_idx;
+                    break (start, end, None);
                 }
+
+                // Otherwise, the range is relative to the previous, so we calculate the start in
+                // this way. This is copied from `idx_from_outer`, in the `Err` case
                 Some(s) => {
-                    // Otherwise, the range is relative to the previous, so we calculate the start in
-                    // this way. This is copied from `idx_from_outer`, in the `Err` case
                     let start = s.inner_idx + s.size + (self.remaining.start - s.outer_idx - 1);
 
                     // Remember: for each region, we're collecting all of the space between entries
                     // for outer indices - the end goes to the next entry, if it exists.
-                    let end = match self.sizes.internal.get(self.next_idx) {
+                    let (end, rem) = match self.sizes.internal.get(self.next_idx) {
                         // No more values, so we'll just go straight to the end
-                        None => self.end,
-                        Some(next) => next.inner_idx,
+                        None => (self.end, self.remaining.end),
+                        Some(next) => (next.inner_idx, next.outer_idx),
                     };
 
-                    self.next_idx += 1;
-                    self.remaining.start = s.outer_idx;
-                    break (start, end, Some(s.data));
+                    self.remaining.start = rem;
+                    break (start, end, None);
                 }
             }
         };
@@ -343,5 +355,69 @@ impl<'a, T: Copy> Iterator for InnerRegions<'a, T> {
         let range = start.max(self.start)..end.min(self.end);
 
         Some((range, val))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simple_regions() {
+        // Test data:
+        //
+        // Outer on top, inner on bottom:
+        // 0 1       2     3 4     5 6 7 8
+        // | |       |     | |     | | | |
+        // | |  <3>  | <4> | | <5> | | | |
+        // | | | | | | | | | | | | | | | |
+        // 0         5         10        15
+        let expected = vec![
+            (0..1, None),
+            (1..5, Some(3)),
+            (5..8, Some(4)),
+            (8..9, None),
+            (9..12, Some(5)),
+            (12..15, None),
+        ];
+
+        let mut sizes: Sizes<i32> = Sizes::new();
+        sizes.append_by_inner_idx(1, 4, 3);
+        sizes.append_by_inner_idx(5, 3, 4);
+        sizes.append_by_inner_idx(9, 3, 5);
+
+        let regions = sizes.inner_regions(0..15).collect::<Vec<_>>();
+        assert_eq!(regions, expected);
+    }
+
+    // This is an actual example that failed at one point, so this test is the remnant of debugging
+    // that failure
+    #[test]
+    fn foo_bar() {
+        // 0     1         2 3                                       4 5
+        // |     |         | |                                       | | |
+        // | <1> |   <2>   <3>                  <4>                  <5|6>
+        // | | | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
+        // 0         5         10        15        20        25        30
+
+        let expected = vec![
+            (0..3, Some(1)),
+            (3..8, Some(2)),
+            (8..9, Some(3)),
+            (9..28, Some(4)),
+            (28..29, Some(5)),
+            (29..30, Some(6)),
+        ];
+
+        let mut sizes: Sizes<i32> = Sizes::new();
+        sizes.append_by_inner_idx(0, 3, 1);
+        sizes.append_by_inner_idx(3, 5, 2);
+        sizes.append_by_inner_idx(8, 1, 3);
+        sizes.append_by_inner_idx(9, 19, 4);
+        sizes.append_by_inner_idx(28, 1, 5);
+        sizes.append_by_inner_idx(29, 1, 6);
+
+        let regions = sizes.inner_regions(0..30).collect::<Vec<_>>();
+        assert_eq!(regions, expected);
     }
 }
