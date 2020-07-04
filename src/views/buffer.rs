@@ -493,25 +493,23 @@ impl<P: ContentProvider> ViewBuffer<P> {
         };
         new_col = new_col.min(max_line_col);
 
-        if new_col != old_col {
+        if new_col != old_col + self.cursor.col as usize {
             changed = true;
 
             // drag the cursor to the new column
             self.left_col = new_col;
-            if new_col < old_col {
-                let max_col = (max_line_col - new_col).try_into().unwrap_or(std::u16::MAX);
+            let max_col = (max_line_col - self.left_col)
+                .try_into()
+                .unwrap_or(std::u16::MAX);
 
-                self.cursor.col = (self
-                    .cursor
-                    .col
-                    .saturating_add((old_col - new_col).try_into().unwrap_or(std::u16::MAX)))
-                .min(max_col);
+            if new_col < old_col {
+                self.cursor.col = (self.cursor.col)
+                    .saturating_add((old_col - new_col).try_into().unwrap_or(std::u16::MAX))
+                    .min(max_col);
             } else {
-                // old_row < new_row
-                self.cursor.col = self
-                    .cursor
-                    .col
-                    .saturating_sub((new_col - old_col).try_into().unwrap_or(std::u16::MAX));
+                self.cursor.col = (self.cursor.col)
+                    .saturating_sub((new_col - old_col).try_into().unwrap_or(std::u16::MAX))
+                    .min(max_col);
             }
         }
 
@@ -521,11 +519,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             return None;
         }
 
-        // calculate the new cursor position - scrolling will drag it along
-
-        self.top_row = new_row;
-        self.left_col = new_col;
-
+        self.try_move_virtual_cursor();
         self.needs_refresh = self.needs_refresh.max(Some(RefreshKind::Full));
         Some(RefreshKind::Full)
     }
