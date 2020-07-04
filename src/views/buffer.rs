@@ -1123,10 +1123,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             }
 
             if line_idx != self.current_row() {
-                match self.allows_after() {
-                    true => line.num_chars() + 1,
-                    false => line.num_chars(),
-                }
+                line.num_chars()
             } else {
                 let mut char_idx = line.char_idx_from_width(self.current_col()).0;
                 if !shift_back {
@@ -1140,6 +1137,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         for line_idx in (0..=self.current_row()).rev() {
             let line = self.provider.line(line_idx);
             let chars = line.chars(..end_char(line_idx)).rev();
+
             for (char_idx, c) in chars {
                 if let Some(p) = previous_char {
                     match f(p, c) {
