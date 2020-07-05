@@ -659,7 +659,9 @@ impl<P: ContentProvider> ViewBuffer<P> {
         let content = self.provider.content();
 
         let lo_byte_idx = content.byte_index(lo_row, lo_col);
-        let hi_byte_idx = content.byte_index(hi_row, hi_col);
+        // We use an upper bound by the width because some movements (e.g. `$`) return a column of
+        // `usize::MAX` to signify going the furthest possible out
+        let hi_byte_idx = content.byte_index(hi_row, hi_col.min(content.line(hi_row).width()));
 
         // Record the current position of the cursor
         let cur_byte_idx = content.byte_index(cur_row, self.current_col());
