@@ -107,6 +107,10 @@ impl Horiz {
 
 impl View for Horiz {
     fn refresh(&mut self, painter: &Painter) {
+        if self.inner_views.is_empty() {
+            return;
+        }
+
         if painter.distinct_bottom_bar() == self.include_bottom_bar || painter.size() != self.size {
             // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
             // This is an interesting case - `distinct_bottom_bar` from a painter implies that
@@ -165,12 +169,20 @@ impl View for Horiz {
     }
 
     fn refresh_cursor(&self, painter: &Painter) {
+        if self.inner_views.is_empty() {
+            return;
+        }
+
         if let Some(p) = self.inner_painter(self.selected_idx, painter) {
             self.inner_views[self.selected_idx].1.refresh_cursor(&p);
         }
     }
 
     fn bottom_left_text(&mut self) -> Option<(String, usize)> {
+        if self.inner_views.is_empty() {
+            return None;
+        }
+
         // If we're handling our own bottom text bar, we won't need to display anything here
         if self.include_bottom_bar {
             return None;
@@ -181,6 +193,10 @@ impl View for Horiz {
     }
 
     fn bottom_right_text(&mut self) -> Option<(String, usize)> {
+        if self.inner_views.is_empty() {
+            return None;
+        }
+
         // Much the same as `bottom_left_text`:
         // If we're handling our own bottom text bar, we won't need to display anything here
         if self.include_bottom_bar {
@@ -359,7 +375,8 @@ impl Horiz {
         // Produces an output signal with an *additional* cursor refresh signal if there is not one
         // already
         fn to_signal(refresh: Option<RefreshKind>) -> Vec<OutputSignal> {
-            refresh.map(|r| vec![NeedsRefresh(r)])
+            refresh
+                .map(|r| vec![NeedsRefresh(r)])
                 .unwrap_or_else(|| vec![NeedsRefresh(RefreshKind::Cursor)])
         }
 
@@ -501,6 +518,10 @@ impl Vert {
 
 impl View for Vert {
     fn refresh(&mut self, painter: &Painter) {
+        if self.inner_views.is_empty() {
+            return;
+        }
+
         // This function is largely duplicated from `Horiz`. Each item is explained in detail
         // there; for more information please refer to `Horiz::refresh`.
 
@@ -553,6 +574,10 @@ impl View for Vert {
     }
 
     fn refresh_cursor(&self, painter: &Painter) {
+        if self.inner_views.is_empty() {
+            return;
+        }
+
         // Get the inner painter corresponding to that index
         let idx = u16::try_from(self.selected_idx).unwrap_or(u16::MAX);
         let cols_offset = idx.saturating_add(
@@ -594,6 +619,10 @@ impl View for Vert {
     }
 
     fn construct_bottom_text(&mut self, width: u16) -> String {
+        if self.inner_views.is_empty() {
+            return String::new();
+        }
+
         if width != self.size.width {
             self.size.width = width;
             self.resize();
@@ -736,7 +765,8 @@ impl Vert {
         // Produces an output signal with an *additional* cursor refresh signal if there is not one
         // already
         fn to_signal(refresh: Option<RefreshKind>) -> Vec<OutputSignal> {
-            refresh.map(|r| vec![NeedsRefresh(r)])
+            refresh
+                .map(|r| vec![NeedsRefresh(r)])
                 .unwrap_or_else(|| vec![NeedsRefresh(RefreshKind::Cursor)])
         }
 
