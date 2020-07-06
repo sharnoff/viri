@@ -388,13 +388,17 @@ impl Horiz {
             | NoSuchCmd
             | WaitingForMore => (false, vec![signal]),
             NeedsRefresh(_) => (false, vec![NeedsRefresh(Inner)]),
-            Replace(new_view) => {
-                self.inner_views[self.selected_idx].1 = new_view;
+            Replace(constructor) => {
+                let size = self.inner_size(self.selected_idx);
+                self.inner_views[self.selected_idx].1 = constructor(size);
                 (false, vec![NeedsRefresh(Inner)])
             }
+            // If we're closing one of the inner views and there's only one left, we'll replace
+            // ourselves with the remaining view.
             Close if self.inner_views.len() == 2 => {
                 self.inner_views.remove(self.selected_idx);
-                (true, vec![Replace(self.inner_views.pop().unwrap().1)])
+                let replacement = self.inner_views.pop().unwrap().1;
+                (true, vec![Replace(Box::new(move |_| replacement))])
             }
             // inner_views.len() > 2
             Close => {
@@ -427,31 +431,44 @@ impl Horiz {
                 ),
                 Left | Right => (false, vec![ShiftFocus(d, n)]),
             },
-            Open(d, v) => match d {
-                Up => {
-                    // TODO: Instead of assigning some random value here (20), we should actually
-                    // do some proper resizing to produce the most ideal shifting
-                    self.inner_views.insert(self.selected_idx, (20, v));
-                    (false, vec![NeedsRefresh(Full)])
+            Open(d, v) => {
+                let size = self.inner_size(self.selected_idx);
+                match d {
+                    Up => {
+                        // We pass in the height of the currently selected view so that the resizing
+                        // creates a balanced set of views.
+                        self.inner_views
+                            .insert(self.selected_idx, (size.height, v(size)));
+                        (false, vec![NeedsRefresh(Full)])
+                    }
+                    Down => {
+                        self.inner_views
+                            .insert(self.selected_idx + 1, (size.height, v(size)));
+                        (false, vec![NeedsRefresh(Full)])
+                    }
+                    Left => {
+                        let old = self.inner_views.remove(self.selected_idx);
+                        let new = Box::new(Vert::construct(vec![v(size), old.1]));
+                        self.inner_views.insert(self.selected_idx, (old.0, new));
+                        (false, vec![NeedsRefresh(Full)])
+                    }
+                    Right => {
+                        let old = self.inner_views.remove(self.selected_idx);
+                        let new = Box::new(Vert::construct(vec![old.1, v(size)]));
+                        self.inner_views.insert(self.selected_idx, (old.0, new));
+                        (false, vec![NeedsRefresh(Full)])
+                    }
                 }
-                Down => {
-                    // TODO: See above
-                    self.inner_views.insert(self.selected_idx + 1, (20, v));
-                    (false, vec![NeedsRefresh(Full)])
-                }
-                Left => {
-                    let old = self.inner_views.remove(self.selected_idx);
-                    let new = Box::new(Vert::construct(vec![v, old.1]));
-                    self.inner_views.insert(self.selected_idx, (old.0, new));
-                    (false, vec![NeedsRefresh(Full)])
-                }
-                Right => {
-                    let old = self.inner_views.remove(self.selected_idx);
-                    let new = Box::new(Vert::construct(vec![old.1, v]));
-                    self.inner_views.insert(self.selected_idx, (old.0, new));
-                    (false, vec![NeedsRefresh(Full)])
-                }
-            },
+            }
+        }
+    }
+
+    /// Returns the total size allocated to one of the inner views, given by its index
+    fn inner_size(&self, idx: usize) -> TermSize {
+        let height = self.inner_views[idx].0;
+        TermSize {
+            height,
+            ..self.size
         }
     }
 }
@@ -778,13 +795,15 @@ impl Vert {
             | NoSuchCmd
             | WaitingForMore => (false, vec![signal]),
             NeedsRefresh(_) => (false, vec![NeedsRefresh(Inner)]),
-            Replace(new_view) => {
-                self.inner_views[self.selected_idx].1 = new_view;
+            Replace(constructor) => {
+                let size = self.inner_size(self.selected_idx);
+                self.inner_views[self.selected_idx].1 = constructor(size);
                 (false, vec![NeedsRefresh(Inner)])
             }
             Close if self.inner_views.len() == 2 => {
                 self.inner_views.remove(self.selected_idx);
-                (true, vec![Replace(self.inner_views.pop().unwrap().1)])
+                let replacement = self.inner_views.pop().unwrap().1;
+                (true, vec![Replace(Box::new(move |_| replacement))])
             }
             // inner_views.len() > 2
             Close => {
@@ -817,31 +836,41 @@ impl Vert {
                 ),
                 Up | Down => (false, vec![ShiftFocus(d, n)]),
             },
-            Open(d, v) => match d {
-                Left => {
-                    // TODO: Instead of assigning some random value here (20), we should actually
-                    // do some proper resizing to produce the most ideal shifting
-                    self.inner_views.insert(self.selected_idx, (20, v));
-                    (false, vec![NeedsRefresh(Full)])
+            Open(d, v) => {
+                let size = self.inner_size(self.selected_idx);
+                match d {
+                    Left => {
+                        self.inner_views
+                            .insert(self.selected_idx, (size.width, v(size)));
+                        (false, vec![NeedsRefresh(Full)])
+                    }
+                    Right => {
+                        self.inner_views
+                            .insert(self.selected_idx + 1, (size.width, v(size)));
+                        (false, vec![NeedsRefresh(Full)])
+                    }
+                    Up => {
+                        let (_, old) = self.inner_views.remove(self.selected_idx);
+                        let new = Box::new(Horiz::construct(vec![v(size), old]));
+                        self.inner_views
+                            .insert(self.selected_idx, (size.width, new));
+                        (false, vec![NeedsRefresh(Full)])
+                    }
+                    Down => {
+                        let (_, old) = self.inner_views.remove(self.selected_idx);
+                        let new = Box::new(Horiz::construct(vec![old, v(size)]));
+                        self.inner_views
+                            .insert(self.selected_idx, (size.width, new));
+                        (false, vec![NeedsRefresh(Full)])
+                    }
                 }
-                Right => {
-                    // TODO: See above
-                    self.inner_views.insert(self.selected_idx + 1, (20, v));
-                    (false, vec![NeedsRefresh(Full)])
-                }
-                Up => {
-                    let old = self.inner_views.remove(self.selected_idx);
-                    let new = Box::new(Horiz::construct(vec![v, old.1]));
-                    self.inner_views.insert(self.selected_idx, (old.0, new));
-                    (false, vec![NeedsRefresh(Full)])
-                }
-                Down => {
-                    let old = self.inner_views.remove(self.selected_idx);
-                    let new = Box::new(Horiz::construct(vec![old.1, v]));
-                    self.inner_views.insert(self.selected_idx, (old.0, new));
-                    (false, vec![NeedsRefresh(Full)])
-                }
-            },
+            }
         }
+    }
+
+    /// Returns the total size allocated to one of the inner views, given by its index
+    fn inner_size(&self, idx: usize) -> TermSize {
+        let width = self.inner_views[idx].0;
+        TermSize { width, ..self.size }
     }
 }

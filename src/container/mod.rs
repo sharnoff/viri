@@ -3,12 +3,14 @@ use crate::mode::Direction;
 use crate::runtime::{self as rt, Painter, TermSize};
 use crate::utils;
 use crate::views::split::{Horiz, Vert};
-use crate::views::{self, ConcreteView, RefreshKind, ViewKind};
+use crate::views::{self, ConcreteView, RefreshKind, ViewConstructorFn, ViewKind};
+use crate::views::{file::View as FileView, filetree::View as FileTreeView};
 use crossterm::{cursor, style, QueueableCommand};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::Debug;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering::SeqCst;
 
 pub mod cmd;
@@ -111,6 +113,29 @@ pub enum Signal<'a> {
     Mouse(MouseEvent),
 }
 
+/// Produces the constructor to initialize the container with
+///
+/// This takes a path (may not be canonicalized) as input, and
+fn initial_view(path: Option<&str>) -> ViewConstructorFn {
+    match path {
+        // In the typical case, we'll use the filetree view if the path is a directory and the file
+        // view if it isn't (or if the path isn't present).
+        Some(p) => {
+            let path = PathBuf::from(p).canonicalize();
+            match path.as_ref().map(|p| p.is_dir()).unwrap_or(false) {
+                true => FileTreeView::constructor(path.unwrap().parent().unwrap()),
+                false => FileView::constructor(&path.unwrap()),
+            }
+        }
+
+        // Otherwise, if we aren't given a path as input, we'll use an empty file view
+        //
+        // In the future, this might be changed to something more like what vim does - giving a
+        // pleasant splash to introduce the editor.
+        None => FileView::empty_constructor(),
+    }
+}
+
 /// Picks which view to initialize the container with
 ///
 /// The current implementation always defaults to the file viewer - this can be changed fairly
@@ -135,6 +160,14 @@ impl Container {
             }
             InputMode::Normal => 1,
         }
+    }
+
+    /// Returns the size of the internal view, if it can be displayed
+    fn inner_size(&self) -> Option<TermSize> {
+        Some(TermSize {
+            height: (self.size.height).checked_sub(self.bottom_offset().try_into().ok()?)?,
+            ..self.size
+        })
     }
 
     fn inner(&self) -> &Box<dyn ConcreteView> {
@@ -323,7 +356,7 @@ impl Container {
             width: size.width,
         };
 
-        let mut inner = pick_init_view(args).to_view(inner_size, args);
+        let mut inner = initial_view(args.first().cloned())(inner_size);
         inner.refresh(&mut Painter::global(inner_size));
 
         let mut this = Self {
@@ -390,11 +423,13 @@ impl Container {
             WaitingForMore => {}
 
             Replace(new_view) => {
-                self.inner = Some(new_view);
+                self.inner = Some(new_view(self.inner_size().unwrap_or(self.size)));
                 self.handle_refresh(RefreshKind::Full);
             }
 
-            Open(direction, new_view) => self.open_new(direction, new_view),
+            Open(direction, new_view) => {
+                self.open_new(direction, new_view(self.inner_size().unwrap_or(self.size)))
+            }
 
             // If the outer-most view closes, we exit.
             Close => return true,

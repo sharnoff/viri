@@ -55,8 +55,8 @@ use unicode_width::UnicodeWidthStr;
 
 // Builtin modules:
 mod buffer;
-mod file;
-mod filetree;
+pub mod file;
+pub mod filetree;
 pub mod split;
 
 // mod your_mod;
@@ -238,19 +238,11 @@ pub trait View {
 /// directly.
 pub trait ConcreteView: View + SignalHandler {}
 
-/// Helper for `ConcreteView`
+/// A public type for representing `View` thunks
 ///
-/// Because `ConcreteView` is required elsewhere to be object-safe, this trait is defined to allow
-/// instantiating views. It is used in the [`to_view`] method on `ViewKind`.
-///
-/// [`to_view`]: enum.ViewKind.html#method.to_view
-pub trait ConstructedView: ConcreteView {
-    /// Initializes the `View` with the given arguments and size
-    ///
-    /// Formalizing the arguments is currently a work in progress.
-    // TODO: ^ see above
-    fn init<S: AsRef<str>>(size: TermSize, args: &[S]) -> Self;
-}
+/// These are used to delay construction of `View`s until they are actually created, as well as to
+/// provide a more flexible way of managing output signals
+pub type ViewConstructorFn = Box<dyn FnOnce(TermSize) -> Box<dyn ConcreteView>>;
 
 /// Types that can handle `Container` signals
 ///
@@ -284,10 +276,10 @@ pub enum OutputSignal {
     },
     LeaveBottomBar,
     ClearBottomBar,
-    Open(Direction, Box<dyn ConcreteView>),
+    Open(Direction, ViewConstructorFn),
     /// Indicates a request to replace the current view with the given one. This *must* be
     /// performed as the sender may now have an invalid state
-    Replace(Box<dyn ConcreteView>),
+    Replace(ViewConstructorFn),
     Close,
     /// A request to shift the cursor's focus in the given direction by the given number of
     /// `View`s.

@@ -1,8 +1,8 @@
 //! The `View` giving a file explorer in order to open other files
 
-use super::buffer::ViewBuffer;
+use super::{buffer::ViewBuffer, file::View as FileView};
 use super::{
-    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, ViewKind,
+    ConcreteView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, ViewConstructorFn, ViewKind,
 };
 use crate::config::{DerefChain, DerefMutChain};
 use crate::container;
@@ -11,7 +11,7 @@ use crate::event::KeyCode;
 use crate::mode::handler::{Cmd, Executor};
 use crate::mode::normal::Mode as NormalMode;
 use crate::mode::{self, CursorStyle, Handler as ModeHandler, ModeKind, ModeSet};
-use crate::runtime::{Painter, TermSize};
+use crate::runtime::Painter;
 use crate::text::{self, ContentProvider, Lines, ReprKind};
 use crate::utils::Never;
 use std::fs;
@@ -49,28 +49,9 @@ impl super::View for View {
     }
 }
 
-impl ConstructedView for View {
-    fn init<S: AsRef<str>>(size: TermSize, args: &[S]) -> Self {
-        if args.len() > 1 {
-            log::warn!("filetree::View received args with len > 1, ignoring entries.");
-            log::warn!(
-                "Ignored: {:?}",
-                args[1..].iter().map(AsRef::as_ref).collect::<Vec<_>>()
-            );
-        }
-
-        let path = match args {
-            // We're expecting a single argument - the path of the directory to open
-            [path, ..] => path.as_ref().into(),
-            // If we weren't given a path, we'll just use the current working directory
-            [] => match std::env::current_dir() {
-                Ok(d) => d,
-                // FIXME: Better error handling here
-                Err(e) => panic!("Failed to get current working directory: {}", e),
-            },
-        };
-
-        let path = path.canonicalize().unwrap_or_else(move |_| path);
+impl View {
+    pub fn constructor(path: &Path) -> ViewConstructorFn {
+        let path = path.canonicalize().unwrap_or_else(|_| path.into());
 
         let mut dirs = Vec::new();
         let mut links = Vec::new();
@@ -123,10 +104,10 @@ impl ConstructedView for View {
                 "  └─{}\n", // <- Current path
                 "===================================================\n",
                 "../\n", // <- The parent directory, which is done separately
-                "{}",   // <- the rest of the directories
-                "{}",   // <- all symlinks
-                "{}",   // <- all of the files
-                "{}",   // <- all/any invalid directory entries
+                "{}",    // <- the rest of the directories
+                "{}",    // <- all symlinks
+                "{}",    // <- all of the files
+                "{}",    // <- all/any invalid directory entries
             ),
             path.to_string_lossy(),
             strs(&mut dirs[1..], Some("/")),
@@ -144,25 +125,31 @@ impl ConstructedView for View {
             None,
         );
 
-        Self {
-            handler: ModeHandler::new(
-                FileTreeExecutor {
-                    buffer: ViewBuffer::new(
-                        size,
-                        Provider {
-                            dirs,
-                            links,
-                            files,
-                            invalids,
-                            base_path: path,
-                            content,
-                        },
-                    ),
+        Box::new(move |size| {
+            let mut buffer = ViewBuffer::new(
+                size,
+                Provider {
+                    dirs,
+                    links,
+                    files,
+                    invalids,
+                    base_path: path,
+                    content,
                 },
-                NormalMode::default(),
-                ModeSet::none().allow(ModeKind::Normal),
-            ),
-        }
+            );
+
+            // We start by moving the cursor down because we can then start the cursor on the first
+            // 'clickable' line
+            buffer.move_cursor(crate::mode::Movement::Down, 5);
+
+            Box::new(View {
+                handler: ModeHandler::new(
+                    FileTreeExecutor { buffer },
+                    NormalMode::default(),
+                    ModeSet::none().allow(ModeKind::Normal),
+                ),
+            })
+        })
     }
 }
 
@@ -246,31 +233,28 @@ impl SignalHandler for View {
                         row -= 4;
                         // Receiving 'enter' means that the user has selected a certain line - we'll
                         // use this to open that file
-                        let (abs_path, view_kind) = {
+                        let constructor = loop {
                             if row < provider.dirs.len() {
-                                (&provider.dirs[row], ViewKind::FileTree)
-                            } else {
-                                row -= provider.dirs.len();
-
-                                if row < provider.links.len() {
-                                    (&provider.links[row], ViewKind::File)
-                                } else {
-                                    row -= provider.links.len();
-                                    if row < provider.files.len() {
-                                        (&provider.files[row], ViewKind::File)
-                                    } else {
-                                        row -= provider.files.len();
-                                        (&provider.invalids[row], ViewKind::File)
-                                    }
-                                }
+                                break View::constructor(&provider.dirs[row]);
                             }
+                            row -= provider.dirs.len();
+
+                            if row < provider.links.len() {
+                                break FileView::constructor(&provider.links[row]);
+                            }
+                            row -= provider.links.len();
+
+                            if row < provider.files.len() {
+                                break FileView::constructor(&provider.files[row]);
+                            }
+                            row -= provider.files.len();
+
+                            // TODO: Maybe we shouldn't allow editing of invalid files? This is a
+                            // somewhat strange use-case.
+                            break FileView::constructor(&provider.invalids[row]);
                         };
 
-                        let path_slice = [abs_path.to_string_lossy()];
-
-                        return Some(vec![Replace(
-                            view_kind.to_view(self.handler.executor().buffer.size(), &path_slice),
-                        )]);
+                        return Some(vec![Replace(constructor)]);
                     }
                 }
             }
@@ -318,7 +302,7 @@ impl Executor<MetaCmd<Never>> for FileTreeExecutor {
             Cursor, Delete, EndEditBlock, Insert, Other, Redo, Scroll, StartEditBlock, Undo,
         };
         use MetaCmd::{Custom, Split, TryClose};
-        use OutputSignal::{Close, NeedsRefresh, Open, Replace, ShiftFocus};
+        use OutputSignal::{Close, NeedsRefresh, Open, ShiftFocus};
 
         let refresh = match cmd {
             Cursor(m, n) => self.buffer.move_cursor(m, n),
@@ -337,21 +321,43 @@ impl Executor<MetaCmd<Never>> for FileTreeExecutor {
             StartEditBlock { .. } | EndEditBlock { .. } => None,
             Other(TryClose(_)) => return Some(vec![Close]),
             Other(Split(d)) => {
-                // FIXME: This is strictly incorrect
-                let new_view = ViewKind::FileTree.to_view((10, 10).into(), &[] as &[&str]);
-                return Some(vec![Open(d, new_view)]);
-            }
-            Other(MetaCmd::Open(d, view_kind)) => {
                 return Some(vec![Open(
                     d,
-                    view_kind.to_view((10, 10).into(), &[] as &[&str]),
-                )])
+                    View::constructor(&self.buffer.provider().base_path),
+                )]);
             }
+            Other(MetaCmd::Open(d, view_kind)) => match view_kind {
+                ViewKind::File => {
+                    return Some(vec![OutputSignal::error(
+                        "Configuration error: Attempted to open file view from filetree",
+                        true,
+                    )])
+                }
+                ViewKind::FileTree => {
+                    return Some(vec![Open(
+                        d,
+                        View::constructor(&self.buffer.provider().base_path),
+                    )])
+                }
+            },
             Other(MetaCmd::ShiftFocus(d, n)) => return Some(vec![ShiftFocus(d, n)]),
             Other(MetaCmd::Replace(view_kind)) => {
-                return Some(vec![Replace(
-                    view_kind.to_view((10, 10).into(), &[] as &[&str]),
-                )])
+                log::warn!(
+                    "FileTreeExecutor received Replace command with '{:?}'",
+                    view_kind
+                );
+
+                match view_kind {
+                    ViewKind::File => {
+                        return Some(vec![OutputSignal::error(
+                            "Configuration error: Attempted to replace filetree with file view",
+                            true,
+                        )])
+                    }
+                    // We don't really need to replace here, and we will have already logged what
+                    // we needed.
+                    ViewKind::FileTree => return Some(Vec::new()),
+                };
             }
             Other(Custom(_)) => unreachable!(),
         };

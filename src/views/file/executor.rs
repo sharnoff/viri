@@ -5,8 +5,9 @@ use super::{FileMeta, Params};
 use crate::mode::handler::{Cmd, Executor};
 use crate::mode::{self, CursorStyle, Direction};
 use crate::text::ContentProvider;
-use crate::views::buffer::ViewBuffer;
-use crate::views::{ConcreteView, ExitKind, MetaCmd, OutputSignal};
+use crate::views::{buffer::ViewBuffer, filetree::View as FileTreeView};
+use crate::views::{ExitKind, MetaCmd, OutputSignal, ViewConstructorFn, ViewKind};
+use std::env;
 
 /// The internal `Executor` that allows handling of mode switching within the main `View`
 pub(super) struct FileExecutor {
@@ -50,11 +51,7 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                     TryClose(_) => Some(vec![Close]),
                     Split(d) => Some(vec![Open(d, self.clone_into_builder())]),
                     MetaCmd::Open(d, view_kind) => {
-                        // We just pick a random size (10, 10) to give it because it doesn't matter
-                        Some(vec![Open(
-                            d,
-                            view_kind.to_view((10, 10).into(), &[] as &[&str]),
-                        )])
+                        Some(vec![Open(d, self.make_constructor(view_kind))])
                     }
                     MetaCmd::ShiftFocus(d, n) => Some(vec![ShiftFocus(d, n)]),
                     MetaCmd::Replace(view_kind) => {
@@ -62,12 +59,7 @@ impl Executor<MetaCmd<FileMeta>> for FileExecutor {
                         // we don't want to get rid of it - we'll split upwards or leftwards by the
                         // direction that's largest
                         let dims = self.buffer.size();
-                        let path = match self.buffer.provider().locator() {
-                            Locator::Path(p) => vec![p.to_string_lossy().into_owned()],
-                            _ => Vec::new(),
-                        };
-
-                        let new_view = view_kind.to_view(dims, &path);
+                        let new_view = self.make_constructor(view_kind);
 
                         if self.unsaved() && !self.buffer.provider().open_elsewhere() {
                             let dir = match dims.width > dims.height {
@@ -189,10 +181,10 @@ impl FileExecutor {
         self.buffer.provider().unsaved()
     }
 
-    fn clone_into_builder(&mut self) -> Box<dyn ConcreteView> {
+    fn clone_into_builder(&mut self) -> ViewConstructorFn {
         let file = self.buffer.provider_mut().clone();
 
-        Box::new(super::View {
+        let view = Box::new(super::View {
             handler: super::ModeHandler::new(
                 FileExecutor {
                     buffer: self.buffer.clone_from_provider(file),
@@ -201,6 +193,28 @@ impl FileExecutor {
                 super::NormalMode::default(),
                 super::ModeSet::all(),
             ),
-        })
+        });
+
+        Box::new(move |_| view)
+    }
+
+    fn make_constructor(&self, kind: ViewKind) -> ViewConstructorFn {
+        match kind {
+            ViewKind::File => match self.buffer.provider().locator() {
+                Locator::Path(p) => super::View::constructor(&p),
+                Locator::Local(_) => super::View::empty_constructor(),
+            },
+            ViewKind::FileTree => match self.buffer.provider().locator() {
+                Locator::Local(_) => match env::current_dir() {
+                    Ok(path) => FileTreeView::constructor(&path),
+                    Err(e) => {
+                        // TODO: This error message should be directly displayed to the user
+                        log::error!("Failed to open filetree view; unable to get cwd: {}", e);
+                        super::View::empty_constructor()
+                    }
+                },
+                Locator::Path(p) => FileTreeView::constructor(p.parent().unwrap()),
+            },
+        }
     }
 }

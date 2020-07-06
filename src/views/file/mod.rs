@@ -1,6 +1,6 @@
 use super::buffer::ViewBuffer;
 use super::{
-    ConcreteView, ConstructedView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, ViewKind,
+    ConcreteView, MetaCmd, OutputSignal, RefreshKind, SignalHandler, ViewConstructorFn, ViewKind,
 };
 use crate::config::{Build, ConfigPart};
 use crate::container::{self, Signal};
@@ -10,12 +10,13 @@ use crate::mode::{
     normal::Mode as NormalMode,
     Direction, ModeSet,
 };
-use crate::runtime::{Painter, TermSize};
+use crate::runtime::Painter;
 use crate::trie::Trie;
 use crate::utils::{Never, XFrom};
 use crossterm::style::Colorize;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -161,13 +162,37 @@ impl super::View for View {
     }
 }
 
-impl ConstructedView for View {
-    // Meaning of args:
-    // If the first argument is not given, a blank file will be used. Otherwise, we'll try to
-    // open the file with name args[0]
-    fn init<S: AsRef<str>>(size: TermSize, args: &[S]) -> Self {
-        if args.is_empty() {
-            return Self {
+impl View {
+    pub fn constructor(path: &Path) -> ViewConstructorFn {
+        let file = match Handle::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                // If we encountered an error, log the error and provide an empty file
+                // TODO: This error should get to the user as well
+                log::error!("Failed to open file {:?}: {}", path, e);
+                return Self::empty_constructor();
+            }
+        };
+
+        Box::new(move |size| {
+            let this = View {
+                handler: ModeHandler::new(
+                    FileExecutor {
+                        buffer: ViewBuffer::new(size, file),
+                        params: Params::default(),
+                    },
+                    NormalMode::default(),
+                    ModeSet::all(),
+                ),
+            };
+
+            Box::new(this)
+        })
+    }
+
+    pub fn empty_constructor() -> ViewConstructorFn {
+        Box::new(|size| {
+            Box::new(View {
                 handler: ModeHandler::new(
                     FileExecutor {
                         buffer: ViewBuffer::new(size, Handle::blank(gen_local_id(), None)),
@@ -176,59 +201,8 @@ impl ConstructedView for View {
                     NormalMode::default(),
                     ModeSet::all(),
                 ),
-            };
-        }
-
-        if args.len() > 1 {
-            log::warn!("file::View received args with len > 1, ignoring entries.");
-            log::warn!(
-                "Ignored: {:?}",
-                args[1..].iter().map(AsRef::as_ref).collect::<Vec<_>>()
-            );
-        }
-
-        let path = args[0].as_ref();
-
-        // TODO: In the future, this will
-        let file = match Handle::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                // (Temporary solution)
-                // If we encountered an error, log the error and provide an empty file
-                log::error!("Failed to open file {}: {}", path, e);
-                return Self {
-                    handler: ModeHandler::new(
-                        FileExecutor {
-                            buffer: ViewBuffer::new(
-                                size,
-                                Handle::blank(gen_local_id(), Some(path)),
-                            ),
-                            params: Params::default(),
-                        },
-                        NormalMode::default(),
-                        ModeSet::all(),
-                    ),
-                };
-            }
-        };
-
-        let buffer = ViewBuffer::new(size, file);
-
-        let mut this = Self {
-            handler: ModeHandler::new(
-                FileExecutor {
-                    buffer,
-                    params: Params::default(),
-                },
-                NormalMode::default(),
-                ModeSet::all(),
-            ),
-        };
-
-        let (width_fn, prefix_fn) = this.prefix_fn_ptrs();
-        this.buffer_mut().set_prefix(width_fn, prefix_fn);
-
-        this
+            })
+        })
     }
 }
 
