@@ -404,9 +404,10 @@ impl Horiz {
             Close => {
                 self.inner_views.remove(self.selected_idx);
                 self.selected_idx = self.selected_idx.min(self.inner_views.len() - 1);
+                self.resize();
                 (false, vec![NeedsRefresh(Full)])
             }
-            ShiftFocus(d, n) => match d {
+            ShiftFocus(d, mut n) => match d {
                 Up if n <= self.selected_idx => {
                     self.selected_idx -= n;
                     (
@@ -422,13 +423,10 @@ impl Horiz {
                     )
                 }
                 Up => (false, vec![ShiftFocus(Up, n - self.selected_idx)]),
-                Down => (
-                    false,
-                    vec![ShiftFocus(
-                        Up,
-                        n - (self.inner_views.len() - self.selected_idx - 1),
-                    )],
-                ),
+                Down => {
+                    n -= self.inner_views.len() - self.selected_idx - 1;
+                    (false, vec![ShiftFocus(Down, n)])
+                }
                 Left | Right => (false, vec![ShiftFocus(d, n)]),
             },
             Open(d, v) => {
@@ -439,11 +437,13 @@ impl Horiz {
                         // creates a balanced set of views.
                         self.inner_views
                             .insert(self.selected_idx, (size.height, v(size)));
+                        self.resize();
                         (false, vec![NeedsRefresh(Full)])
                     }
                     Down => {
                         self.inner_views
                             .insert(self.selected_idx + 1, (size.height, v(size)));
+                        self.resize();
                         (false, vec![NeedsRefresh(Full)])
                     }
                     Left => {
@@ -809,9 +809,10 @@ impl Vert {
             Close => {
                 self.inner_views.remove(self.selected_idx);
                 self.selected_idx = self.selected_idx.min(self.inner_views.len() - 1);
+                self.resize();
                 (false, vec![NeedsRefresh(Full)])
             }
-            ShiftFocus(d, n) => match d {
+            ShiftFocus(d, mut n) => match d {
                 Left if n <= self.selected_idx => {
                     self.selected_idx -= n;
                     (
@@ -826,14 +827,11 @@ impl Vert {
                         to_signal(self.inner_views[self.selected_idx].1.focus()),
                     )
                 }
-                Left => (false, vec![ShiftFocus(Up, n - self.selected_idx)]),
-                Right => (
-                    false,
-                    vec![ShiftFocus(
-                        Up,
-                        n - (self.inner_views.len() - self.selected_idx - 1),
-                    )],
-                ),
+                Left => (false, vec![ShiftFocus(Left, n - self.selected_idx)]),
+                Right => {
+                    n -= self.inner_views.len() - self.selected_idx - 1;
+                    (false, vec![ShiftFocus(Right, n)])
+                }
                 Up | Down => (false, vec![ShiftFocus(d, n)]),
             },
             Open(d, v) => {
@@ -842,11 +840,13 @@ impl Vert {
                     Left => {
                         self.inner_views
                             .insert(self.selected_idx, (size.width, v(size)));
+                        self.resize();
                         (false, vec![NeedsRefresh(Full)])
                     }
                     Right => {
                         self.inner_views
                             .insert(self.selected_idx + 1, (size.width, v(size)));
+                        self.resize();
                         (false, vec![NeedsRefresh(Full)])
                     }
                     Up => {
