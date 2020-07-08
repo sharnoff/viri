@@ -10,8 +10,7 @@ edition = "2018"
 ansi_term = "0.12"
 backtrace = "0.3"
 clap = { version = "2.33", features = ["yaml"] }
-# crossterm = { version = "0.17", features = ["serde"] }
-crossterm = { git = "https://github.com/sharnoff/crossterm", branch = "impl-style-'a-str", features = ["serde"] }
+crossterm = { version = "^0.17.6", features = ["serde"] }
 lazy_static = "1.4"
 libc = "0.2"
 lock_api = "0.3"
