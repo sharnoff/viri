@@ -304,6 +304,10 @@ pub trait ContentProvider: Sized {
             })
             .collect();
 
+        // We keep track of this value so that we can clear all of the styling on subsequent lines.
+        // This gives the end of the segment where clearing might not be necessary
+        let clear_end = start_line + new_lines.len();
+
         if new_lines.len() == end_line - start_line {
             this.lines[start_line..end_line].clone_from_slice(&new_lines);
         } else {
@@ -317,9 +321,9 @@ pub trait ContentProvider: Sized {
         // Cache invalidation: We'll do it for the actual cache, as well as for the individual
         // rendered texts on each line
         this.cache.invalidate_past_line(start_line);
-        for line in &mut this.lines[start_line..] {
+        for (i, line) in (start_line..).zip(&mut this.lines[start_line..]) {
             let mut style_guard = line.styling.lock().unwrap();
-            match style_guard.is_some() {
+            match style_guard.is_some() || i < clear_end {
                 true => *style_guard = None,
                 // If the styling is `None`, we can stop our cache invalidation early becaues each
                 // styled line requires the previous line to be styled as well
