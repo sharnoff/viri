@@ -284,17 +284,17 @@ fn default_keybindings() -> Trie<KeyEvent, Vec<Cmd<Never>>> {
                 StartEditBlock,
                 EnterMode(ModeKind::Insert),
             ]),
+        (vec![KeyEvent::shift('A')],
+            vec![
+                StartEditBlock,
+                EnterMode(ModeKind::Insert),
+                Cursor(Right(LineBoundary), 1)
+            ]),
         (vec![KeyEvent::none('a')],
             vec![
                 StartEditBlock,
                 EnterMode(ModeKind::Insert),
-                Cursor(Right(Const), 1)
-            ]),
-        (vec![KeyEvent::none('A')],
-            vec![
-                StartEditBlock,
-                EnterMode(ModeKind::Insert),
-                Cursor(Right(LineBoundary), 1),
+                Cursor(Right(Const), 1),
             ]),
 
         (vec![KeyEvent::none('o')],
@@ -305,7 +305,7 @@ fn default_keybindings() -> Trie<KeyEvent, Vec<Cmd<Never>>> {
                 Insert("\n".into()),
                 Cursor(RightCross(Const), 1),
             ]),
-        (vec![KeyEvent::none('O')],
+        (vec![KeyEvent::shift('O')],
             vec![
                 StartEditBlock,
                 EnterMode(ModeKind::Insert),

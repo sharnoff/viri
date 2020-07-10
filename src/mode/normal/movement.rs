@@ -78,11 +78,11 @@ fn default_keybindings() -> HashMap<KeyEvent, (Priority, Movement)> {
 
         // By words
         (KeyEvent::none('b'), (Builtin, LeftCross(UntilFst(WordEnd)))),
-        (KeyEvent::none('B'), (Builtin, LeftCross(UntilFst(BigWordEnd)))),
+        (KeyEvent::shift('B'), (Builtin, LeftCross(UntilFst(BigWordEnd)))),
         (KeyEvent::none('w'), (Builtin, RightCross(UntilSnd(WordStart)))),
-        (KeyEvent::none('W'), (Builtin, RightCross(UntilSnd(BigWordStart)))),
+        (KeyEvent::shift('W'), (Builtin, RightCross(UntilSnd(BigWordStart)))),
         (KeyEvent::none('e'), (Builtin, RightCross(UntilFst(WordEnd)))),
-        (KeyEvent::none('E'), (Builtin, RightCross(UntilFst(BigWordEnd)))),
+        (KeyEvent::shift('E'), (Builtin, RightCross(UntilFst(BigWordEnd)))),
 
         // Relative to the line beginning/end
         (KeyEvent::none('0'), (Builtin, LeftCross(LineBoundary))),

@@ -74,7 +74,7 @@ impl<T> Parser<T> {
             _marker: PhantomData,
             parsers: set(vec![
                 Box::new(wrap(
-                    numerical(single(KeyEvent::none('D'), Priority::Builtin)),
+                    numerical(single(KeyEvent::shift('D'), Priority::Builtin)),
                     eol,
                 )),
                 Box::new(wrap(

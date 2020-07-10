@@ -39,6 +39,13 @@ impl KeyEvent {
         }
     }
 
+    pub fn shift(c: char) -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char(c),
+            mods: KeyModifiers::SHIFT,
+        }
+    }
+
     pub fn ctrl(c: char) -> KeyEvent {
         KeyEvent {
             code: KeyCode::Char(c),
