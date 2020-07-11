@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+lazy_static::lazy_static! {
+    static ref LAST_CHAR_MOVE: Mutex<Option<Movement>> = Mutex::new(None);
+}
+
 /// The base parser for wrapping different types of movements
 ///
 /// This parser by itself does not return a `Cmd`; it simply returns the movement so that whatever
@@ -65,18 +69,53 @@ impl ParseState for Parser {
                     _ => unreachable!(),
                 };
 
-                return Success(*priority, f(g(pred)));
+                let m = f(g(pred));
+                *LAST_CHAR_MOVE.lock().unwrap() = Some(m);
+
+                return Success(*priority, m);
             }
         }
 
         let cfg = Config::global();
         match cfg.keys.get(&key) {
+            None => Failed,
             Some(&(p, Binding::RawMove(m))) => Success(p, m),
             Some(&(p, Binding::WaitForChar(m))) => {
                 *self = Self::Char(p, m);
                 NeedsMore
             }
-            None => Failed,
+            Some(&(p, Binding::RepeatToChar { fwd })) => {
+                let last = match *LAST_CHAR_MOVE.lock().unwrap() {
+                    Some(mv) => mv,
+                    None => return Failed,
+                };
+
+                let f = match (last, fwd) {
+                    (Left(_), true) | (Right(_), false) => Left,
+                    (Right(_), true) | (Left(_), false) => Right,
+                    (LeftCross(_), true) | (RightCross(_), false) => LeftCross,
+                    (RightCross(_), true) | (LeftCross(_), false) => RightCross,
+                    _ => unreachable!(),
+                };
+
+                let to_ch;
+                let g = match last {
+                    Left(hz) | Right(hz) | LeftCross(hz) | RightCross(hz) => match hz {
+                        HorizMove::UntilFst(c) => {
+                            to_ch = c;
+                            HorizMove::UntilFst
+                        }
+                        HorizMove::UntilSnd(c) => {
+                            to_ch = c;
+                            HorizMove::UntilSnd
+                        }
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                };
+
+                Success(p, f(g(to_ch)))
+            }
         }
     }
 
@@ -100,6 +139,7 @@ static_config! {
 pub enum Binding {
     RawMove(Movement),
     WaitForChar(Movement),
+    RepeatToChar { fwd: bool },
 }
 
 #[rustfmt::skip]
@@ -107,7 +147,7 @@ fn default_keybindings() -> HashMap<KeyEvent, (Priority, Binding)> {
     use crate::mode::CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart, ToChar};
     use crate::mode::HorizMove::{Const,LineBoundary, UntilFst, UntilSnd};
     use crate::mode::Movement::{Down, Left, Right, Up, LeftCross, RightCross};
-    use Binding::{RawMove, WaitForChar};
+    use Binding::{RawMove, WaitForChar, RepeatToChar};
 
     use super::Priority::Builtin;
 
@@ -135,6 +175,8 @@ fn default_keybindings() -> HashMap<KeyEvent, (Priority, Binding)> {
         (KeyEvent::none('t'), (Builtin, WaitForChar(Right(UntilFst(ToChar(' ')))))),
         (KeyEvent::shift('F'), (Builtin, WaitForChar(Left(UntilSnd(ToChar(' ')))))),
         (KeyEvent::shift('T'), (Builtin, WaitForChar(Left(UntilFst(ToChar(' ')))))),
+        (KeyEvent::none(';'), (Builtin, RepeatToChar { fwd: true })),
+        (KeyEvent::none(','), (Builtin, RepeatToChar { fwd: false })),
     ];
 
     keys.into_iter().collect()
