@@ -30,8 +30,9 @@ impl<T> Parser<T> {
             tup: ((Option<usize>, KeyEvent), (Option<usize>, Movement)),
         ) -> Option<DeleteKind> {
             use crate::mode::{
+                CharPredicate::ToChar,
                 DeleteKind::{ByLines, ByMovement},
-                HorizMove::UntilFst,
+                HorizMove::{UntilFst, UntilSnd},
                 Movement::{Down, Left, LeftCross, Right, RightCross, Up},
             };
 
@@ -46,7 +47,10 @@ impl<T> Parser<T> {
                     from_inclusive: false,
                     to_inclusive: true,
                 },
-                Right(UntilFst(_)) | RightCross(UntilFst(_)) => ByMovement {
+                Right(UntilFst(_))
+                | RightCross(UntilFst(_))
+                | Right(UntilSnd(ToChar(_)))
+                | RightCross(UntilSnd(ToChar(_))) => ByMovement {
                     movement,
                     amount,
                     from_inclusive: true,

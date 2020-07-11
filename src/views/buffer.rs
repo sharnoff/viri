@@ -815,8 +815,6 @@ impl<P: ContentProvider> ViewBuffer<P> {
             RightCross(Const) => self.sim_move_right_cross(amount, weak_fail),
             RightCross(UntilFst(pred)) => self.sim_move_right_pred_cross(pred, amount, true),
             RightCross(UntilSnd(pred)) => self.sim_move_right_pred_cross(pred, amount, false),
-
-            _ => todo!(),
         };
 
         log::trace!("New position: {:?}", res);
@@ -1005,7 +1003,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         }
 
         let mut amount = original_amount.get();
-        let f: fn(Option<char>, Option<char>) -> bool = pred.into();
+        let f = |fst: Option<char>, snd: Option<char>| pred.matches(fst, snd);
 
         let mut chars = line.chars_from_width(..=self.current_col()).rev();
         if shift_back {
@@ -1059,7 +1057,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         }
 
         let mut amount = original_amount.get();
-        let f: fn(Option<char>, Option<char>) -> bool = pred.into();
+        let f = |fst: Option<char>, snd: Option<char>| pred.matches(fst, snd);
 
         let mut chars = line.chars_from_width(self.current_col()..);
         if shift_back {
@@ -1069,7 +1067,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         // p is the previous character
         let mut p = chars.next()?.1;
         for (i, c) in chars {
-            if f(c, p) {
+            if f(p, c) {
                 amount -= 1;
                 if amount == 0 {
                     let char_idx = match shift_back {
@@ -1109,7 +1107,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
     ) -> Option<(usize, usize)> {
         let mut amount = amount.get();
 
-        let f: fn(Option<char>, Option<char>) -> bool = pred.into();
+        let f = |fst: Option<char>, snd: Option<char>| pred.matches(fst, snd);
 
         // Gives the character one past the end - i.e. the upper bound in an exclusive range
         let end_char = |line_idx| {
@@ -1182,7 +1180,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         shift_back: bool,
     ) -> Option<(usize, usize)> {
         let mut amount = amount.get();
-        let f: fn(Option<char>, Option<char>) -> bool = pred.into();
+        let f = |fst: Option<char>, snd: Option<char>| pred.matches(fst, snd);
 
         let start_char = |line_idx| {
             if line_idx != self.current_row() {

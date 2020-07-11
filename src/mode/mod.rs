@@ -420,9 +420,6 @@ pub enum HorizMove {
     /// the line.
     LineBoundary,
 
-    /// A movement to a character matching the given `char`
-    ToChar(char),
-
     /// Described above
     UntilFst(CharPredicate),
 
@@ -466,18 +463,22 @@ pub enum CharPredicate {
 
     /// Matches on any valid, non-whitespace character followed by whitespace
     BigWordEnd,
+
+    /// Matches exactly on a character as the second character in the pair
+    ToChar(char),
 }
 
-impl From<CharPredicate> for fn(Option<char>, Option<char>) -> bool {
-    fn from(pred: CharPredicate) -> Self {
-        use CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart};
+impl CharPredicate {
+    pub fn matches(&self, fst: Option<char>, snd: Option<char>) -> bool {
+        use CharPredicate::{BigWordEnd, BigWordStart, ToChar, WordEnd, WordStart};
 
         // All of the functions referenced here are defined following the end of this block.
-        return match pred {
-            WordEnd => word_end,
-            WordStart => word_start,
-            BigWordEnd => big_word_end,
-            BigWordStart => big_word_start,
+        return match self {
+            WordEnd => word_end(fst, snd),
+            WordStart => word_start(fst, snd),
+            BigWordEnd => big_word_end(fst, snd),
+            BigWordStart => big_word_start(fst, snd),
+            &ToChar(c) => snd == Some(c),
         };
 
         // `word` and `whitespace` are used as a couple primitive building blocks
