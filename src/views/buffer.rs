@@ -702,7 +702,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
         let content = self.provider.content();
 
         let start_byte = content.byte_index(*line_range.start(), 0);
-        let end_byte = if *line_range.end() != content.num_lines() {
+        let end_byte = if *line_range.end() != content.num_lines() - 1 {
             content.byte_index(line_range.end() + 1, 0)
         } else {
             content.total_bytes()
@@ -785,7 +785,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
 
         use crate::mode::{
             HorizMove::{Const, LineBoundary, UntilFst, UntilSnd},
-            Movement::{Down, Left, Right, Up, LeftCross, RightCross},
+            Movement::{Down, Left, Right, Up, LeftCross, RightCross, ToTop, ToBottom, ToLine},
         };
 
         let amount = match NonZeroUsize::new(amount) {
@@ -796,6 +796,10 @@ impl<P: ContentProvider> ViewBuffer<P> {
         let res = match movement {
             Up => self.sim_move_up(amount, weak_fail),
             Down => self.sim_move_down(amount, weak_fail),
+
+            ToLine(n) => self.sim_move_to_line(n - 1, weak_fail),
+            ToTop => self.sim_move_to_line(0, weak_fail),
+            ToBottom => self.sim_move_to_line(self.num_lines() - 1, weak_fail),
 
             Left(LineBoundary) | LeftCross(LineBoundary) => self.sim_move_bol(),
             Right(LineBoundary) | RightCross(LineBoundary) => self.sim_move_eol(),
@@ -844,6 +848,20 @@ impl<P: ContentProvider> ViewBuffer<P> {
         let new_line = self.provider.num_lines() - new_lines_until_last - 1;
 
         Some((new_line, self.virtual_col))
+    }
+
+    fn sim_move_to_line(&self, mut line: usize, weak_fail: bool) -> Option<(usize, usize)> {
+        if self.current_row() == line {
+            return Some((line, self.current_col()));
+        } else if !weak_fail && line >= self.num_lines() {
+            return None;
+        }
+
+        line = line.min(self.num_lines() - 1);
+
+        // TODO: This can be free to change ~ in a future version, we might take whitespace into
+        // account.
+        Some((line, 0))
     }
 
     // Simulates a movement to the beginning of the line

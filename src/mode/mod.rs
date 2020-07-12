@@ -359,6 +359,21 @@ pub enum Movement {
     /// A constant movement down by one line
     Down,
 
+    /// A movement to a certain line of text, given by its number (Note: starting from one)
+    ///
+    /// The given value here might be out of bounds. It is up to the user to determine how to
+    /// handle this if it is the case. Additionally, there is no specification as to where on the
+    /// line the movement is to - this may be chosen by the user as well.
+    ToLine(usize),
+
+    /// A movement to the top line of the file. Like `ToLine`, this may move to any point on the
+    /// line.
+    ToTop,
+
+    /// A movement to the bottom line of the file. Like `ToLine`, this may move to any point on the
+    /// line.
+    ToBottom,
+
     /// Represents a movement to the left within the current line
     Left(HorizMove),
 

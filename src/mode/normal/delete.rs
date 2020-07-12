@@ -33,7 +33,7 @@ impl<T> Parser<T> {
                 CharPredicate::ToChar,
                 DeleteKind::{ByLines, ByMovement},
                 HorizMove::{UntilFst, UntilSnd},
-                Movement::{Down, Left, LeftCross, Right, RightCross, Up},
+                Movement::{Down, Left, LeftCross, Right, RightCross, ToBottom, ToLine, ToTop, Up},
             };
 
             let ((n, _), (m, movement)) = tup;
@@ -46,6 +46,16 @@ impl<T> Parser<T> {
                     amount,
                     from_inclusive: false,
                     to_inclusive: true,
+                },
+                // This is a strange edge case that we need to deal with in order to make {n}G
+                // behave separately from repetitions of G.
+                ToBottom if m.is_some() => ByLines {
+                    movement: ToLine(amount),
+                    amount: 1,
+                },
+                ToLine(_) | ToTop | ToBottom => ByLines {
+                    movement,
+                    amount: 1,
                 },
                 Right(UntilFst(_))
                 | RightCross(UntilFst(_))

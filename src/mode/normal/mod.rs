@@ -1,6 +1,6 @@
 // TODO: Module-level documentation
 
-use super::{Cmd, CursorStyle, Error};
+use super::{Cmd, CursorStyle, Error, Movement};
 use crate::config::{Build, ConfigPart, DerefChain, DerefMutChain};
 use crate::event::KeyEvent;
 use crate::mode::config;
@@ -70,7 +70,16 @@ where
 {
     fn reset_parsers(&mut self) {
         let movement = wrap(numerical(movement::Parser::new()), |(n, m)| {
-            vec![Cmd::Cursor(m, n.unwrap_or(1))]
+            // TODO: This is a bit of complex logic that is added in place to handle cases like
+            // '{n}G' vs 'G'. It isn't immediately obvious that it works like this from within the
+            // movement parser, but the alternative gets messy elsewhere.
+            let (m, n) = match (m, n) {
+                // {n}G indicates to move to the nth line; G goes to the bottom
+                (Movement::ToBottom, Some(n)) => (Movement::ToLine(n), 1),
+                _ => (m, n.unwrap_or(1)),
+            };
+
+            vec![Cmd::Cursor(m, n)]
         });
 
         let undo = wrap(
