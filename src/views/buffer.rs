@@ -785,7 +785,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
 
         use crate::mode::{
             HorizMove::{Const, LineBoundary, UntilFst, UntilSnd},
-            Movement::{Down, Left, Right, Up, LeftCross, RightCross, ToTop, ToBottom, ToLine},
+            Movement::{Down, Left, Right, Up, LeftCross, RightCross, ToTop, ToBottom, ToLine, MatchingDelim},
         };
 
         let amount = match NonZeroUsize::new(amount) {
@@ -800,6 +800,8 @@ impl<P: ContentProvider> ViewBuffer<P> {
             ToLine(n) => self.sim_move_to_line(n - 1, weak_fail),
             ToTop => self.sim_move_to_line(0, weak_fail),
             ToBottom => self.sim_move_to_line(self.num_lines() - 1, weak_fail),
+
+            MatchingDelim => self.sim_move_matching_delim(amount),
 
             Left(LineBoundary) | LeftCross(LineBoundary) => self.sim_move_bol(),
             Right(LineBoundary) | RightCross(LineBoundary) => self.sim_move_eol(),
@@ -862,6 +864,109 @@ impl<P: ContentProvider> ViewBuffer<P> {
         // TODO: This can be free to change ~ in a future version, we might take whitespace into
         // account.
         Some((line, 0))
+    }
+
+    fn sim_move_matching_delim(&self, amount: NonZeroUsize) -> Option<(usize, usize)> {
+        // If the amount is an even number, we don't need to do any work because it would result in
+        // shifting back and forth to where we started.
+        if amount.get() % 2 == 0 {
+            return None;
+        }
+
+        // TODO: In a future version, we might extract this into a separate function in order to
+        // allow highlighting matching delimeters.
+        //
+        // First, we'll determine if there *is* a delimeter under the cursor, using it to give the
+        // characters we're looking for, along with the direction.
+        //
+        // The character is None if there's an invalid byte sequence.
+        let char_at: Option<char> = (self.current_line())
+            .chars_from_width(self.current_col()..)
+            .map(|(_idx, ch)| ch)
+            .next()?;
+        //   ^^^^^^^ We use `?` here because there might not be a character where the cursor is -
+        // this would happen if the cursor is off the end of the line.
+        //
+        // If the character is invalid, we'll indicate we failed by returning `None`.
+        let char_at = char_at?;
+
+        let (close, go_fwd) = match char_at {
+            '(' => (')', true),
+            ')' => ('(', false),
+            '[' => (']', true),
+            ']' => ('[', false),
+            '{' => ('}', true),
+            '}' => ('{', false),
+            '<' => ('>', true),
+            '>' => ('<', false),
+            _ => return None,
+        };
+
+        let open = char_at;
+
+        let mut num_opens = 1;
+
+        // This bit is basically duplicated - we need to handle both going forwards *and* backwards.
+        // In an ideal world, it wouldn't be, but it's okay for now because this function will be
+        // replaced by a better version at some point - we'll need to be able to handle other sorts
+        // of inputs.
+
+        if go_fwd {
+            let start_char = |line_idx| {
+                if line_idx != self.current_row() {
+                    return 0;
+                }
+
+                self.current_line()
+                    .char_idx_from_width(self.current_col())
+                    .0
+                    + 1
+            };
+
+            for line_idx in self.current_row()..self.num_lines() {
+                let line = self.provider.line(line_idx);
+                let chars = line.chars(start_char(line_idx)..);
+                for (char_idx, ch) in chars {
+                    if let Some(ch) = ch {
+                        if ch == open {
+                            num_opens += 1;
+                        } else if ch == close && num_opens > 1 {
+                            num_opens -= 1;
+                        } else if ch == close {
+                            return Some((line_idx, line.width_idx_from_char(char_idx)));
+                        }
+                    }
+                }
+            }
+        } else {
+            let end_char = |line_idx| {
+                if line_idx != self.current_row() {
+                    return self.provider.line(line_idx).num_chars();
+                }
+
+                self.current_line()
+                    .char_idx_from_width(self.current_col())
+                    .0
+            };
+
+            for line_idx in (0..=self.current_row()).rev() {
+                let line = self.provider.line(line_idx);
+                let chars = line.chars(..end_char(line_idx)).rev();
+                for (char_idx, ch) in chars {
+                    if let Some(ch) = ch {
+                        if ch == open {
+                            num_opens += 1;
+                        } else if ch == close && num_opens > 1 {
+                            num_opens -= 1;
+                        } else if ch == close {
+                            return Some((line_idx, line.width_idx_from_char(char_idx)));
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     // Simulates a movement to the beginning of the line

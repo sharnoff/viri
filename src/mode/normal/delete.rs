@@ -33,7 +33,10 @@ impl<T> Parser<T> {
                 CharPredicate::ToChar,
                 DeleteKind::{ByLines, ByMovement},
                 HorizMove::{UntilFst, UntilSnd},
-                Movement::{Down, Left, LeftCross, Right, RightCross, ToBottom, ToLine, ToTop, Up},
+                Movement::{
+                    Down, Left, LeftCross, MatchingDelim, Right, RightCross, ToBottom, ToLine,
+                    ToTop, Up,
+                },
             };
 
             let ((n, _), (m, movement)) = tup;
@@ -41,6 +44,12 @@ impl<T> Parser<T> {
 
             Some(match movement {
                 Up | Down => ByLines { movement, amount },
+                MatchingDelim => ByMovement {
+                    movement,
+                    amount,
+                    from_inclusive: true,
+                    to_inclusive: true,
+                },
                 Left(_) | LeftCross(_) => ByMovement {
                     movement,
                     amount,

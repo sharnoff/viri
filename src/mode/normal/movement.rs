@@ -146,7 +146,7 @@ pub enum Binding {
 fn default_keybindings() -> HashMap<KeyEvent, (Priority, Binding)> {
     use crate::mode::CharPredicate::{BigWordEnd, BigWordStart, WordEnd, WordStart, ToChar};
     use crate::mode::HorizMove::{Const,LineBoundary, UntilFst, UntilSnd};
-    use crate::mode::Movement::{Down, Left, Right, Up, LeftCross, RightCross, ToBottom, ToTop};
+    use crate::mode::Movement::{Down, Left, Right, Up, LeftCross, RightCross, ToBottom, ToTop, MatchingDelim};
     use Binding::{RawMove, WaitForChar, RepeatToChar};
 
     use super::Priority::Builtin;
@@ -183,6 +183,9 @@ fn default_keybindings() -> HashMap<KeyEvent, (Priority, Binding)> {
         (KeyEvent::none('g'), (Builtin, RawMove(ToTop))),
         // ^ Note: This is temporary, as we'd much rather have 'gg' for this. We'll make this
         // change once some of the other multi-character movements are necessary (like 'gi', etc.)
+
+        // Misc
+        (KeyEvent::none('%'), (Builtin, RawMove(MatchingDelim))),
     ];
 
     keys.into_iter().collect()

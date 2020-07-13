@@ -324,6 +324,7 @@ pub enum DeleteKind {
     ByLines { movement: Movement, amount: usize },
 
     /// Deletes the entirety of the current line and the next `amount - 1` lines as well.
+    // TODO: Replace usage of this with `ByLines`
     CurrentLine { amount: usize },
 }
 
@@ -373,6 +374,16 @@ pub enum Movement {
     /// A movement to the bottom line of the file. Like `ToLine`, this may move to any point on the
     /// line.
     ToBottom,
+
+    /// A movement to the matching delimeter under the current cursor, wherever that may be
+    ///
+    /// This movement should fail (fully - ignoring any early failure mechanics) if there is not a
+    /// recognized delimeter under the cursor, or if the delimeter is not matched.
+    ///
+    /// The set of available delimeters is left up to the implementor - this may differ by
+    /// the language of the file (e.g. HTML might allow multi-character delimeters). Note: this is
+    /// currently unimplemented, but is planned for the future.
+    MatchingDelim,
 
     /// Represents a movement to the left within the current line
     Left(HorizMove),
