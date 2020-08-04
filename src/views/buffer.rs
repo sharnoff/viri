@@ -785,7 +785,10 @@ impl<P: ContentProvider> ViewBuffer<P> {
 
         use crate::mode::{
             HorizMove::{Const, LineBoundary, UntilFst, UntilSnd},
-            Movement::{Down, Left, Right, Up, LeftCross, RightCross, ToTop, ToBottom, ToLine, MatchingDelim},
+            Movement::{
+                Down, Left, Right, Up, LeftCross, RightCross,
+                ToBottom, ToTop, ToLine, MatchingDelim, ScreenLine,
+            },
         };
 
         let amount = match NonZeroUsize::new(amount) {
@@ -800,6 +803,7 @@ impl<P: ContentProvider> ViewBuffer<P> {
             ToLine(n) => self.sim_move_to_line(n - 1, weak_fail),
             ToTop => self.sim_move_to_line(0, weak_fail),
             ToBottom => self.sim_move_to_line(self.num_lines() - 1, weak_fail),
+            ScreenLine(r) => self.sim_move_to_screenline(r),
 
             MatchingDelim => self.sim_move_matching_delim(amount),
 
@@ -864,6 +868,12 @@ impl<P: ContentProvider> ViewBuffer<P> {
         // TODO: This can be free to change ~ in a future version, we might take whitespace into
         // account.
         Some((line, 0))
+    }
+
+    fn sim_move_to_screenline(&self, ratio: f64) -> Option<(usize, usize)> {
+        assert!(0.0 <= ratio && ratio <= 1.0);
+        let row = self.top_row + (ratio * (self.size.height - 1) as f64).round() as usize;
+        Some((row, 0))
     }
 
     fn sim_move_matching_delim(&self, amount: NonZeroUsize) -> Option<(usize, usize)> {

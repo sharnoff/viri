@@ -34,8 +34,8 @@ impl<T> Parser<T> {
                 DeleteKind::{ByLines, ByMovement},
                 HorizMove::{UntilFst, UntilSnd},
                 Movement::{
-                    Down, Left, LeftCross, MatchingDelim, Right, RightCross, ToBottom, ToLine,
-                    ToTop, Up,
+                    Down, Left, LeftCross, MatchingDelim, Right, RightCross, ScreenLine, ToBottom,
+                    ToLine, ToTop, Up,
                 },
             };
 
@@ -62,7 +62,7 @@ impl<T> Parser<T> {
                     movement: ToLine(amount),
                     amount: 1,
                 },
-                ToLine(_) | ToTop | ToBottom => ByLines {
+                ToLine(_) | ScreenLine(_) | ToTop | ToBottom => ByLines {
                     movement,
                     amount: 1,
                 },

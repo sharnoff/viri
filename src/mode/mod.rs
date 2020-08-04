@@ -367,6 +367,9 @@ pub enum Movement {
     /// line the movement is to - this may be chosen by the user as well.
     ToLine(usize),
 
+    /// A movement to a certain portion down the screen, given by a value between 0 and 1.
+    ScreenLine(f64),
+
     /// A movement to the top line of the file. Like `ToLine`, this may move to any point on the
     /// line.
     ToTop,
