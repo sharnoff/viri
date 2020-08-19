@@ -5,6 +5,7 @@ use super::{
 use crate::config::{Build, ConfigPart};
 use crate::container::{self, Signal};
 use crate::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::fs::Path;
 use crate::mode::{
     handler::{self as mode_handler, Executor, Handler as ModeHandler},
     normal::Mode as NormalMode,
@@ -16,7 +17,6 @@ use crate::utils::{Never, XFrom};
 use crossterm::style::Colorize;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -163,8 +163,8 @@ impl super::View for View {
 }
 
 impl View {
-    pub fn constructor(path: &Path) -> ViewConstructorFn {
-        let file = match Handle::open(path) {
+    pub fn constructor(path: Path) -> ViewConstructorFn {
+        let file = match Handle::open(path.clone()) {
             Ok(f) => f,
             Err(e) => {
                 // If we encountered an error, log the error and provide an empty file
@@ -195,7 +195,7 @@ impl View {
             Box::new(View {
                 handler: ModeHandler::new(
                     FileExecutor {
-                        buffer: ViewBuffer::new(size, Handle::blank(gen_local_id(), None)),
+                        buffer: ViewBuffer::new(size, Handle::blank(gen_local_id())),
                         params: Params::default(),
                     },
                     NormalMode::default(),

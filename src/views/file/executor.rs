@@ -2,12 +2,12 @@
 
 use super::handle::{Handle, Locator};
 use super::{FileMeta, Params};
+use crate::fs;
 use crate::mode::handler::{Cmd, Executor};
 use crate::mode::{self, CursorStyle, Direction};
 use crate::text::ContentProvider;
 use crate::views::{buffer::ViewBuffer, filetree::View as FileTreeView};
 use crate::views::{ExitKind, MetaCmd, OutputSignal, ViewConstructorFn, ViewKind};
-use std::env;
 
 /// The internal `Executor` that allows handling of mode switching within the main `View`
 pub(super) struct FileExecutor {
@@ -201,18 +201,11 @@ impl FileExecutor {
     fn make_constructor(&self, kind: ViewKind) -> ViewConstructorFn {
         match kind {
             ViewKind::File => match self.buffer.provider().locator() {
-                Locator::Path(p) => super::View::constructor(&p),
+                Locator::Path(p) => super::View::constructor(p.clone()),
                 Locator::Local(_) => super::View::empty_constructor(),
             },
             ViewKind::FileTree => match self.buffer.provider().locator() {
-                Locator::Local(_) => match env::current_dir() {
-                    Ok(path) => FileTreeView::constructor(&path),
-                    Err(e) => {
-                        // TODO: This error message should be directly displayed to the user
-                        log::error!("Failed to open filetree view; unable to get cwd: {}", e);
-                        super::View::empty_constructor()
-                    }
-                },
+                Locator::Local(_) => FileTreeView::constructor(fs::getcwd()),
                 Locator::Path(p) => FileTreeView::constructor(p.parent().unwrap()),
             },
         }

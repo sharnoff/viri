@@ -8,14 +8,13 @@ use crate::config::{DerefChain, DerefMutChain};
 use crate::container;
 use crate::container::Signal;
 use crate::event::KeyCode;
+use crate::fs::{self, Path};
 use crate::mode::handler::{Cmd, Executor};
 use crate::mode::normal::Mode as NormalMode;
 use crate::mode::{self, CursorStyle, Handler as ModeHandler, ModeKind, ModeSet};
 use crate::runtime::Painter;
 use crate::text::{self, ContentProvider, Lines, ReprKind};
 use crate::utils::Never;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub struct View {
@@ -27,11 +26,11 @@ struct FileTreeExecutor {
 }
 
 struct Provider {
-    dirs: Vec<PathBuf>,
-    links: Vec<PathBuf>,
-    files: Vec<PathBuf>,
-    invalids: Vec<PathBuf>,
-    base_path: PathBuf,
+    dirs: Vec<(String, Path)>,
+    links: Vec<(String, Path)>,
+    files: Vec<(String, Path)>,
+    invalids: Vec<(String, Path)>,
+    base_path: Path,
     content: Lines,
 }
 
@@ -50,15 +49,13 @@ impl super::View for View {
 }
 
 impl View {
-    pub fn constructor(path: &Path) -> ViewConstructorFn {
-        let path = path.canonicalize().unwrap_or_else(|_| path.into());
-
+    pub fn constructor(path: Path) -> ViewConstructorFn {
         let mut dirs = Vec::new();
         let mut links = Vec::new();
         let mut files = Vec::new();
         let mut invalids = Vec::new();
 
-        dirs.push(path.parent().unwrap_or(&path).into());
+        dirs.push(("..".into(), path.parent().unwrap_or_else(|| path.clone())));
 
         if let Ok(iter) = fs::read_dir(&path) {
             for entry in iter {
@@ -68,32 +65,33 @@ impl View {
                     Err(_) => continue,
                 };
 
+                let name = entry.file_name().to_string_lossy().into();
                 let path = entry.path();
+
                 match entry.file_type() {
-                    Err(_) => invalids.push(path),
-                    Ok(t) if t.is_dir() => dirs.push(path),
-                    Ok(t) if t.is_symlink() => links.push(path),
+                    Err(_) => invalids.push((name, path)),
+                    Ok(t) if t.is_dir() => dirs.push((name, path)),
+                    Ok(t) if t.is_symlink() => links.push((name, path)),
                     // Otherwise, it's a file
-                    Ok(_) => files.push(path),
+                    Ok(_) => files.push((name, path)),
                 }
             }
         } else {
             // FIXME: Better error handling here
         }
 
-        fn strs(paths: &mut [PathBuf], trailing: Option<&str>) -> String {
-            paths.sort();
+        fn strs(entries: &mut [(String, Path)], trailing: Option<&str>) -> String {
+            entries.sort_by(|(sx, _), (sy, _)| sx.cmp(sy));
 
             let mut s = String::new();
-            for p in paths {
-                s.push_str(
-                    &(p.components().rev().next().unwrap().as_ref() as &Path).to_string_lossy(),
-                );
+            for (name, _) in entries {
+                s.push_str(name);
                 if let Some(t) = trailing {
                     s.push_str(t);
                 }
                 s.push('\n');
             }
+
             s
         }
 
@@ -235,23 +233,23 @@ impl SignalHandler for View {
                         // use this to open that file
                         let constructor = loop {
                             if row < provider.dirs.len() {
-                                break View::constructor(&provider.dirs[row]);
+                                break View::constructor(provider.dirs[row].1.clone());
                             }
                             row -= provider.dirs.len();
 
                             if row < provider.links.len() {
-                                break FileView::constructor(&provider.links[row]);
+                                break FileView::constructor(provider.links[row].1.clone());
                             }
                             row -= provider.links.len();
 
                             if row < provider.files.len() {
-                                break FileView::constructor(&provider.files[row]);
+                                break FileView::constructor(provider.files[row].1.clone());
                             }
                             row -= provider.files.len();
 
                             // TODO: Maybe we shouldn't allow editing of invalid files? This is a
                             // somewhat strange use-case.
-                            break FileView::constructor(&provider.invalids[row]);
+                            break FileView::constructor(provider.invalids[row].1.clone());
                         };
 
                         return Some(vec![Replace(constructor)]);
@@ -323,7 +321,7 @@ impl Executor<MetaCmd<Never>> for FileTreeExecutor {
             Other(Split(d)) => {
                 return Some(vec![Open(
                     d,
-                    View::constructor(&self.buffer.provider().base_path),
+                    View::constructor(self.buffer.provider().base_path.clone()),
                 )]);
             }
             Other(MetaCmd::Open(d, view_kind)) => match view_kind {
@@ -336,7 +334,7 @@ impl Executor<MetaCmd<Never>> for FileTreeExecutor {
                 ViewKind::FileTree => {
                     return Some(vec![Open(
                         d,
-                        View::constructor(&self.buffer.provider().base_path),
+                        View::constructor(self.buffer.provider().base_path.clone()),
                     )])
                 }
             },

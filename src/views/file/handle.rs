@@ -12,16 +12,14 @@
 
 use super::edits::{EditOwner, Edits};
 use super::syntax;
+use crate::fs::{self, Path};
 use crate::lock::{ArcLock, ReadGuard, RwLock, WriteGuard};
 use crate::text::{diff, ContentProvider, Diff, Lines, ReprKind};
 use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::env::current_dir;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::fs;
 use std::io::{self, Write};
 use std::ops::{Deref, DerefMut};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -145,7 +143,7 @@ pub struct HandleId(u64);
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum Locator {
     /// A file's absolute, canonicalized path
-    Path(PathBuf),
+    Path(Path),
 
     /// A "file" that is not attached to any particular filepath
     Local(LocalId),
@@ -229,22 +227,8 @@ pub fn gen_local_id() -> LocalId {
     LocalId(NEXT_LOCAL_ID.fetch_add(1, Ordering::SeqCst))
 }
 
-/// A helper function for making paths canonical and absolute
-///
-/// This is used to standardize all incoming paths so that we can reliably track and synchronize
-/// which files are being loaded
-fn make_absolute<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
-    match path.as_ref().is_absolute() {
-        true => path.as_ref().canonicalize(),
-        false => {
-            let cwd = current_dir()?;
-            cwd.join(path).canonicalize()
-        }
-    }
-}
-
 impl Handle {
-    pub fn blank(id: LocalId, path: Option<&str>) -> Handle {
+    pub fn blank(id: LocalId) -> Handle {
         let locator = Locator::Local(id);
         let handle_id = gen_handle_id();
 
@@ -265,16 +249,10 @@ impl Handle {
         const TABSTOP: usize = 4;
         const REPR_KIND: ReprKind = ReprKind::Utf8;
 
-        let styler = path
-            // Get the exension
-            .and_then(|s| Path::new(s).extension().map(|ext| ext.to_str().unwrap()))
-            // TODO: handle the error more gracefully here than just ".ok()"
-            .and_then(|ext| syntax::styler_callback(ext).ok());
-
         Handle {
             file: ArcLock::new(File {
                 locator,
-                content: Lines::empty(TABSTOP, REPR_KIND, styler),
+                content: Lines::empty(TABSTOP, REPR_KIND, None),
                 n_handles: 1,
                 unsaved: false,
                 edits: Edits::new(),
@@ -287,9 +265,7 @@ impl Handle {
         }
     }
 
-    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Handle> {
-        let path = make_absolute(path)?;
-
+    pub fn open(path: Path) -> io::Result<Handle> {
         // We always create a new id. In the future, we might allow explicit creation of a handle
         // from an Id, but that seems like a very niche use case.
         let id = gen_handle_id();
@@ -449,7 +425,7 @@ impl Handle {
 }
 
 impl File {
-    fn open(path: PathBuf) -> io::Result<File> {
+    fn open(path: Path) -> io::Result<File> {
         let content = fs::read(&path)?;
 
         // These are here for now, until we allow setting them independently via some sort of
@@ -460,7 +436,7 @@ impl File {
 
         let styler = path
             .extension()
-            // TODO: Better error handling here than just ".ok()"
+            // TODO-ERROR: Better error handling here than just ".ok()"
             .and_then(|ext| syntax::styler_callback(ext.to_str()?).ok());
 
         Ok(File {

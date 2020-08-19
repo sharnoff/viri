@@ -1,4 +1,5 @@
 use crate::event::{KeyEvent, MouseEvent};
+use crate::fs::Path;
 use crate::mode::Direction;
 use crate::runtime::{self as rt, Painter, TermSize};
 use crate::utils;
@@ -10,7 +11,6 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::Debug;
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::sync::atomic::Ordering::SeqCst;
 
 pub mod cmd;
@@ -121,10 +121,10 @@ fn initial_view(path: Option<&str>) -> ViewConstructorFn {
         // In the typical case, we'll use the filetree view if the path is a directory and the file
         // view if it isn't (or if the path isn't present).
         Some(p) => {
-            let path = PathBuf::from(p).canonicalize();
-            match path.as_ref().map(|p| p.is_dir()).unwrap_or(false) {
-                true => FileTreeView::constructor(path.unwrap().parent().unwrap()),
-                false => FileView::constructor(&path.unwrap()),
+            let path = Path::from(p);
+            match path.is_dir() {
+                true => FileTreeView::constructor(path),
+                false => FileView::constructor(path),
             }
         }
 

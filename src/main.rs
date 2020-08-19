@@ -1,3 +1,7 @@
+// TODO categories:
+//  * TODO-ERROR: Places where error handling should be improved
+//  * TOOD-ALG: Places where algorithms could be improved for efficiency
+
 #![allow(incomplete_features)]
 #![feature(generic_associated_types)]
 #![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
@@ -12,7 +16,6 @@
 #![allow(unused_parens)]
 #![warn(clippy::perf)]
 #![allow(clippy::style)] // Periodically disable to get other suggestions
-#![allow(clippy::redundant_closure_call)] // https://github.com/rust-lang/rust-clippy/issues/3354
 #![deny(clippy::len_zero)]
 
 extern crate clap;
@@ -28,6 +31,7 @@ mod config;
 mod container;
 
 mod event;
+mod fs;
 mod lock;
 mod logger;
 mod mode;
@@ -37,17 +41,15 @@ mod trie;
 mod utils;
 mod views;
 
-use std::env;
-use std::fs::{self, File};
-use std::path::PathBuf;
-use std::process;
+use container::Container;
+use fs::{File, Path};
+use log::LevelFilter;
+use runtime::Signal;
 
 use clap::App;
-use log::LevelFilter;
 use serde::{Deserialize, Serialize};
-
-use container::Container;
-use runtime::Signal;
+use std::env;
+use std::process;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MainConfig {
@@ -59,20 +61,24 @@ fn main() {
     let clap_yaml = clap::load_yaml!("clap.yml");
     let matches = App::from(clap_yaml).get_matches();
 
-    let (cfg_dir, force_cfg) = match matches.value_of("config") {
-        Some(c) => (Some(PathBuf::from(c)), true),
-        None => {
-            let path = env::var("HOME")
-                .ok()
-                .map(|p| PathBuf::from(p).join(".config/viri"));
-            (path, false)
-        }
-    };
-
     // Run some initializers. `logger` must go first because everything else might attempt to log
     // warnings or errors.
     logger::init();
     views::init();
+    if let Err(e) = fs::init() {
+        eprintln!("Failed to initialize filesystem module: {}", e);
+        return;
+    }
+
+    let (cfg_dir, force_cfg) = match matches.value_of("config") {
+        Some(c) => (Some(Path::from(c)), true),
+        None => {
+            let path = env::var("HOME")
+                .ok()
+                .map(|p| Path::from(p).join(".config/viri"));
+            (path, false)
+        }
+    };
 
     // try to load the config
     let main_config = cfg_dir.clone().and_then(|cfg_dir| {
