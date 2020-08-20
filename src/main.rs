@@ -1,6 +1,6 @@
 // TODO categories:
 //  * TODO-ERROR: Places where error handling should be improved
-//  * TOOD-ALG: Places where algorithms could be improved for efficiency
+//  * TODO-ALG: Places where algorithms could be improved for efficiency
 
 #![allow(incomplete_features)]
 #![feature(generic_associated_types)]

@@ -77,7 +77,9 @@ impl View {
                 }
             }
         } else {
-            // FIXME: Better error handling here
+            // TODO-ERROR: better handling on failure here - maybe changing the name displayed at
+            // the top or bottom of the view oto indicate that the list of entries could not be
+            // successfully read
         }
 
         fn strs(entries: &mut [(String, Path)], trailing: Option<&str>) -> String {

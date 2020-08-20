@@ -272,7 +272,8 @@ impl Handle {
         let locator = Locator::Path(path.clone());
 
         if let Some(file_ref) = REGISTRY.read().get(&locator) {
-            let file = file_ref.clone();
+            let mut file = file_ref.clone();
+            file.write().n_handles += 1;
             let last_diff_id = file.read().last_diff_id;
 
             return Ok(Handle {
