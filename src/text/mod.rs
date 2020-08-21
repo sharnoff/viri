@@ -1217,32 +1217,34 @@ impl InternalLine {
 fn char_display(tabstop: usize, current_width: usize, result: Result<char, u8>) -> CharFormat {
     match result {
         Ok(c) => {
-            if c.width().is_some() {
-                // if c.is_ascii_graphic() || c == ' ' {
-                CharFormat::Normal(c)
-            } else {
-                match c {
-                    '\t' => {
-                        let tab_width = match current_width % tabstop {
-                            0 => tabstop,
-                            w => w,
-                        };
+            if let Some(w) = c.width() {
+                // Some unicode characters are zero-width, and being able to handle those correctly
+                // is (currently) outside the scope of this editor.
+                if w != 0 {
+                    return CharFormat::Normal(c);
+                }
+            }
 
-                        CharFormat::StrLit((&" ").repeat(tab_width))
-                    }
-                    // TODO: Add more support for other characters
-                    _ => {
-                        // If we can't recognize the character, a simple escape
-                        // sequence should suffice for now.
-                        //
-                        // TODO: make displaying this prettier, possibly more
-                        // performant. The default formatter may not be all that
-                        // quick.
-                        let s = format!("{:#x}", c as u32);
-                        // This gets us something like: "0x236a", which we then
-                        // convert to a nice unicode format with:
-                        CharFormat::StrLit(format!("<U+{}>", &s[2..]))
-                    }
+            match c {
+                '\t' => {
+                    let tab_width = match current_width % tabstop {
+                        0 => tabstop,
+                        w => w,
+                    };
+
+                    CharFormat::StrLit((&" ").repeat(tab_width))
+                }
+                // TODO: Add more support for other characters
+                _ => {
+                    // If we can't recognize the character, a simple escape sequence should suffice
+                    // for now.
+                    //
+                    // TODO: make displaying this prettier, possibly more performant. The default
+                    // formatter may not be all that quick.
+                    let s = format!("{:#x}", c as u32);
+                    // This gets us something like: "0x236a", which we then convert to a nice
+                    // unicode format with:
+                    CharFormat::StrLit(format!("<U+{}>", &s[2..]))
                 }
             }
         }
