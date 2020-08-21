@@ -166,8 +166,8 @@ impl CacheInner {
         //
         // 'f' for 'final index'
         let f = lines.len() - 1;
-        if self.byte_indices[f] + lines[f].raw.len() <= byte_idx {
-            //                                       ^^
+        if byte_idx <= self.byte_indices[f] + lines[f].raw.len() {
+            //      ^^
             // We allow the value to be equal to `byte_idx` because we'll sometimes have exclusive
             // ranges going through this function - those need to be valid at the edge.
             Some((f, byte_idx - self.byte_indices[f], false))
