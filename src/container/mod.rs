@@ -4,7 +4,7 @@ use crate::mode::Direction;
 use crate::runtime::{self as rt, Painter, TermSize};
 use crate::utils;
 use crate::views::split::{Horiz, Vert};
-use crate::views::{self, ConcreteView, RefreshKind, ViewConstructorFn, ViewKind};
+use crate::views::{self, ConcreteView, RefreshKind, ViewConstructorFn};
 use crate::views::{file::View as FileView, filetree::View as FileTreeView};
 use crossterm::{cursor, style, QueueableCommand};
 use std::collections::HashMap;
@@ -12,6 +12,9 @@ use std::convert::TryInto;
 use std::fmt::Debug;
 use std::io::{self, Write};
 use std::sync::atomic::Ordering::SeqCst;
+use ansi_term::Color;
+use std::ops::Range;
+use std::iter;
 
 pub mod cmd;
 
@@ -27,21 +30,15 @@ pub mod params;
 /// [`View`]: ../views/trait.View.html
 /// [`handle_rt_event`]: #method.handle_rt_event
 pub struct Container {
-    /// The displayed view. We box it so that any type of view may be used. This value will only
-    /// ever temporarily be `None` - it can be assumed to be `Some(_)` everywhere outside the
-    /// places it is obviously not.
+    /// The displayed view. We box it so that any type of view may be used. This value is an
+    /// `Option` so that we can *temporarily* take ownership through a reference; it can be assumed
+    /// to be `Some` at the start of any method.
     inner: Option<Box<dyn ConcreteView>>,
 
-    /// The current size of the editor
-    ///
-    /// This is updated any `resize` operation
+    /// The current size of the editor, updated by any `resize` operation
     size: TermSize,
 
     /// The current input mode
-    ///
-    /// This is described in more detail in the [section about the type].
-    ///
-    /// [section about the type]: enum.InputMode.html
     input_mode: InputMode,
 
     /// The set of previously used inputs on the bottom bar
@@ -50,6 +47,9 @@ pub struct Container {
     /// stored in the order they were used, so that the last element was the most recent ending
     /// value.
     previous_bottom_bars: HashMap<Option<char>, Vec<String>>,
+
+    /// A screen-blocking pop-up, if present
+    popup: Option<PopUp>,
 }
 
 /// The current input method - either directly to views or through the bottom bar
@@ -89,6 +89,15 @@ pub enum InputMode {
         width: usize,
         cursor_col: Option<usize>,
     },
+}
+
+/// The title, content, and styling for a pop-up dialogue 
+#[derive(Debug, Clone)]
+pub struct PopUp {
+    /// The title string; this should only consist of ascii characters
+    title: String,
+    /// The individual lines of the message, which should also only consist of ascii characters
+    message: Vec<String>,
 }
 
 /// The input signals sent to `View`s
@@ -136,15 +145,6 @@ fn initial_view(path: Option<&str>) -> ViewConstructorFn {
     }
 }
 
-/// Picks which view to initialize the container with
-///
-/// The current implementation always defaults to the file viewer - this can be changed fairly
-/// easily, however.
-fn pick_init_view(args: &[&str]) -> ViewKind {
-    #![allow(unused_variables)]
-    ViewKind::File
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // Utility functions                                                          //
 ////////////////////////////////////////////////////////////////////////////////
@@ -189,6 +189,11 @@ impl Container {
 impl Container {
     /// Refreshes the cursor location, whether that is the bottom bar or in the inner `View`
     fn update_cursor(&mut self) {
+        // If we currently have a popup active, we won't have a visible cursor
+        if self.popup.is_some() {
+            return;
+        }
+
         match self.input_mode {
             InputMode::BottomBar {
                 cursor_col: Some(col),
@@ -267,6 +272,134 @@ impl Container {
                     .unwrap();
             }
         }
+    }
+
+    /// Writes the popup over whatever is currently on-screen
+    fn write_popup(&self) {
+        // The set of characters we use for each corner and edge of the popup.
+        // In the future, this will be customizable.
+        const TOP: char = '-';
+        const TOP_LEFT: char = '+';
+        const LEFT: char = '|';
+        const BOT_LEFT: char = '+';
+        const BOT: char = '-';
+        const BOT_RIGHT: char = '+';
+        const RIGHT: char = '|';
+        const TOP_RIGHT: char = '+';
+
+        // The "ideal" inner width of a popup, if the containiner is big enough to view it.
+        //
+        // This set of dimensions is nice because it causes the total screen dimensions of the
+        // popup (i.e. including borders) to essentially follow the golden ratio.
+        //
+        // In the future, this will be customizable.
+        const TARGET_INNER_WIDTH: usize = 50;
+        const TARGET_INNER_HEIGHT: usize = 30;
+        const EQ_OUTER_WIDTH: usize = 84;
+        const EQ_OUTER_HEIGHT: usize = 52;
+
+        let content = match self.popup.as_ref() {
+            Some(c) => c,
+            None => return,
+        };
+
+        // We subtract two here because of the borders of of the popup
+        let max_inner_body_width = self.size.width.saturating_sub(2) as usize;
+        let max_inner_body_height = self.size.height.saturating_sub(2) as usize;
+
+        // If the window is too small for a popup, we won't display it
+        if max_inner_body_width == 0 || max_inner_body_height == 0 {
+            return;
+        }
+
+        // We'll calculate the inner width now. We're essentially modelling this with an
+        // exponential curve, given by some moderately complex functions. If you're aware of the
+        // ELU activation function for neural networks, we're doing something based on that.
+        //
+        // The functions used here are available from this Desmos link, for you to play with:
+        //   https://www.desmos.com/calculator/59zoenorgy
+        //
+        // Here, 'g' and 's' are the same as they are defined in the Desmos link - 'g' represents
+        // the "goal" size for a given dimension (`TARGET_INNER_{WIDTH,HEIGHT}`), and 's'
+        // represents the outer size at which that should be satisfied (`EQ_OUTER_{WIDTH,HEIGHT}`)
+        //
+        // `current_size` is equivalent to 'x' from the Desmos link.
+        #[inline(always)]
+        fn f(g: usize, s: usize, current_size: usize) -> f64 {
+            if current_size >= s {
+                return g as f64;
+            }
+
+            let c = (s - g) as f64;
+            let (x, g) = (current_size as f64, g as f64);
+
+            x  - c * ((x-g)/c - 1.0).exp()
+        }
+
+        fn h(g: usize, s: usize, current_size: usize) -> f64 {
+            let f0 = f(g, s, 0);
+            let fx = f(g, s, current_size);
+            let g = g as f64;
+
+            (fx - f0) * (g / (g - f0))
+        }
+
+        // And then the actual calculations of the dimensions aren't too complex
+        //
+        // We use `ceil` here because otherwise we could end up rounding down zero
+        let inner_width = h(TARGET_INNER_WIDTH, EQ_OUTER_WIDTH, max_inner_body_width).ceil() as usize;
+        let inner_height = h(TARGET_INNER_HEIGHT, EQ_OUTER_HEIGHT, max_inner_body_height).ceil() as usize;
+        
+        // A kind of catch-all formatting function for each individual line
+        let fmt = |left: char, s: &str, fill: char, right: char| {
+            if s.len() > inner_width {
+                // Directly indexing here is only okay because we're requiring that each line is
+                // ascii
+                return format!("{}{}…{}", left, &s[..inner_width-1], right)
+            }
+
+            let fill: String = iter::repeat(fill).take(inner_width - s.len()).collect();
+            format!("{}{}{}{}", left, s, fill, right)
+        };
+
+        let mut lines: Vec<_> = (content.message.iter())
+            .map(|s| fmt(LEFT, s, ' ', RIGHT))
+            .take(inner_height)
+            .collect();
+
+        if content.message.len() > inner_height {
+            // If there were too many lines to display, we'll replace the last line with '...' to
+            // indicate that this was the case.
+            *lines.last_mut().unwrap() = fmt(LEFT, "…", ' ', RIGHT);
+        }
+
+        // We'll add the top and bottom lines to the 
+        lines.insert(0, fmt(TOP_LEFT, &content.title, TOP, TOP_RIGHT));
+        lines.push(fmt(BOT_LEFT, "", BOT, BOT_RIGHT));
+
+        let outer_height = lines.len().min(inner_height + 2) as u16;
+        let outer_width = (inner_width + 2) as u16;
+
+        let global_painter = Painter::global(self.size);
+        
+        // A helper function to produce a centered range
+        fn center(total: u16, select: u16) -> Range<u16> {
+            let start = (total - select) / 2;
+            let end = start + select;
+
+            start..end
+        }
+
+        // These methods return `None` only if there isn't space to give the widths; we already
+        // know that this isn't the case because we've guaranteed that 
+        let trim_width = global_painter
+            .slice_horizontally(center(self.size.width, outer_width))
+            .unwrap();
+        let painter = trim_width
+            .slice_vertically(center(self.size.height, outer_height))
+            .unwrap();
+
+        painter.print_lines(lines.iter().map(|s| (0..outer_width, s)));
     }
 
     /// The primary interface to the runtime
@@ -364,7 +497,9 @@ impl Container {
             size,
             input_mode,
             previous_bottom_bars: HashMap::new(),
+            popup: None,
         };
+
 
         this.write_bottom_bar();
         this.update_cursor();
@@ -465,6 +600,7 @@ impl Container {
             }
             Full | Inner if local.is_some() => {
                 self.inner_mut().refresh(local.as_mut().unwrap());
+                self.write_popup();
                 self.write_bottom_bar();
                 self.update_cursor();
             }

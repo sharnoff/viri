@@ -341,8 +341,7 @@ impl OutputSignal {
     /// Produces an output signal corresponding to an error with the given message
     ///
     /// If `format` is true, the message will be made red. Otherwise, the formatting will be left
-    /// as is. `width` should give the displayed width of the message - if not given, it will be
-    /// assumed to be equal to `msg.len()`
+    /// as is.
     pub fn error(msg: &str, format: bool) -> OutputSignal {
         let width = UnicodeWidthStr::width(msg);
 
