@@ -7,9 +7,14 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# Local utilities
+viri-macros = { path = "macros" }
+
+# External stuff
 ansi_term = "0.12"
+arc-swap = "0.4"
 backtrace = "0.3"
-clap = { version = "2.33", features = ["yaml"] }
+clap = { version = "3.0.0-beta.2", features = ["yaml"] }
 crossterm = { version = "^0.17.6", features = ["serde"] }
 lazy_static = "1.4"
 libc = "0.2"
@@ -23,6 +28,7 @@ uuid = { version = "0.8", features = ["v4"] }
 # Syntect comes with many things turned on by default - we don't need all of those,
 # so we manually include the few things that we *do* need
 syntect = { version = "4.2.0", features = ["regex-onig", "parsing"] }
+tokio = { version = "0.2", features = ["sync", "fs", "stream", "rt-threaded", "rt-core", "io-util", "io-std"] }
 
 [profile.dev]
 panic = "unwind"

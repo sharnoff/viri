@@ -1,144 +1,220 @@
+//! A rusty editor
+
 // TODO categories:
 //  * TODO-ERROR: Places where error handling should be improved
 //  * TODO-ALG: Places where algorithms could be improved for efficiency
 
+// Feature sets
 #![allow(incomplete_features)]
 #![feature(generic_associated_types)]
-#![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
+#![feature(rustc_attrs)]
 #![feature(const_fn)]
-#![deny(unused_must_use)]
-// #![deny(unused_imports)]
-// #![deny(unused_variables)]
-// #![deny(dead_code)]
-// #![deny(deprecated)]
-#![deny(private_in_public)]
-#![deny(mutable_borrow_reservation_conflict)]
-#![allow(unused_parens)]
-#![warn(clippy::perf)]
-#![allow(clippy::style)] // Periodically disable to get other suggestions
-#![deny(clippy::len_zero)]
+// Other flags:
+#![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
+#![warn(missing_docs, clippy::style, clippy::perf)]
+#![deny(
+    clippy::perf,
+    clippy::len_zero,
+    private_in_public,
+    mutable_borrow_reservation_conflict,
+    unused_must_use
+)]
 
-extern crate clap;
-extern crate crossterm;
-extern crate lazy_static;
-extern crate log;
-extern crate serde;
-extern crate uuid;
+use clap::{Arg, ArgMatches};
+use std::ops::Deref;
+use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[macro_use]
+mod macros;
+
 mod config;
-#[macro_use]
 mod container;
-
 mod event;
 mod fs;
-mod lock;
 mod logger;
-mod mode;
 mod runtime;
-mod text;
-mod trie;
+mod signal;
+mod term;
 mod utils;
-mod views;
+mod view;
 
 use container::Container;
+use macros::initialize;
+
+/// The default configuration file for specifying
+static DEFAULT_CONFIG_FILE_NAME: &str = "viri.yml";
+
 use fs::{File, Path};
-use log::LevelFilter;
-use runtime::Signal;
 
-use clap::App;
-use serde::{Deserialize, Serialize};
-use std::env;
-use std::process;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MainConfig {
-    log_file: Option<String>,
-    log_level: Option<LevelFilter>,
+/// A helper function for initializing modules that you might have written
+///
+/// If you have written any, this is where they should go.
+fn initalize_custom_modules() {
+    initialize! {
+        // your module here
+        mod container;
+        mod view;
+    };
 }
 
 fn main() {
-    let clap_yaml = clap::load_yaml!("clap.yml");
-    let matches = App::from(clap_yaml).get_matches();
+    let mut clap_app = generate_main_clap_app();
+    clap_app = container::add_args(clap_app);
 
-    // Run some initializers. `logger` must go first because everything else might attempt to log
-    // warnings or errors.
-    logger::init();
-    views::init();
-    if let Err(e) = fs::init() {
-        eprintln!("Failed to initialize filesystem module: {}", e);
-        return;
+    let matches = clap_app.get_matches();
+
+    // First, initialize the runtime.
+    //
+    // There's a whole bunch more initialization we'll do later, but that gets deferred to
+    // `continue_main_with_runtime`, which makes the assumption that the runtime has been
+    // initialized.
+    //
+    // We need to keep it separate because initializing the runtime sets a panic hook that won't
+    // display until we explicitly tell it to.
+    initialize! {
+        mod runtime;
     }
 
-    let (cfg_dir, force_cfg) = match matches.value_of("config") {
-        Some(c) => (Some(Path::from(c)), true),
-        None => {
-            let path = env::var("HOME")
-                .ok()
-                .map(|p| Path::from(p).join(".config/viri"));
-            (path, false)
-        }
+    // We'll provide just a little bit of extra information
+    // This has to be an `AtomicBool` because `&mut _` is not unwind-safe
+    let res = std::panic::catch_unwind(|| continue_main_with_runtime(&matches));
+
+    // We try to leave the alternate screen. That will only really fail due to some form of IO
+    // error, which means that there isn't much we can do. Logging something that should be a user
+    // error is really a last resort.
+    if let Err(e) = runtime::block_on(async { term::try_cleanup_terminal().await }) {
+        log::error!("failed to leave alternate screen: {:?}", e);
+    }
+
+    runtime::slow_shutdown();
+
+    if let Err(e) = res {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Continues the process of setting up the application, only once the runtime has been initialized
+///
+/// Ordinarily, this would all be part of the standard main function, but there's certain
+/// distinctions
+fn continue_main_with_runtime(matches: &ArgMatches) {
+    // Because the panic hook has been set, it's now appropriate for us to continue.
+    initialize! {
+        mod logger;
+        mod fs;
+    }
+
+    let cfg_file = matches
+        .value_of("config")
+        .map(|path| Path::from(path).join(DEFAULT_CONFIG_FILE_NAME))
+        .or_else(config::find_default_directory_location);
+
+    // The majority of the rest of this function just serves to enact the various pieces of
+    // configuration information.
+
+    let main_config = config::set_initial_from_file(cfg_file.as_ref());
+    if let Some(file_name) = matches.value_of("log-file") {
+        main_config.log_file.store(Arc::new(Some(file_name.into())));
+    }
+
+    if let Some(level) = matches.value_of("log-level") {
+        main_config
+            .log_level
+            .store(Arc::new(logger::level_filter_from_str(level)));
+    }
+
+    logger::set_level(main_config.log_level.load().deref());
+    if let Some(file_name) = main_config.log_file.load().as_ref() {
+        runtime::block_on(async {
+            let file = match File::create(Path::from(file_name)).await {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!(
+                        "fatal error: failed to open logging file '{}': {}",
+                        file_name, e
+                    );
+                    exit(1);
+                }
+            };
+
+            logger::set_file(file).await;
+        });
+    }
+
+    log::info!("config parsed, logging fully initialized");
+
+    initalize_custom_modules();
+
+    // After setting up all of the configuration, we'll construct the initial view (note:
+    // without displaying it)
+    let container = match Container::new(&matches) {
+        Ok(c) => c,
+        // If we failed to set up the container, we'll just return.
+        Err(()) => return,
     };
 
-    // try to load the config
-    let main_config = cfg_dir.clone().and_then(|cfg_dir| {
-        let cfg_file = cfg_dir.join("viri.yml");
-        let read_result = fs::read_to_string(&cfg_file);
-
-        match read_result {
-            Err(e) => {
-                if force_cfg {
-                    eprintln!(
-                        "Viri: Failed to open, could not read specified config file {:?}: {}",
-                        &cfg_file, e
-                    );
-                    process::exit(1);
-                } else {
-                    None
-                }
-            }
-            Ok(s) => match serde_yaml::from_str(&s) {
-                Err(e) => {
-                    eprintln!("Viri: Failed to parse config file {:?}: {}", &cfg_file, e);
-                    process::exit(1);
-                }
-                Ok(cfg) => Some(cfg),
-            },
-        }
-    });
-
-    // Now we'll try to load view configs
-    if let Some(dir) = cfg_dir.as_ref() {
-        load_configs!(cfg_dir = dir, force = false, mod [views]);
+    if let Err(e) = runtime::block_on(async { term::try_prepare_terminal().await }) {
+        eprintln!("fatal error: failed to prepare terminal: {}", e);
+        exit(1);
     }
 
-    // Get the log file, either from the args or a config file
-    let log_file_opt = matches.value_of("log").or_else(|| {
-        main_config
-            .as_ref()
-            .and_then(|c: &MainConfig| c.log_file.as_ref())
-            .map(|s: &String| s.as_str())
-    });
+    todo!()
+}
 
-    if let Some(log_file) = log_file_opt {
-        // Try to open the file
-        let file = File::create(&log_file).unwrap_or_else(|e| {
-            eprintln!("Viri: Failed to open log file {:?}: {}", log_file, e);
-            process::exit(1);
-        });
-        logger::set_file(file);
-    }
+/// Generates the inital, main arguments for the application
+///
+/// This is used in conjunction with [`container::add_args`] to generate the full `clap`
+/// application.
+#[rustfmt::skip]
+fn generate_main_clap_app() -> clap::App<'static> {
+    clap::App::new("viri")
+        .version("0.1")
+        .author("Max Sharnoff <viri@max.sharnoff.org>")
+        .about("A rusty, re-imagined vi")
+        .arg(Arg::new("config")
+            .long("config")
+            .about("Sets the config file to use")
+            // @req config-file-location v0
+            .long_about(concat!(
+                "Sets the config file to use.\n",
+                "If not given, the default behavior is as follows: We search for the existence",
+                " of a directory '$XDG_CONFIG_HOME/viri', '$HOME/.config/viri', and then",
+                " '$HOME/.viri'. For the first directory $dir that we find, we parse the",
+                " configuration from '$dir/viri.yml'.\n"
+            ))
+            .takes_value(true)
+        )
+        .arg(Arg::new("log-file")
+            .long("log-file")
+            .about("Optionally enables logging to a file")
+            .long_about(concat!(
+                "Optionally enables logging to a file\n",
+            ))
+            .takes_value(true)
+        )
+        .arg(Arg::new("log-level")
+            .long("log-level")
+            .about("Sets the level of log output to provide")
+            .long_about(concat!(
+                "Sets the level of log output to provide.\n",
+                // @req default-log-level v0
+                r#"Defaults to "Warn" - i.e. excluding "Trace", "Debug", and "Info" messages."#,
+                " This can also be provided by the 'log_level' field in the configuration file",
+            ))
+            .requires("log-file")
+            .about("Sets the log level to use")
+            .takes_value(true)
+            .possible_values(&["Off", "Trace", "Debug", "Info", "Warn", "Error"])
+        )
+}
 
-    // Get the log level, either from the args or a config file
-    let log_level_opt = matches
-        .value_of("log-level")
-        .map(logger::level_filter_from_str)
-        .or_else(|| main_config.as_ref().and_then(|c: &MainConfig| c.log_level));
+/*
+use container::Container;
+use runtime::Signal;
 
-    if let Some(log_level) = log_level_opt {
-        logger::set_level(log_level);
-    }
-
+fn main() {
     log::info!("Logging initialized.");
     log::debug!("Starting the runtime.");
 
@@ -182,3 +258,4 @@ fn main() {
         }
     })
 }
+*/

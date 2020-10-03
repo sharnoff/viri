@@ -8,30 +8,72 @@
 //! Many of the types and methods in this module are made public so that they can be easily
 //! examined in the documentation - *NOT* so that they can be used elsewhere. This information will
 //! hopefully provide insight into the inner workings of the editor.
+//
+// One additional thing to note here is that we *intentionally* don't make anything here
+// asynchronous. If we did, it would open up the door to the asynchronous executor atttempting to
+// call itself during a panic, which might blow up in unexpected ways.
 
-use std::collections::HashMap;
-use std::io::Write;
-use std::panic::{self, PanicInfo};
-use std::sync::{Mutex, MutexGuard};
-use std::thread::{self, ThreadId};
-
-// use crate::prelude::*;
+use crate::macros::init;
+use crate::runtime;
 use backtrace::Backtrace;
 use lazy_static::lazy_static;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::io::{stderr, Write};
+use std::panic::{self, PanicInfo};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, ThreadId};
+use tokio::sync::watch::{channel, Receiver, Sender};
+use tokio::sync::Notify;
 
 lazy_static! {
     static ref PANIC_WRITER: PanicWriter = PanicWriter::new();
+
+    /// Notifiers for whether a panic has occured
+    ///
+    /// The boolean value here is only given as true if there was indeed a panic. This is exposed
+    /// through the `panic_listener` function, which just gives a notifier.
+    static ref PANIC_NOTIFIERS: (Sender<bool>, Receiver<bool>) = channel(false);
+}
+
+init! {
+    lazy_static::initialize(&PANIC_WRITER);
+    lazy_static::initialize(&PANIC_NOTIFIERS);
+    panic::set_hook(Box::new(panic_hook));
+}
+
+/// Writes all of of the stored panic messages to STDERR, alongside their backtraces
+pub fn finalize() {
+    PanicWriter::write_all(stderr());
+}
+
+/// Returns a notifier that is triggered whenever a panic has occured
+///
+/// This is intended to be used for elegant shutdown in the case of an unexpected early shutdown.
+pub fn panic_listener() -> Arc<Notify> {
+    let notify = Arc::new(Notify::new());
+    let cloned = notify.clone();
+    let mut rx = PANIC_NOTIFIERS.1.clone();
+
+    runtime::spawn(async move {
+        while let Some(did_panic) = rx.recv().await {
+            if did_panic {
+                notify.notify();
+            }
+        }
+
+        panic!("panic receiver unexpectedly closed");
+    });
+
+    cloned
 }
 
 /// A type to store the output of panicked threads for displaying later
 ///
 /// There is a single static instance of this type to use for writing all of the panic messages to,
-/// in case multiple threads panic. Any exit messages from [`add_exit_msg`] are also stored here.
-///
-/// [`add_exit_msg`]: fn.add_exit_msg.html
+/// in case multiple threads panic.
 pub struct PanicWriter {
     threads: Mutex<HashMap<ThreadId, Vec<u8>>>,
-    exit_msgs: Mutex<Vec<(ThreadId, String)>>,
 }
 
 impl PanicWriter {
@@ -39,7 +81,6 @@ impl PanicWriter {
     pub fn new() -> Self {
         Self {
             threads: Mutex::new(HashMap::new()),
-            exit_msgs: Mutex::new(Vec::new()),
         }
     }
 
@@ -47,13 +88,8 @@ impl PanicWriter {
     ///
     /// This function is usually called to clean up the program. As such, it is not allowed to
     /// panic. If any errors are encountered in the process of writing, they are ignored.
-    pub fn write_all<W: Write>(mut writer: W) {
-        let mut threads = force_lock(&PANIC_WRITER.threads);
-        let mut exit_msgs = force_lock(&PANIC_WRITER.exit_msgs);
-
-        let space_between = !(threads.is_empty() || exit_msgs.is_empty());
-
-        threads
+    fn write_all<W: Write>(mut writer: W) {
+        force_lock(&PANIC_WRITER.threads)
             .drain()
             .map(
                 |(thread_id, panic_str)| match std::str::from_utf8(&panic_str) {
@@ -68,26 +104,7 @@ impl PanicWriter {
             // We can't worry about handling the results, because there isn't another place we
             // could print to - we're already writing to the place where we'd print it them.
             .for_each(drop);
-
-        // Purely for aesthetics: Only create a gap between things if the exit messages are
-        if space_between {
-            // A similar story here: we can't do anything with the result
-            let _ = writeln!(writer);
-        }
-
-        if !exit_msgs.is_empty() {
-            let _ = writeln!(writer, "Exit messages:");
-            exit_msgs
-                .drain(..)
-                .map(|(thread_id, m)| writeln!(writer, "<ThreadId {:?}>: {}", thread_id, m))
-                .for_each(drop);
-        }
     }
-}
-
-/// Adds a message to be displayed after the program exits through a panic or hard exit
-pub fn add_exit_msg<S: Into<String>>(msg: S) {
-    force_lock(&PANIC_WRITER.exit_msgs).push((thread::current().id(), msg.into()));
 }
 
 /// Locks a mutex, ignoring whether it has been poisoned
@@ -96,10 +113,6 @@ fn force_lock<T>(data: &Mutex<T>) -> MutexGuard<T> {
         Ok(g) => g,
         Err(e) => e.into_inner(),
     }
-}
-
-pub fn set_hook() {
-    panic::set_hook(Box::new(panic_hook));
 }
 
 fn panic_hook(info: &PanicInfo<'_>) {
@@ -111,13 +124,6 @@ fn panic_hook(info: &PanicInfo<'_>) {
     // happen* in normal execution
 
     let current_thread = thread::current();
-
-    // If this thread has already panicked, we'll ignore it - double panics shouldn't happen.
-    // TODO: Investigate this. Should we explicitly cater for double panics?
-    let mut panic_writer = force_lock(&PANIC_WRITER.threads);
-    if panic_writer.get(&current_thread.id()).is_some() {
-        return;
-    }
 
     // A comment taken from the standard library default hook:
     // "The current implementation always returns `Some`"
@@ -144,7 +150,19 @@ fn panic_hook(info: &PanicInfo<'_>) {
     );
     let _ = write!(panic_msg, "{:?}", Backtrace::new());
 
-    panic_writer.insert(current_thread.id(), panic_msg);
+    // One thing to note here is that we don't care about panics that occur twice in the same
+    // thread - we're generally expecting tokio to
+    let mut panic_writer = force_lock(&PANIC_WRITER.threads);
+    match panic_writer.entry(current_thread.id()) {
+        Entry::Vacant(e) => drop(e.insert(panic_msg)),
+        Entry::Occupied(mut e) => e.get_mut().extend(panic_msg),
+    }
+    drop(panic_writer);
+
+    // We aren't using this result because:
+    //  (1) It'll never fail, and
+    //  (2) Even if it did, there's nothing we can do about it
+    let _: Result<_, _> = PANIC_NOTIFIERS.0.broadcast(true);
 
     return;
 }
