@@ -1,7 +1,7 @@
 //! Wrapper module around [`MouseEvent`] and [`MouseButton`]
 
 use super::KeyModifiers;
-use crate::utils::{XFrom, XInto};
+use crate::{XFrom, XInto};
 use crossterm::event;
 use serde::{Deserialize, Serialize};
 

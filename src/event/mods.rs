@@ -1,6 +1,6 @@
 //! Wrapper module around [`KeyModifiers`]
 
-use crate::utils::XFrom;
+use crate::XFrom;
 use crossterm::event;
 use serde::{Deserialize, Serialize};
 

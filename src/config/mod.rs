@@ -7,13 +7,25 @@
 //! provided exactly for this purpose.
 
 use crate::fs::{self, Path};
-use crate::macros::config;
+use crate::macros::{config, init};
 use crate::runtime;
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
+use std::any::{self, type_name, TypeId};
 use std::env;
 use std::process::exit;
 use std::sync::Arc;
+
+pub mod attr;
+pub mod named_fn;
+
+pub use attr::{Attribute, GetAttr};
+pub use named_fn::NamedFunction;
+
+init! {
+    mod named_fn;
+    mod attr;
+}
 
 // Define the main, crate-level configuation
 // @def main-config v0
@@ -26,11 +38,13 @@ config! {
     pub struct MainConfig (MainConfigBuilder) {
         #[flatten]
         pub use crate::view::Config as view_config,
+        #[flatten]
+        pub use crate::container::Config as container_config,
 
         // NOTE: This really shouldn't be a string but a `fs::Path`, because then the location
         // given here wouldn't change if we changed our current working directory
-        #[builder(Option<String> => std::convert::identity, Clone::clone)]
-        pub log_file: Option<String> = None,
+        #[builder(Option<String>)]
+        pub log_file: Option<String>,
 
         /// The inital log level to use
         ///
@@ -51,7 +65,7 @@ pub trait Configurable: Sized {
     /// A type from which the config can be constructed
     ///
     /// This is the type that's actually parsed in order to construct the configuration at runtime.
-    type Builder: Default + Serialize + for<'a> Deserialize<'a> + Into<Self>;
+    type Builder: Builder + Into<Self>;
 
     /// Returns a reference to the current global configuration
     ///
@@ -75,10 +89,116 @@ pub trait ChildConfig: Sized {
     /// implemenations of [`Configurable`] given only an impementation of `ChildConfig`.
     ///
     /// For more information, please refer to [`Configurable`]
-    type Builder: Default + Serialize + for<'a> Deserialize<'a> + Into<Self>;
+    type Builder: Builder + Into<Self>;
 
     /// An copied version of [`Configurable::to_builder`] for the same reason as for `Builder`
     fn to_builder(&self) -> Self::Builder;
+}
+
+/// A type that can be deserialized and used to build a [`Configurable`]
+///
+/// This is really a super-trait for a collection of useful traits for serializing and
+/// deserializing. A blanket implementation for all types satisfying the required trait bounds is
+/// provided, so a manual implementation of this trait is almost never necessary.
+pub trait Builder: Default + Serialize + for<'a> Deserialize<'a> {}
+
+impl<T: Default + Serialize + for<'a> Deserialize<'a>> Builder for T {}
+
+/// Types that may be constructed from a [`Builder`]
+///
+/// Requirements for this trait to be implemented typically result from the [`config`] macro, where
+/// the builders associated with a field (either inferred, or through the `#[builder]` attribute)
+/// must implement `FromBuilder`.
+///
+/// The distinction between the methods on this trait and those provided by [`Configurable`] and
+/// [`ChildConfig`] is that these are meant for the individual fields of a config struct, whereas
+/// the two above are intended to be used for the full configurations themselves. This distinction
+/// is perhaps imperfect, but hopefully should rarely come up.
+///
+/// To help explain, let's look at a commented example:
+/// ```
+/// config! {
+///     struct Config (ConfigBuilder) {
+///         // Without any attribute, the builder type for field is `Option<Option<String>>`, and
+///         // so we have the requirement that `Option<String>` implements
+///         //    FromBuilder<Option<Option<String>>>
+///         default_field: Option<String> = None,
+///
+///         // When we just specify the builder, the requirement changes to
+///         //   Option<String>: FromBuilder<Option<String>>
+///         #[builder(Option<String>)]
+///         specified_builder: Option<String> = None,
+///
+///         // And finally, we may also give the conversion functions manually.
+///         //
+///         // Here, there is no bound involving `FromBuilder`, because we just use these functions
+///         // instead. These substitute for `from_builder` and `to_builder`, respectively.
+///         #[builder(Option<String> => std::convert::identity, Clone::clone)]
+///         specified_all: Option<String> = None,
+///     }
+/// }
+/// ```
+///
+/// For more information, please refer to the documentation for the [`config`] macro.
+#[rustc_on_unimplemented(
+    label = "note: if this is from the `config!` macro, functions to convert to/from the builder may be provided manually"
+)]
+pub trait FromBuilder<B: Builder> {
+    /// Constructs the type from a builder
+    fn from_builder(builder: B) -> Self;
+
+    /// Produces the builder from a reference to the type
+    fn to_builder(&self) -> B;
+}
+
+impl<T: Builder + Clone> FromBuilder<T> for T {
+    fn from_builder(builder: T) -> T {
+        builder
+    }
+
+    fn to_builder(&self) -> T {
+        T::clone(self)
+    }
+}
+
+/// The information about a single type
+///
+/// This is essentially a wrapper around [`TypeId`] so that we can additionally produce the name of
+/// the type for error messages.
+///
+/// A `Type` can only be generated by the [`new`](Self::new) method.
+#[derive(Debug, Copy, Clone, Eq)]
+pub struct Type {
+    id: TypeId,
+    name: &'static str,
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Type) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Type {
+    /// Constructs the representation of the concrete type `T`
+    pub fn new<T: any::Any>() -> Self {
+        Type {
+            id: TypeId::of::<T>(),
+            name: type_name::<T>(),
+        }
+    }
+
+    /// Returns the [`TypeId`] associated with the type
+    pub fn id(&self) -> TypeId {
+        self.id
+    }
+
+    /// Returns the name of the type
+    ///
+    /// This exactly gives the output of [`std::any::type_name`].
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
 }
 
 /// Sets the initial main configuration, parsing from the default file in the configuration

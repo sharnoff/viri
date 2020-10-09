@@ -209,9 +209,9 @@ fn process_normal_field(field: Field, ctx: &mut MacroBuilder, errors: &mut Vec<s
         attrs,
         vis,
         ident,
+        _colon: _,
         ty,
-        expr,
-        ..
+        default_value,
     } = field;
 
     let (attrs, mut custom_attrs) = match parse_custom_attrs(attrs, errors) {
@@ -230,8 +230,8 @@ fn process_normal_field(field: Field, ctx: &mut MacroBuilder, errors: &mut Vec<s
         ));
         return;
     } else if custom_attrs.len() == 1 {
-        let (_span, build_ty, from_builder, into_builder) = match custom_attrs.remove(0) {
-            CustomAttr::BuilderType(a, b, c, d) => (a, b, c, d), // Ugh.
+        let (_span, build_ty, maybe_paths) = match custom_attrs.remove(0) {
+            CustomAttr::BuilderType(a, b, c) => (a, b, c), // Ugh.
             CustomAttr::Flatten(span) => {
                 errors.push(syn::Error::new(
                     span,
@@ -241,16 +241,51 @@ fn process_normal_field(field: Field, ctx: &mut MacroBuilder, errors: &mut Vec<s
             }
         };
 
+        if let Some(v) = default_value.as_ref() {
+            errors.push(syn::Error::new(
+                v.expr.span(),
+                "this field does not need a default value since its builder is already provided",
+            ));
+        }
+
         builder_ty = build_ty.to_token_stream();
-        from_builder_expr = quote_spanned! {
-            from_builder.span()=>
-            ArcSwap::new(Arc::new(#from_builder (builder.#ident)))
-        };
-        into_builder_expr = quote_spanned! {
-            into_builder.span()=>
-            #into_builder ( &self.#ident.load() as &#ty )
-        };
+
+        if let Some((from_builder, into_builder)) = maybe_paths {
+            from_builder_expr = quote_spanned! {
+                from_builder.span()=>
+                ArcSwap::new(Arc::new(#from_builder (builder.#ident)))
+            };
+            into_builder_expr = quote_spanned! {
+                into_builder.span()=>
+                #into_builder ( &self.#ident.load() as &#ty )
+            };
+        } else {
+            let as_from_builder = quote_spanned! {
+                build_ty.span()=>
+                <#ty as crate::config::FromBuilder<#build_ty>>
+            };
+
+            from_builder_expr = quote_spanned! {
+                build_ty.span()=>
+                ArcSwap::new(Arc::new(#as_from_builder :: from_builder(builder.#ident)))
+            };
+            into_builder_expr = quote_spanned! {
+                build_ty.span()=>
+                #as_from_builder :: to_builder( &self.#ident.load() as &#ty )
+            };
+        }
     } else {
+        let expr = match default_value {
+            Some(default_value) => default_value.expr,
+            None => {
+                errors.push(syn::Error::new(
+                    ident.span(),
+                    "this field requires a default value; add `= <EXPR>`",
+                ));
+                return;
+            }
+        };
+
         builder_ty = quote_spanned!(ty.span()=> Option<#ty>);
         from_builder_expr = quote_spanned! {
             expr.span()=>
@@ -336,6 +371,10 @@ struct Field {
     ident: Ident,
     _colon: Token![:],
     ty: Type,
+    default_value: Option<DefaultValue>,
+}
+
+struct DefaultValue {
     _eq: Token![=],
     expr: Expr,
 }
@@ -344,7 +383,7 @@ enum CustomAttr {
     Flatten(Span),
     // The span for the attribute, replacement type for the builder, the function to convert from
     // from the builder type to the normal type, and the function to go in the opposite direction.
-    BuilderType(Span, Type, Path, Path),
+    BuilderType(Span, Type, Option<(Path, Path)>),
 }
 
 impl Spanned for CustomAttr {
@@ -461,9 +500,21 @@ impl Field {
             ident: input.parse()?,
             _colon: input.parse()?,
             ty: input.parse()?,
+            default_value: DefaultValue::try_parse(input)?,
+        })
+    }
+}
+
+impl DefaultValue {
+    fn try_parse(input: ParseStream) -> syn::Result<Option<Self>> {
+        if !input.peek(Token![=]) {
+            return Ok(None);
+        }
+
+        Ok(Some(DefaultValue {
             _eq: input.parse()?,
             expr: input.parse()?,
-        })
+        }))
     }
 }
 
@@ -474,6 +525,7 @@ impl CustomAttr {
     // expecting
     fn try_from(attr: Attribute) -> Result<syn::Result<CustomAttr>, Attribute> {
         // We're expecting either of:
+        //   #[builder($TYPE)]
         //   #[builder($TYPE => $PATH, $PATH)]
         // or
         //   #[flatten]
@@ -498,6 +550,10 @@ impl CustomAttr {
         struct BuilderAttr {
             _paren_token: token::Paren,
             ty: Type,
+            tail: Option<BuilderTail>,
+        }
+
+        struct BuilderTail {
             _arrow: Token![=>],
             from_builder: Path,
             _comma: Token![,],
@@ -510,16 +566,29 @@ impl CustomAttr {
                 Ok(BuilderAttr {
                     _paren_token: parenthesized!(paren in input),
                     ty: paren.parse()?,
-                    _arrow: paren.parse()?,
-                    from_builder: paren.parse()?,
-                    _comma: paren.parse()?,
-                    into_builder: paren.parse()?,
+                    tail: BuilderTail::try_parse(&paren)?,
                 })
             }
         }
 
+        impl BuilderTail {
+            fn try_parse(input: ParseStream) -> syn::Result<Option<Self>> {
+                if !input.peek(Token![=>]) {
+                    return Ok(None);
+                }
+
+                Ok(Some(BuilderTail {
+                    _arrow: input.parse()?,
+                    from_builder: input.parse()?,
+                    _comma: input.parse()?,
+                    into_builder: input.parse()?,
+                }))
+            }
+        }
+
         syn::parse2::<BuilderAttr>(tokens).map(move |attr| {
-            CustomAttr::BuilderType(span, attr.ty, attr.from_builder, attr.into_builder)
+            let tail = attr.tail.map(|t| (t.from_builder, t.into_builder));
+            CustomAttr::BuilderType(span, attr.ty, tail)
         })
     }
 

@@ -43,6 +43,29 @@ where
     EXECUTOR.spawn(future)
 }
 
+/// Spawns a set of tasks on the executor, only returning once all of the given futures have
+/// finished.
+///
+/// The returned vector preserves the order of the original futures.
+pub async fn run_all<F>(jobs: impl IntoIterator<Item = F>) -> Vec<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let handles = jobs.into_iter().map(spawn).collect::<Vec<_>>();
+    let mut outputs = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let res = match handle.await {
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            res => res.expect("job never completed"),
+        };
+
+        outputs.push(res);
+    }
+
+    outputs
+}
+
 /// Blocks on the given future, running it to completion
 ///
 /// This is only intended for use inside of `main`, and should not be used inside of synchronous

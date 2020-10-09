@@ -1,7 +1,7 @@
 //! Wrapper module around [`KeyEvent`] and [`KeyCode`]
 
 use super::KeyModifiers;
-use crate::utils::{XFrom, XInto};
+use crate::{XFrom, XInto};
 use crossterm::event;
 use serde::{Deserialize, Serialize};
 

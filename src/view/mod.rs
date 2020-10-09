@@ -11,10 +11,12 @@ init!();
 
 config! {
     pub struct Config (ConfigBuilder) {
-        #[builder(Vec<KeyBinding> => KeyBinding::to_hashes, KeyBinding::from_hashes)]
-        key_bindings: () = (),
+        // #[builder(Vec<KeyBinding> => KeyBinding::to_hashes, KeyBinding::from_hashes)]
+        // key_bindings: () = (),
     }
 }
+
+pub enum ModeKind {}
 
 #[derive(Debug, Copy, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct KeyBinding;

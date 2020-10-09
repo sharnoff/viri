@@ -14,20 +14,21 @@ viri-macros = { path = "macros" }
 ansi_term = "0.12"
 arc-swap = "0.4"
 backtrace = "0.3"
+chrono = "0.4"
 clap = { version = "3.0.0-beta.2", features = ["yaml"] }
-crossterm = { version = "^0.17.6", features = ["serde"] }
+crossterm = { git = "https://github.com/sharnoff/crossterm", branch = "io-results", features = ["serde", "event-stream"] }
+inventory = "0.1"
 lazy_static = "1.4"
 libc = "0.2"
 lock_api = "0.3"
 log = { version = "0.4", features = ["serde"] }
 parking_lot = "0.10"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_yaml = "0.8"
+signal-hook = { version = "0.1.16", features = ["tokio-support"] }
 unicode-width = "0.1.7"
 uuid = { version = "0.8", features = ["v4"] }
-# Syntect comes with many things turned on by default - we don't need all of those,
-# so we manually include the few things that we *do* need
-syntect = { version = "4.2.0", features = ["regex-onig", "parsing"] }
+syntect = { version = "4.2.0", default-features = false, features = ["regex-fancy", "parsing"] }
 tokio = { version = "0.2", features = ["sync", "fs", "stream", "rt-threaded", "rt-core", "io-util", "io-std"] }
 
 [profile.dev]

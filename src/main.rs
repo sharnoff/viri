@@ -6,15 +6,19 @@
 
 // Feature sets
 #![allow(incomplete_features)]
-#![feature(generic_associated_types)]
-#![feature(rustc_attrs)]
-#![feature(const_fn)]
+#![feature(
+    // generic_associated_types,
+    rustc_attrs,
+    const_fn,
+    const_generics,
+)]
 // Other flags:
 #![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
-#![warn(missing_docs, clippy::style, clippy::perf)]
+#![warn(clippy::style, clippy::perf)]
 #![deny(
     clippy::perf,
     clippy::len_zero,
+    clippy::redundant_closure,
     private_in_public,
     mutable_borrow_reservation_conflict,
     unused_must_use
@@ -23,7 +27,6 @@
 use clap::{Arg, ArgMatches};
 use std::ops::Deref;
 use std::process::exit;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[macro_use]
@@ -35,13 +38,16 @@ mod event;
 mod fs;
 mod logger;
 mod runtime;
-mod signal;
+mod size;
 mod term;
 mod utils;
 mod view;
 
 use container::Container;
 use macros::initialize;
+
+pub use size::{TermPos, TermSize};
+pub use utils::{Never, XFrom, XInto};
 
 /// The default configuration file for specifying
 static DEFAULT_CONFIG_FILE_NAME: &str = "viri.yml";
@@ -56,6 +62,7 @@ fn initalize_custom_modules() {
         // your module here
         mod container;
         mod view;
+        mod config;
     };
 }
 
@@ -84,7 +91,7 @@ fn main() {
     // We try to leave the alternate screen. That will only really fail due to some form of IO
     // error, which means that there isn't much we can do. Logging something that should be a user
     // error is really a last resort.
-    if let Err(e) = runtime::block_on(async { term::try_cleanup_terminal().await }) {
+    if let Err(e) = runtime::block_on(async { term::cleanup_terminal().await }) {
         log::error!("failed to leave alternate screen: {:?}", e);
     }
 
@@ -152,15 +159,25 @@ fn continue_main_with_runtime(matches: &ArgMatches) {
     let container = match Container::new(&matches) {
         Ok(c) => c,
         // If we failed to set up the container, we'll just return.
-        Err(()) => return,
+        Err(err_msg) => {
+            eprintln!("{}", err_msg);
+            return;
+        }
     };
 
-    if let Err(e) = runtime::block_on(async { term::try_prepare_terminal().await }) {
+    let event_stream = match container::make_event_stream() {
+        Ok(st) => st,
+        Err(e) => {
+            eprintln!("failed to construct event stream: {}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = runtime::block_on(async { term::prepare_terminal().await }) {
         eprintln!("fatal error: failed to prepare terminal: {}", e);
         exit(1);
     }
-
-    todo!()
+    runtime::block_on(async { container.run_event_loop(event_stream).await });
 }
 
 /// Generates the inital, main arguments for the application
