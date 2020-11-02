@@ -151,14 +151,11 @@ pub use viri_macros::require_initialized;
 /// on [`AttrToken`].
 ///
 /// An overview of how attributes work can be found in the [dedicated submodule]. For the other
-/// attribute-related macros, see [`attrs`](new_attrs) and [`provide_attrs`].
-//                                          ^^^^^^^^^
-// For some reason, rustdoc doesn't treat the reference by the name we re-export as, so we need to
-// go with the original name here. It's strange...
+/// attribute-related macros, see [`attrs`] and [`provide_attrs`].
 ///
-/// [`TypedAttr::Type`]: ../config/attr/trait.TypedAttr.html
-/// [`AttrToken`]: ../config/attr/struct.AttrToken.html
-/// [dedicated submodule]: ../config/attr/index.html
+/// [`TypedAttr::Type`]: crate::config::attr::TypedAttr
+/// [`AttrToken`]: crate::config::attr::AttrToken
+/// [dedicated submodule]: crate::config::attr
 pub use viri_macros::attr_type as AttrType;
 
 /// Defines a new set of attributes
@@ -181,14 +178,14 @@ pub use viri_macros::attr_type as AttrType;
 ///
 /// ```
 ///
-/// That's it - you're done! This attribute can now be used like all others through the [`ProvidesAttr`]
+/// That's it - you're done! This attribute can now be used like all others through the [`GetAttr`]
 /// trait:
 /// ```
 /// let f = Foo::new();
-/// println!("{:?}", f.get_attr::<{MyFoo}>());
+/// println!("{:?}", f.get_attr::<{Attribute::MyFoo}>());
 /// ```
 ///
-/// [`ProvidesAttr`]: ../config/attr/trait.ProvidesAttr.html
+/// [`GetAttr`]: crate::config::attr::GetAttr
 ///
 /// ## Syntax
 ///
@@ -222,29 +219,44 @@ pub use viri_macros::attr_type as AttrType;
 /// ```
 ///
 /// An overview of how attributes work can be found in the [dedicated submodule]. For the other
-/// attribute-related macros, see [`AttrType`](attr_type), and [`provide_attrs`].
-//                                             ^^^^^^^^^
-// For some reason, rustdoc doesn't treat the reference by the name we re-export as, so we need to
-// go with the original name here. It's strange...
+/// attribute-related macros, see [`AttrType`], and [`provide_attrs`].
 ///
-/// [dedicated submodule]: ../config/attr/index.html
+/// [dedicated submodule]: crate::config::attr
 pub use viri_macros::new_attrs as attrs;
 
-/// Creates implementations of [`ProvidesAttr`] on a type for a set of attributes
+/// Registers the implementations for providing the value of attributes for a type
 ///
 /// Typical usage of this macro looks something like:
 /// ```
 /// provide_attrs! {
 ///     MyType => {
-///         FooAttr => Some(self.foo.clone()),
-///         BarAttr => self.maybe_get_bar(),
+///         FooAttr => self.foo.clone(),
+///         BarAttr => self.get_bar(),
 ///     }
 /// }
 /// ```
 ///
-/// The semantics of this macro are a little complex, so we'll start with the syntax.
+/// where each inner right-hand side of the arrow gives the expression to calculate the attribute
+/// on the left-hand side. In other words, if we have:
+/// ```
+/// provide_attrs! {
+///     Foo => {
+///         Bar => self.bar(),
+///     }
+/// }
+/// ```
+/// Then, the following two snippets will be equivalent:
+/// ```
+/// // First version: constructing it manually
+/// let f = Foo::new();
+/// let b = f.bar();
 ///
-/// ## Syntax
+/// // Second version: retrieving the value of the attribute
+/// let f = Foo::new();
+/// let b = f.get_attr::<Attribute::Bar>().unwrap();
+/// ```
+///
+/// ## Syntax and Semantics
 ///
 /// If this macro were written as a declarative macro, its signature might look something like:
 /// ```
@@ -263,13 +275,9 @@ pub use viri_macros::new_attrs as attrs;
 /// * Double implementations for the same type
 ///
 /// An overview of how attributes work can be found in the [dedicated submodule]. For the other
-/// attribute-related macros, see [`attrs`](new_attrs) and [`AttrType`](attr_type).
-//                                          ^^^^^^^^^                   ^^^^^^^^^
-// For some reason, rustdoc doesn't treat the reference by the name we re-export as, so we need to
-// go with the original names here. It's strange...
+/// attribute-related macros, see [`attrs`] and [`AttrType`].
 ///
-/// [`ProvidesAttr`]: ../config/attr/trait.ProvidesAttr.html
-/// [dedicated submodule]: ../config/attr/index.html
+/// [dedicated submodule]: crate::config::attr
 pub use viri_macros::provide_attrs;
 
 /// Allows a function to be used as a [`NamedFunction`]
@@ -294,8 +302,8 @@ pub use viri_macros::provide_attrs;
 /// internally uses async, if the provided function isn't already marked with `async`, the produced
 /// wrapper function will be.
 ///
-/// [`NamedFunction`]: ../config/named_fn/struct.NamedFunction.html
-/// [module-level documentation]: ../config/named_fn/index.html
+/// [`NamedFunction`]: crate::config::named_fn::NamedFunction
+/// [module-level documentation]: crate::config::named_fn
 pub use viri_macros::named;
 
 /// A helper macro for converting a function pointer type to an `async` function type
@@ -306,8 +314,7 @@ pub use viri_macros::named;
 ///
 /// ## Usage
 ///
-/// Sample usage can be found in the definition of
-/// [`AttrFunction`](../config/attr/type.AttrFunction.html):
+/// Sample usage can be found in the definition of [`AttrFunction`]:
 /// ```
 // @req AttrFunction-typedef v0
 /// pub type AttrFunction = async_fn![fn(&dyn Any) -> Box<dyn Any>];
@@ -319,6 +326,8 @@ pub use viri_macros::named;
 ///
 /// Cases with references as input (e.g. `fn(&T) -> S`) also correctly produce a trailing `+ '_` in
 /// the return type to indicate this.
+///
+/// [`AttrFunction`]: crate::config::attr::AttrFunction
 pub use viri_macros::async_fn;
 
 /// Transforms an `async` function inside a trait to a generic, desugared version
@@ -341,6 +350,25 @@ pub use viri_macros::async_fn;
 /// #[async_method]
 /// async fn bar(x: i32) {
 ///     println!("Hello from async! Given: {}", x);
+/// }
+/// ```
+///
+/// ## Troubleshooting - References
+///
+/// This macro is generally *pretty good*, but it isn't perfect. Sometimes you might run into
+/// lifetime mismatch errors that seem like they shouldn't be there. The following code, for
+/// example won't compile (assuming all definitions make sense):
+/// ```
+/// impl Foo {
+///     #[async_method]
+///     fn bar(&self, baz: &Baz) -> bool { ... }
+/// }
+/// ```
+/// Fixing this can be done simply by making the lifetimes explicit:
+/// ```
+/// impl Foo {
+///     #[async_method]
+///     fn bar<'a>(&'a self, baz: &'a Baz) -> bool { ... }
 /// }
 /// ```
 pub use viri_macros::async_method;

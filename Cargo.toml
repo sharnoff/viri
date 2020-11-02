@@ -26,10 +26,12 @@ parking_lot = "0.10"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_yaml = "0.8"
 signal-hook = { version = "0.1.16", features = ["tokio-support"] }
-unicode-width = "0.1.7"
-uuid = { version = "0.8", features = ["v4"] }
+smallstr = "0.2"
 syntect = { version = "4.2.0", default-features = false, features = ["regex-fancy", "parsing"] }
 tokio = { version = "0.2", features = ["sync", "fs", "stream", "rt-threaded", "rt-core", "io-util", "io-std"] }
+unicode-segmentation = "1.6"
+unicode-width = "0.1.7"
+uuid = { version = "0.8", features = ["v4"] }
 
 [profile.dev]
 panic = "unwind"

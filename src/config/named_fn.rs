@@ -1,6 +1,6 @@
 //! Support for (de-)serializable user-defined functions
 //
-// TODO - this module needs a fair amount of documentation to explain how it works
+// TODO-DOC - this module needs a fair amount of documentation to explain how it works
 
 use super::Type;
 use crate::macros::{async_fn, init};

@@ -1,15 +1,17 @@
 use crate::macros::{config, init};
 use crate::term;
-use crate::view::{OutputSignal, View};
+use crate::view::{path_view, splash_view, OutputSignal, View};
 use crate::TermSize;
 use clap::{Arg, ArgMatches};
 use tokio::io;
 use tokio::stream::Stream;
 
 pub mod bottom_bar;
+pub mod paint;
 pub mod signal;
 
 use bottom_bar::BottomBar;
+pub use paint::Painter;
 pub use signal::make_event_stream;
 use signal::Signal;
 
@@ -22,6 +24,7 @@ config! {
     ///
     /// This is mostly just a wrapper type around [`bottom_bar::Config`].
     pub struct Config (ConfigBuilder) {
+        #[flatten]
         pub use bottom_bar::Config as bottom_bar,
     }
 }
@@ -99,10 +102,16 @@ impl Container {
         let size = term::get_size().map_err(|e| format!("failed to get terminal size: {}", e))?;
 
         let bottom_bar = BottomBar::new();
+        let inner_size = size.vertical_trim(bottom_bar.height(size));
 
-        let initial_view = match args.value_of("FILE") {
-            None => todo!(),
-            _ => todo!(),
+        let view_constructor: Box<dyn FnOnce(_) -> Box<dyn View>> = match args.value_of("FILE") {
+            None => Box::new(|size| Box::new(splash_view(size))),
+            Some(file_name) => Box::new(|size| path_view(size)),
+        };
+
+        let initial_view = match inner_size {
+            Some(size) => InnerState::Concrete(view_constructor(size)),
+            None => InnerState::WaitingForNonZeroSize(view_constructor),
         };
 
         Ok(Container {

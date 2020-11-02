@@ -1,6 +1,6 @@
 //! Utilities for handling attributes of objects
 //
-// TODO - this module needs a lot of documentation to explain what's going on
+// TODO-DOC - this module needs a lot of documentation to explain what's going on
 
 use super::Type;
 use crate::macros::{async_fn, async_method, init, AttrType};

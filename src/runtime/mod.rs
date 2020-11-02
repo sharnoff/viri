@@ -75,7 +75,8 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     EXECUTOR.handle().block_on(future)
 }
 
-/// Starts the slow shutdown of the
+/// Starts a slow (normal) shutdown of the runtime
 pub fn slow_shutdown() {
+    // TODO-CORRECTNESS - clear the rest of the runtime stuff?
     panic::finalize();
 }

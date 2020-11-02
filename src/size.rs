@@ -85,6 +85,32 @@ impl TermSize {
     pub fn height(&self) -> u16 {
         self.height.get()
     }
+
+    /// Removes the selected amount from the height of the `TermSize`, returning `None` if there
+    /// would not be any height left over after removing `amount`
+    pub fn vertical_trim(&self, amount: u16) -> Option<TermSize> {
+        Some(TermSize {
+            width: self.width,
+            height: NonZeroU16::new(self.height.get().checked_sub(amount)?)?,
+        })
+    }
+
+    /// Returns whether the given position is contained within a
+    pub fn contains(&self, pos: TermPos) -> bool {
+        // We only need to check the upper bounds because both the position and this size start at
+        // the origin: (0, 0)
+        pos.row < self.height.get() && pos.col < self.width.get()
+    }
+
+    /// Returns whether a region of this size contains the given position, where the containing
+    /// region has been offset from the origin.
+    ///
+    /// This is effectively equivalent to: `self.contains(pos - offset)`.
+    pub fn contains_with_offset(&self, offset: TermPos, pos: TermPos) -> bool {
+        pos.checked_sub(offset)
+            .map(|pos| self.contains(pos))
+            .unwrap_or(false)
+    }
 }
 
 /// A single position in the terminal
@@ -95,6 +121,31 @@ impl TermSize {
 pub struct TermPos {
     pub row: u16,
     pub col: u16,
+}
+
+impl TermPos {
+    /// Analagous to the standard library's `checked_sub` functions, this attempts to subtract each
+    /// dimension of the right-hand side from the left.
+    pub fn checked_sub(self, rhs: TermPos) -> Option<TermPos> {
+        Some(TermPos {
+            row: self.row.checked_sub(rhs.row)?,
+            col: self.col.checked_sub(rhs.col)?,
+        })
+    }
+
+    pub fn add_row(self, inc: u16) -> TermPos {
+        TermPos {
+            row: self.row + inc,
+            col: self.col,
+        }
+    }
+
+    pub fn add_col(self, inc: u16) -> TermPos {
+        TermPos {
+            col: self.col + inc,
+            row: self.row,
+        }
+    }
 }
 
 impl Add for TermPos {

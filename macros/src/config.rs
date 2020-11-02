@@ -39,6 +39,35 @@ pub fn config(input: TokenStream) -> TokenStream {
 
     let mut errors = Vec::new();
 
+    // TODO:
+    // Just as `impl_config` will implement `ChildConfig`, we need to provide each child config type
+    // with an implementation of `Configurable` -- because we're the parent and only we know how to
+    // get the global configuration.
+    let impl_for_children = (struct_body.iter())
+        .filter_map(|field| match field {
+            StructField::Use(use_field) => Some(use_field),
+            StructField::Normal(_) => None,
+        })
+        .map(|use_field| {
+            let path = &use_field.path;
+            let field_ident = &use_field.ident;
+
+            quote! {
+                impl crate::config::Configurable for #path {
+                    type Builder = <Self as crate::config::ChildConfig>::Builder;
+
+                    fn get_global() -> std::sync::Arc<Self> {
+                        <#ident as crate::config::Configurable>::get_global().#field_ident.clone()
+                    }
+
+                    fn to_builder(&self) -> Self::Builder {
+                        <Self as crate::config::ChildConfig>::to_builder(self)
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+
     for field in struct_body {
         process_field(field, &mut macro_builder, &mut errors);
     }
@@ -106,7 +135,7 @@ pub fn config(input: TokenStream) -> TokenStream {
             impl crate::config::Configurable for #ident {
                 type Builder = #builder_name;
 
-                fn get() -> std::sync::Arc<Self> {
+                fn get_global() -> std::sync::Arc<Self> {
                     #static_name.load().as_ref().unwrap().clone()
                 }
 
@@ -127,6 +156,7 @@ pub fn config(input: TokenStream) -> TokenStream {
         #build_struct_item
         #impl_from_builder
         #impl_config
+        #(#impl_for_children)*
     )
     .into()
 }
@@ -178,18 +208,18 @@ fn process_use_field(field: UseField, ctx: &mut MacroBuilder, errors: &mut Vec<s
         builder_ty = quote_spanned!(path.span()=> <#path as crate::config::ChildConfig>::Builder);
         maybe_flattened_attr = quote_spanned!(flatten_span=> #[serde(flatten)]);
         from_builder_expr = quote_spanned!(path.span()=> builder.#ident.into());
-        into_builder_expr = quote_spanned!(path.span()=> self.#ident.to_builder());
+        into_builder_expr = quote_spanned!(path.span()=> <#path as crate::config::ChildConfig>::to_builder(&self.#ident));
     } else {
         builder_ty =
             quote_spanned!(path.span()=> Option<<#path as crate::config::ChildConfig>::Builder>);
         maybe_flattened_attr = TokenStream2::new();
         from_builder_expr = quote_spanned!(path.span()=> builder.#ident.unwrap_or_default().into());
-        into_builder_expr = quote_spanned!(path.span()=> Some(self.#ident.to_builder()));
+        into_builder_expr = quote_spanned!(path.span()=> Some(<#path as crate::config::ChildConfig>::to_builder(&self.#ident)));
     }
 
     let config_ty = quote_spanned!(path.span()=> #path);
     ctx.config_fields.push(quote! {
-        #( #attrs )* #vis #ident: #config_ty
+        #( #attrs )* #vis #ident: std::sync::Arc<#config_ty>
     });
 
     ctx.builder_fields.push(quote!(
@@ -198,7 +228,7 @@ fn process_use_field(field: UseField, ctx: &mut MacroBuilder, errors: &mut Vec<s
     ));
 
     ctx.from_builder_fields
-        .push(quote!(#ident: #from_builder_expr));
+        .push(quote!(#ident: std::sync::Arc::new(#from_builder_expr)));
 
     ctx.to_builder_fields
         .push(quote!(#ident: #into_builder_expr));

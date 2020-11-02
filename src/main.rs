@@ -1,13 +1,18 @@
 //! A rusty editor
 
-// TODO categories:
+// "todo" categories:
 //  * TODO-ERROR: Places where error handling should be improved
 //  * TODO-ALG: Places where algorithms could be improved for efficiency
+//  * TODO-DOC: Places where documentation is desparately needed
+//  * TODO-CORRECTNESS: Where the code might not be correct, but works for now
+//  * TODO-FEATURE: Where a feature should be added
 
 // Feature sets
 #![allow(incomplete_features)]
 #![feature(
     // generic_associated_types,
+    const_type_name, // allows `any::type_name` in a const context
+    const_type_id, // Allows `TypeId::of` in a const context
     rustc_attrs,
     const_fn,
     const_generics,
@@ -49,7 +54,7 @@ use macros::initialize;
 pub use size::{TermPos, TermSize};
 pub use utils::{Never, XFrom, XInto};
 
-/// The default configuration file for specifying
+/// The default name for the configuration file within its directory
 static DEFAULT_CONFIG_FILE_NAME: &str = "viri.yml";
 
 use fs::{File, Path};
