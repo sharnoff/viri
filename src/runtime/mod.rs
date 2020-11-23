@@ -14,9 +14,8 @@ lazy_static! {
     // This is never exposed directly, but can be accessed through the `spawn`
     static ref EXECUTOR: TokioExecutor = {
         // We explicitly build the executor so that we can ensure it's multithreaded
-        ExecutorBuilder::new()
-            .threaded_scheduler()
-            .thread_name("viri-runtime-worker")
+        ExecutorBuilder::new_multi_thread()
+            .thread_name("viri-rt-worker")
             .build()
             .expect("failed to build the core executor")
     };
@@ -72,11 +71,20 @@ where
 /// code anywhere else.
 pub fn block_on<F: Future>(future: F) -> F::Output {
     require_initialized!(self);
-    EXECUTOR.handle().block_on(future)
+    EXECUTOR.block_on(future)
 }
 
 /// Starts a slow (normal) shutdown of the runtime
 pub fn slow_shutdown() {
     // TODO-CORRECTNESS - clear the rest of the runtime stuff?
     panic::finalize();
+}
+
+/// Starts an immediate whole-program, unexpected shutdown
+///
+/// This is typically used in scenarios where we encountered some fatal error that we have no way
+/// to report (e.g. an IO error from writing to `stdout`).
+pub fn unexpected_shutdown() {
+    log::error!("fatal error occured; performing unexpected shutdown");
+    todo!()
 }

@@ -1,5 +1,6 @@
 [package]
 name = "viri"
+# @def viri-version v0.1.0
 version = "0.1.0"
 authors = ["sharnoff <github@max.sharnoff.org>"]
 edition = "2018"
@@ -11,7 +12,8 @@ edition = "2018"
 viri-macros = { path = "macros" }
 
 # External stuff
-ansi_term = "0.12"
+# ansi_term = "0.12"
+ansi_term = { git = "https://github.com/sharnoff/rust-ansi-term", branch = "master" }
 arc-swap = "0.4"
 backtrace = "0.3"
 chrono = "0.4"
@@ -20,15 +22,14 @@ crossterm = { git = "https://github.com/sharnoff/crossterm", branch = "io-result
 inventory = "0.1"
 lazy_static = "1.4"
 libc = "0.2"
-lock_api = "0.3"
 log = { version = "0.4", features = ["serde"] }
-parking_lot = "0.10"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_yaml = "0.8"
-signal-hook = { version = "0.1.16", features = ["tokio-support"] }
+signal-hook = { version = "0.1.16" }
 smallstr = "0.2"
+smallvec = "1.5"
 syntect = { version = "4.2.0", default-features = false, features = ["regex-fancy", "parsing"] }
-tokio = { version = "0.2", features = ["sync", "fs", "stream", "rt-threaded", "rt-core", "io-util", "io-std"] }
+tokio = { version = "0.3", features = ["sync", "fs", "stream", "rt", "rt-multi-thread", "io-util", "io-std"] }
 unicode-segmentation = "1.6"
 unicode-width = "0.1.7"
 uuid = { version = "0.8", features = ["v4"] }

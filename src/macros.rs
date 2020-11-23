@@ -3,9 +3,10 @@
 //! Broadly speaking, there are a few different categories of macros that you may be interested in:
 //!  * [Configuration] - [`config`]
 //!  * Initialization - [`init`], [`initialize`], [`require_initialized`]
-//!  * [Attributes] - [`attrs`], [`provide_attrs`], [`AttrType`]
+//!  * [Attributes] - [`attrs`], [`provide_attrs`], [`AttrType`], [`impl_GetAttrAny`]
 //!  * [Named functions] - [`named`]
 //!  * Async functions - [`async_method`], [`async_fn`]
+//!  * Miscellaneous pieces - [`id`]
 //!
 //! This module works in conjunction with the `viri-macros` crate, which provides some of the
 //! backing procedural macros necessary for this to work. Generally, `viri-macros` is treated as
@@ -280,6 +281,30 @@ pub use viri_macros::new_attrs as attrs;
 /// [dedicated submodule]: crate::config::attr
 pub use viri_macros::provide_attrs;
 
+/// Provides a basic implementation of [`GetAttrAny`](crate::config::GetAttrAny) for a type
+///
+/// This macro is pretty simple - example usage might look like:
+/// ```
+/// struct Foo;
+///
+/// impl_GetAttrAny!(Foo);
+/// ```
+// @def impl_GetAttrAny-syntax v0
+///
+/// Which essentially desugars to:
+/// ```
+/// impl crate::config::GetAttrAny for #ty {
+///     #[async_method]
+///     async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+///         crate::config::attr::get_attr_any(self, attr).await
+///     }
+/// }
+/// ```
+/// For more on attributes, please refer to the [dedicated submodule].
+///
+/// [dedicated submodule]: crate::config::attr
+pub use viri_macros::impl_get_attr_any as impl_GetAttrAny;
+
 /// Allows a function to be used as a [`NamedFunction`]
 ///
 /// ```
@@ -372,3 +397,41 @@ pub use viri_macros::async_fn;
 /// }
 /// ```
 pub use viri_macros::async_method;
+
+/// Convenience macro to produce a newtype'd `usize` for use as a unique identifier
+///
+/// This macro is one with syntax further away from the code that's actually generated. It is still
+/// fairly simple though, so we'll just go through a couple examples:
+///
+/// For our first example, we'll create an id type `Bar` that indexes arrays of `Foo` - the
+/// indexing is optional (as we'll see later), but
+///
+/// ```
+/// use crate::macros::id;
+///
+/// struct Foo;
+///
+/// id!(struct Bar in [Foo]);
+/// ```
+/// produces...
+/// ```
+/// #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// struct Bar(usize);
+///
+/// // Note both Index and IndexMut:
+/// impl std::ops::Index<Bar> for [Foo] { /* -- snip -- */ }
+/// impl std::ops::IndexMut<Bar> for [Foo] { /* -- snip -- */ }
+/// ```
+///
+/// You can actually specify multiple such array types to allow indexing into, by separating them
+/// with commas:
+/// ```
+/// id!(struct Bar in [Foo], [Baz]);
+/// ```
+///
+/// We can also add visibility modifiers:
+///
+/// ```
+/// id![pub(super) struct Bar];
+/// ```
+pub use viri_macros::id;

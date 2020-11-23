@@ -18,13 +18,22 @@ pub(super) enum Component {
     // We need to wrap these in `Arc` in order to create futures that are 'static :(
     // It's unfortunate, because they don't *actually* need to be 'static.
     Attr(Attribute),
+    // type String
+    Str(String),
+    // type String
     Time(TimeFormat),
     IfElse(Box<Component>, Box<Component>, Box<Component>),
+    // type bool
     Not(Box<Component>),
+    // type bool
     Any(Vec<Component>),
+    // type String
     ErrorMessage,
+    // type bool
     HasErrorMessage,
+    // type String
     Input,
+    // type bool
     IsSelected,
 }
 
@@ -32,6 +41,7 @@ pub(super) enum Component {
 pub(super) enum ComponentBuilder {
     Func(NamedFunction, Vec<ComponentBuilder>),
     Attr(Attribute),
+    Str(String),
     Time(TimeFormat),
     IfElse(
         Box<ComponentBuilder>,
@@ -54,7 +64,7 @@ impl Component {
         match self {
             Func(f, _) => f.output_type(),
             Attr(attr) => attr.value_type(),
-            Time(_) | ErrorMessage | Input => Type::new::<String>(),
+            Time(_) | Str(_) | ErrorMessage | Input => Type::new::<String>(),
             Not(_) | Any(_) | HasErrorMessage | IsSelected => Type::new::<bool>(),
             IfElse(_, component, _) => component.output_type(),
             //        ^^^^^^^^^
@@ -79,7 +89,7 @@ impl Component {
     pub async fn evaluate<'a>(&'a self, ctx: &'a Arc<impl Context>) -> Box<dyn Any + Send + Sync> {
         use Component::{
             Any as CAny, Attr, ErrorMessage, Func, HasErrorMessage, IfElse, Input, IsSelected, Not,
-            Time,
+            Str, Time,
         };
 
         match self {
@@ -95,10 +105,15 @@ impl Component {
                 .get_attr_any(*attr)
                 .await
                 .unwrap_or_else(|| attr.default()),
+            Str(s) => Box::new(s.clone()),
             Time(format) => Box::new(format.now()),
             IfElse(cond, if_true, if_false) => match cond.evaluate_as_bool(ctx).await {
                 true => if_true.evaluate(ctx).await,
-                false => if_false.evaluate(ctx).await,
+                false => {
+                    let r = if_false.evaluate(ctx).await;
+                    println!("if_false: {:?}", r.type_id());
+                    r
+                }
             },
             Not(c) => Box::new(!c.evaluate_as_bool(ctx).await),
             CAny(cs) => {
@@ -111,9 +126,9 @@ impl Component {
 
                 Box::new(false)
             }
-            ErrorMessage => Box::new(String::from(ctx.get_error_message())),
+            ErrorMessage => Box::new(ctx.get_error_message().to_owned()),
             HasErrorMessage => Box::new(ctx.has_error_message()),
-            Input => Box::new(String::from(ctx.current_input().unwrap_or(""))),
+            Input => Box::new(ctx.current_input().unwrap_or("").to_owned()),
             IsSelected => Box::new(ctx.current_input().is_some()),
         }
     }
@@ -143,6 +158,7 @@ impl ComponentBuilder {
                 Component::Func(func, args)
             }
             Attr(attr) => Component::Attr(attr),
+            Str(s) => Component::Str(s),
             Time(fmt) => Component::Time(fmt),
             IfElse(cond, if_true, if_false) => {
                 let cond = Box::new(cond.validate()?);
@@ -231,6 +247,7 @@ impl Debug for Component {
                 .field(components)
                 .finish(),
             Attr(attr) => f.debug_tuple("Attr").field(attr).finish(),
+            Str(s) => f.debug_tuple("Str").field(s).finish(),
             Time(time_format) => f.debug_tuple("Time").field(time_format).finish(),
             IfElse(cond, if_true, if_false) => (f.debug_tuple("If"))
                 .field(cond)

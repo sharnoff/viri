@@ -187,6 +187,24 @@ pub fn attr_type(input: TokenStream) -> TokenStream {
     .into()
 }
 
+pub fn impl_get_attr_any(input: TokenStream) -> TokenStream {
+    let ty = parse_macro_input!(input as Type);
+
+    quote_spanned! (
+        ty.span()=>
+        impl crate::config::GetAttrAny for #ty {
+            #[crate::macros::async_method]
+            async fn get_attr_any(
+                &self,
+                attr: crate::config::Attribute
+            ) -> Option<Box<dyn std::any::Any + 'static + Send + Sync>> {
+                crate::config::attr::get_attr_any(self, attr).await
+            }
+        }
+    )
+    .into()
+}
+
 ///////////////////////////
 // Parse Implementations //
 ///////////////////////////

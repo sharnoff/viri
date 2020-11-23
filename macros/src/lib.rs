@@ -9,6 +9,7 @@ use proc_macro::TokenStream;
 mod async_fns;
 mod attr;
 mod config;
+mod id;
 mod init_expr;
 mod named_fn;
 
@@ -32,8 +33,9 @@ macro_rules! macros {
 macros! {
     init_expr::{init, initialize, require_initialized},
     config::config,
-    attr::{new_attrs, provide_attrs, attr_type},
+    attr::{new_attrs, provide_attrs, attr_type, impl_get_attr_any},
     async_fns::async_fn,
+    id::id,
 }
 
 #[proc_macro_attribute]

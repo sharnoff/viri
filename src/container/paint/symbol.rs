@@ -46,6 +46,14 @@ impl Symbol {
         self.0.is_empty()
     }
 
+    /// Returns the inner `Symbol` as a string
+    ///
+    /// Note that this function returns the empty string if and only if the symbol is empty - this
+    /// should only rarely be noteworthy behavior.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
     /// Gives the width of the `Symbol` if corresponds to a wide character
     ///
     /// This method is imperfect. There does not seem to be a standard method (at least available

@@ -6,19 +6,21 @@ use super::{IntoSymbols, Symbol};
 use ansi_term::{Color, Style};
 
 // TODO-DOC
+#[derive(Default, Clone)]
 pub struct StyledContent<Iter: IntoSymbols> {
     pub segments: Vec<StyledString<Iter>>,
 }
 
+#[derive(Default, Clone)]
 pub struct StyledString<Iter: IntoSymbols = String> {
     pub(super) style: Style,
     pub(super) content: Iter,
 }
 
-pub trait Styled {
-    fn fg(self, color: Color) -> StyledString;
-    fn bg(self, color: Color) -> StyledString;
-    fn style(self, style: Style) -> StyledString;
+pub trait Styled<Iter: IntoSymbols = String> {
+    fn fg(self, color: Color) -> StyledString<Iter>;
+    fn bg(self, color: Color) -> StyledString<Iter>;
+    fn style(self, style: Style) -> StyledString<Iter>;
 }
 
 impl<Iter: IntoSymbols> StyledString<Iter> {
@@ -115,20 +117,37 @@ impl<Iter: IntoSymbols> From<StyledString<Iter>> for StyledContent<Iter> {
     }
 }
 
-impl<T: Into<StyledString>> Styled for T {
-    fn fg(self, color: Color) -> StyledString {
+impl<T: IntoSymbols> Styled<T> for StyledString<T> {
+    fn fg(mut self, color: Color) -> Self {
+        self.style.foreground = Some(color);
+        self
+    }
+
+    fn bg(mut self, color: Color) -> Self {
+        self.style.background = Some(color);
+        self
+    }
+
+    fn style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+}
+
+impl<T: IntoSymbols + Into<StyledString<T>>> Styled<T> for T {
+    fn fg(self, color: Color) -> StyledString<T> {
+        let mut s = self.into();
+        s.style.foreground = Some(color);
+        s
+    }
+
+    fn bg(self, color: Color) -> StyledString<T> {
         let mut s = self.into();
         s.style.background = Some(color);
         s
     }
 
-    fn bg(self, color: Color) -> StyledString {
-        let mut s = self.into();
-        s.style.background = Some(color);
-        s
-    }
-
-    fn style(self, style: Style) -> StyledString {
+    fn style(self, style: Style) -> StyledString<T> {
         StyledString {
             style,
             ..self.into()

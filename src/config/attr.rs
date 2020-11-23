@@ -175,15 +175,108 @@ impl AttributeImplementation {
 /// The two methods provided here give both static and dynamic ways of getting the values of
 /// attributes. These are [`get_attr`] and [`get_attr_any`], respectively.
 ///
-/// This trait has a blanket implementation for all `T`, so the standard way to use it is simply
-/// via importing.
+/// While this trait has a blanket implementation for all `T`, its implementation relies on
+/// [`GetAttrAny`], which must be implemented for any type that provides attributes. More
+/// information on implementing [`GetAttrAny`] can be found in its documentation.
+///
+/// It is also important to know that this trait is not object safe because of the generics in
+/// [`get_attr`].
+///
+/// This trait is not object safe because of the generics in [`get_attr`], but the [`GetAttrAny`]
+/// trait is provided to
 ///
 /// For more information about attributes, please refer to the [module-level documentation](self).
 ///
 /// [`get_attr`]: Self::get_attr
-/// [`get_attr_any`]: Self::get_attr_any
-pub trait GetAttr: Sized + Any + 'static + Send + Sync {
+/// [`get_attr_any`]: GetAttrAny::get_attr_any
+pub trait GetAttr: GetAttrAny {
     /// Returns the value of an attribute provided by the given type
+    #[async_method]
+    #[allow(non_upper_case_globals)]
+    async fn get_attr<const Attr: Attribute>(&self) -> Option<AttrType![Attr]>
+    where
+        AttrToken<Attr>: TypedAttr;
+}
+
+/// An object-safe subset of the [`GetAttr`] trait
+///
+/// This trait is the one responsible for the internal implementation, and so must be implemented
+/// manually for all attribute providers. Please note that this is typically just connecting the
+/// component pieces; it must be done manually because a blanket implementation would interfere
+/// with types like `Box<dyn GetAttrAny>` (by using `Box<dyn GetAttrAny>` as the provider instead
+/// of dispatching to the underlying object).
+///
+/// For more information on what this trait does, please refer to [`GetAttr`]
+///
+/// ## Example implementations
+///
+/// All implementations of this trait will fall into one of two categories: either directly
+/// implementing on the type, or dispatching (as would be the case with `Box<dyn GetAttrAny>`).
+/// We'll go through both types as examples.
+///
+/// Those that are implemented directly on the type an be done with the
+/// [`impl_GetAttrAny`](crate::macros::impl_GetAttrAny) macro:
+///
+/// ```
+/// struct Foo;
+///
+/// impl_GetAttrAny!(Foo);
+/// ```
+// @req impl_GetAttrAny-syntax v0
+///
+/// Which really just desugars to:
+///
+/// ```
+/// // Implementing for a concrete type:
+///
+/// use crate::config::{attr, GetAttrAny};
+/// use crate::macros::async_method;
+///
+/// struct Foo;
+///
+/// impl GetAttrAny for Foo {
+///     #[async_method]
+///     async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+///         // The implementation just goes to the provided `get_attr_any` function,
+///         // which does all of the heavy lifting.
+///         attr::get_attr_any(self, attr).await
+///     }
+/// }
+/// ```
+///
+/// ```
+/// // Implementing on a dynamic type:
+///
+/// use crate::config::GetAttrAny;
+/// use std::ops::Deref;
+///
+/// trait Foo: GetAttrAny {}
+///
+/// impl GetAttrAny for Box<dyn Foo> {
+///     #[async_method]
+///     async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+///         (Box::deref(self) as impl GetAttrAny).get_attr_any(attr).await
+///     }
+/// }
+/// ```
+pub trait GetAttrAny {
+    /// Retrieves the value of an attribute provided by this type, if it exists
+    ///
+    /// While this method may look complex, it is actually just a desugared version of:
+    /// ```
+    /// async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> { ... }
+    /// ```
+    /// The returned type is guaranteed to have a [`Type`] equal to [`attr.value_type()`].
+    ///
+    /// For a statically-guaranteed version (where the value of the attribute is known at
+    /// compile-time), refer to [`get_attr`](GetAttr::get_attr).
+    ///
+    /// [`attr.value_type()`]: Attribute::value_type
+    #[async_method]
+    async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>>;
+}
+
+impl<T: GetAttrAny + Send + Sync> GetAttr for T {
     #[async_method]
     #[allow(non_upper_case_globals)]
     async fn get_attr<const Attr: Attribute>(&self) -> Option<AttrType![Attr]>
@@ -196,33 +289,42 @@ pub trait GetAttr: Sized + Any + 'static + Send + Sync {
                 .unwrap_or_else(|_| panic!("unexpected type from `get_attr_any`"))
         })
     }
-
-    /// Retrieves the value of an attribute provided by this type, if it exists
-    ///
-    /// While this method may look complex, it is actually just a desugared version of:
-    /// ```
-    /// async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> { ... }
-    /// ```
-    /// The returned type is guaranteed to have a [`Type`] equal to [`attr.value_type()`].
-    ///
-    /// For a statically-guaranteed version (where the value of the attribute is known at
-    /// compile-time), refer to [`get_attr`](Self::get_attr).
-    ///
-    /// [`attr.value_type()`]: Attribute::value_type
-    #[async_method]
-    async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
-        let guard = REGISTRY.load();
-        let func = guard
-            .as_ref()
-            .expect("`config::attr` has not been initialized")
-            .implementors
-            .get(&(TypeId::of::<Self>(), attr))?;
-
-        Some(func(self).await)
-    }
 }
 
-impl<T: Sized + 'static + Any + Send + Sync> GetAttr for T {}
+/// A helper function for implementing [`GetAttrAny`]
+///
+/// An example for how to use this function to implement [`GetAttrAny`] can be found in the trait's
+/// documentation.
+///
+/// This function is essentially responsible for providing the actual implementation of the
+/// expected behavior, using the values provided by the macros. All method calls to get attributes
+/// ultimately boil down to a call to this function.
+pub async fn get_attr_any<T: Any + Send + Sync>(
+    this: &T,
+    attr: Attribute,
+) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+    let guard = REGISTRY.load();
+    let func = guard
+        .as_ref()
+        .expect("`config::attr` has not been initialized")
+        .implementors
+        .get(&(TypeId::of::<T>(), attr))?;
+
+    Some(func(this).await)
+}
+
+/// A type that successfully provides no attributes
+///
+/// This is ideal for things that are generic over [`GetAttr`] when there might not already be an
+/// item to hand them.
+pub struct Nothing;
+
+impl GetAttrAny for Nothing {
+    #[async_method]
+    async fn get_attr_any(&self, _attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+        None
+    }
+}
 
 /// (*Internal*) An empty type to pass attribute types around using the [`TypedAttr`] trait
 ///

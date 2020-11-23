@@ -3,6 +3,7 @@
 use crate::event::{KeyEvent, MouseEvent};
 use crate::TermSize;
 use crate::XInto;
+use smallvec::{smallvec, SmallVec};
 use std::error;
 use std::fmt::{self, Display, Formatter};
 use tokio::io;
@@ -16,8 +17,13 @@ pub enum Signal {
 }
 
 /// A user input, through the keyboard or the mouse
+///
+/// When multiple keys are provided in very quick succession (e.g. when pasting from the clipboard),
+/// they are collected into a list in the `Keys` enum. This uses a [`SmallVec`] so that the common
+/// case (of just a single key) is handled without too much extra allocation.
+#[derive(Debug)]
 pub enum Input {
-    Key(KeyEvent),
+    Keys(SmallVec<[KeyEvent; 1]>),
     Mouse(MouseEvent),
 }
 
@@ -32,7 +38,7 @@ pub enum Error {}
 /// version would get some subset of all of the signals.
 ///
 /// [`Container::run_event_loop`]: super::Container::run_event_loop
-pub fn make_event_stream() -> Result<impl Stream<Item = io::Result<Signal>>, Error> {
+pub fn make_event_stream() -> Result<impl Stream<Item = Signal>, Error> {
     // use signal_hook::iterator::Signals;
 
     // Create the two streams we want to merge
@@ -47,19 +53,20 @@ pub fn make_event_stream() -> Result<impl Stream<Item = io::Result<Signal>>, Err
 
     let crossterm_events = crossterm::event::EventStream::new();
 
-    Ok(crossterm_events.map(|res| res.map(Signal::from)))
-}
+    use crossterm::event::Event::{Key, Mouse, Resize};
 
-impl From<crossterm::event::Event> for Signal {
-    fn from(event: crossterm::event::Event) -> Signal {
-        use crossterm::event::Event::{Key, Mouse, Resize};
-
-        match event {
-            Key(k_ev) => Signal::Input(Input::Key(k_ev.xinto())),
+    // TODO-ALG: We should have a different method of mapping here, so that we actually produce
+    // multiple keys when they come in quick succession.
+    //
+    // That's moderately complicated though (considering that we're working on streams), so we're
+    // leaving that for later.
+    Ok(crossterm_events.filter_map(|res| {
+        res.ok().map(|event| match event {
+            Key(k_ev) => Signal::Input(Input::Keys(smallvec![k_ev.xinto()])),
             Mouse(m_ev) => Signal::Input(Input::Mouse(m_ev.xinto())),
             Resize(cols, rows) => Signal::Resize(TermSize::new(cols, rows)),
-        }
-    }
+        })
+    }))
 }
 
 impl Display for Error {

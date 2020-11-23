@@ -45,6 +45,7 @@ mod logger;
 mod runtime;
 mod size;
 mod term;
+mod text;
 mod utils;
 mod view;
 
@@ -52,6 +53,7 @@ use container::Container;
 use macros::initialize;
 
 pub use size::{TermPos, TermSize};
+pub use text::{Text, Textual};
 pub use utils::{Never, XFrom, XInto};
 
 /// The default name for the configuration file within its directory
@@ -109,8 +111,8 @@ fn main() {
 
 /// Continues the process of setting up the application, only once the runtime has been initialized
 ///
-/// Ordinarily, this would all be part of the standard main function, but there's certain
-/// distinctions
+/// Ordinarily, this would all be part of the standard main function, but there's certain things
+/// that are required to be run within the context of a successfully initialized runtime.
 fn continue_main_with_runtime(matches: &ArgMatches) {
     // Because the panic hook has been set, it's now appropriate for us to continue.
     initialize! {
@@ -161,7 +163,7 @@ fn continue_main_with_runtime(matches: &ArgMatches) {
 
     // After setting up all of the configuration, we'll construct the initial view (note:
     // without displaying it)
-    let container = match Container::new(&matches) {
+    let container = match runtime::block_on(Container::new(&matches)) {
         Ok(c) => c,
         // If we failed to set up the container, we'll just return.
         Err(err_msg) => {
@@ -192,6 +194,7 @@ fn continue_main_with_runtime(matches: &ArgMatches) {
 #[rustfmt::skip]
 fn generate_main_clap_app() -> clap::App<'static> {
     clap::App::new("viri")
+        // @req viri-version v0.1.0
         .version("0.1")
         .author("Max Sharnoff <viri@max.sharnoff.org>")
         .about("A rusty, re-imagined vi")
@@ -231,53 +234,3 @@ fn generate_main_clap_app() -> clap::App<'static> {
             .possible_values(&["Off", "Trace", "Debug", "Info", "Warn", "Error"])
         )
 }
-
-/*
-use container::Container;
-use runtime::Signal;
-
-fn main() {
-    log::info!("Logging initialized.");
-    log::debug!("Starting the runtime.");
-
-    runtime::run(move || {
-        let size = match runtime::get_size() {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("main: Failed to get the size of the terminal: {}", e);
-                runtime::add_exit_msg(format!(
-                    "main: Failed to get the size of the terminal: {}",
-                    e
-                ));
-                runtime::hard_exit(1)
-            }
-        };
-
-        let args = matches
-            .values_of("ARGS")
-            .map(Iterator::collect::<Vec<_>>)
-            .unwrap_or_else(Vec::new);
-
-        log::debug!(
-            "viri::main - Setting up `Container` with size {:?} and args {:?}",
-            size,
-            args
-        );
-
-        let mut container = Container::init(size, &args);
-
-        log::info!("viri::main - Editor initialized successfully. Starting events loop");
-
-        for event in runtime::EventsLoop {
-            let signal = container.handle_rt_event(event);
-            match signal {
-                Some(Signal::Exit) => {
-                    log::info!("viri::main - Received exit signal from `Container`. Returning");
-                    return;
-                }
-                None => (),
-            }
-        }
-    })
-}
-*/

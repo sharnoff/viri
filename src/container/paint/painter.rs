@@ -11,6 +11,11 @@ use std::num::NonZeroU16;
 use super::*;
 
 /// A handle on the paint buffer
+///
+/// Individual `Painter`s can only be created by the [`painter`] method on [`Buffer`].
+///
+/// [`painter`]: super::Buffer::painter
+/// [`Buffer`]: super::Buffer
 pub struct Painter<'a> {
     base_ptr: *mut Buffer,
     offset: TermPos,
@@ -18,19 +23,30 @@ pub struct Painter<'a> {
     marker: PhantomData<&'a ()>,
 }
 
+// SAFETY:
+// A `Painter` already refers to the correct Buffer; there's no `std::cell::Cell`s used here or
+// anything, so it's perfectly okay for this to be sent to different threads.
+unsafe impl Send for Painter<'_> {}
+
+// SAFETY: The definition of `Sync` includes:
+//
+//     The precise definition is: a type T is Sync if and only if &T is Send. In other words, if
+//     there is no possibility of undefined behavior (including data races) when passing &T
+//     references between threads.
+//
+// Because the only "really" unsafe stuff that `Painter`s do will occur with mutable references,
+// it's perfectly okay for a `&Painter` to be passed around - there's no additional mutable access,
+// nor racey behavior, that can be gained from it
+unsafe impl Sync for Painter<'_> {}
+
 /// A region of a [`Painter`] to extract; used only for the [`split`] method
 ///
-/// This type exists only to be an argument to [`Painter::split`], and so all relevant
+/// This alias exists only to be an argument to [`Painter::split`], and so all relevant
 /// documentation can be found there.
 ///
 /// [`split`]: Painter::split
-#[derive(Debug, Copy, Clone)]
-pub enum Extract {
-    Top(u16),
-    Bottom(u16),
-    Left(u16),
-    Right(u16),
-}
+// @def enum-Extract v0
+pub type Extract = crate::utils::Directional<u16>;
 
 impl<'a> Painter<'a> {
     /// Creates a new `Painter` with access to the entire of the buffer
@@ -174,12 +190,12 @@ impl<'a> Painter<'a> {
                 Ok(new_painter)
             }
 
-            Extract::Bottom(amount) => {
-                let mut new = self.split(Extract::Top(amount))?;
+            Extract::Down(amount) => {
+                let mut new = self.split(Extract::Up(amount))?;
                 std::mem::swap(&mut new, self);
                 Ok(new)
             }
-            Extract::Top(amount) => {
+            Extract::Up(amount) => {
                 // The logic here is largely identical to what's present above, for extracting a
                 // region on the left. Refer there for commentary.
 
@@ -221,7 +237,7 @@ impl<'a> Painter<'a> {
     /// Paints the styled content at a given region
     ///
     /// The position should be within the `Painter`'s allocated region, and will panic if this is
-    /// not the case.
+    /// not the case. Extra content outside of this `Painter`'s region will be cut off.
     pub fn paint_at(&mut self, mut pos: TermPos, content: StyledContent<impl IntoSymbols>) {
         for StyledString { style, content } in content.segments {
             if !self.size.contains(pos) {
@@ -230,9 +246,8 @@ impl<'a> Painter<'a> {
 
             for sym in content.into_symbols() {
                 self.paint_symbol(pos, sym, style);
+                pos.col += 1;
             }
-
-            pos.col += 1;
         }
     }
 
@@ -457,7 +472,7 @@ mod tests {
 
         assert!(!big_left.overlaps(&big_right));
 
-        let mut upper_left = big_left.split(Extract::Top(45)).unwrap();
+        let mut upper_left = big_left.split(Extract::Up(45)).unwrap();
         let lower_left = big_left;
 
         assert!(!upper_left.overlaps(&lower_left));
@@ -473,7 +488,7 @@ mod tests {
         assert!(!upper_outer_left.overlaps(&lower_left));
         assert!(!upper_outer_left.overlaps(&big_right));
 
-        let inner_upper_inner_left = upper_inner_left.split(Extract::Bottom(10)).unwrap();
+        let inner_upper_inner_left = upper_inner_left.split(Extract::Down(10)).unwrap();
         let outer_upper_inner_left = upper_inner_left;
 
         assert!(!inner_upper_inner_left.overlaps(&outer_upper_inner_left));
@@ -503,7 +518,7 @@ mod tests {
     #[should_panic]
     fn zero_top() {
         let mut painter = fake_painter(TermSize::new(10, 10), TermPos { col: 0, row: 0 });
-        let _ = painter.split(Extract::Top(0));
+        let _ = painter.split(Extract::Up(0));
     }
 
     #[test]

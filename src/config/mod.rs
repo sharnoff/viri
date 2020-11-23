@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub mod attr;
 pub mod named_fn;
 
-pub use attr::{Attribute, GetAttr};
+pub use attr::{Attribute, GetAttr, GetAttrAny};
 pub use named_fn::NamedFunction;
 
 init! {

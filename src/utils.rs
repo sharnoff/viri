@@ -126,3 +126,22 @@ impl Debug for OpaqueOption {
         }
     }
 }
+
+/// A generic item pairing a value with a direction
+///
+/// Usage of this type is typically through aliasing, but there are an assortment of methods made
+/// available akin to those on [`Option`].
+///
+// @req enum-Extract v0
+// @req enum-Direction v0
+/// For some of the aliases, see [`Extract`] or [`Direction`].
+///
+/// [`Extract`]: crate::container::paint::Extract
+/// [`Direction`]: crate::view::Direction
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub enum Directional<T> {
+    Up(T),
+    Down(T),
+    Left(T),
+    Right(T),
+}

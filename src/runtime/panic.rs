@@ -56,9 +56,9 @@ pub fn panic_listener() -> Arc<Notify> {
     let mut rx = PANIC_NOTIFIERS.1.clone();
 
     runtime::spawn(async move {
-        while let Some(did_panic) = rx.recv().await {
-            if did_panic {
-                notify.notify();
+        while let Ok(()) = rx.changed().await {
+            if *rx.borrow() {
+                notify.notify_one();
             }
         }
 
@@ -162,7 +162,7 @@ fn panic_hook(info: &PanicInfo<'_>) {
     // We aren't using this result because:
     //  (1) It'll never fail, and
     //  (2) Even if it did, there's nothing we can do about it
-    let _: Result<_, _> = PANIC_NOTIFIERS.0.broadcast(true);
+    let _: Result<_, _> = PANIC_NOTIFIERS.0.send(true);
 
     return;
 }

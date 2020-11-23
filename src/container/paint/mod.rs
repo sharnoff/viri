@@ -13,8 +13,10 @@
 //! [`split`]: Painter::split
 
 use crate::{TermPos, TermSize};
-use ansi_term::Style;
+use ansi_term::{ANSIStrings, Style};
+use std::io::Write;
 use std::marker::PhantomData;
+use tokio::io::{self, AsyncWrite, AsyncWriteExt};
 
 mod painter;
 mod styled;
@@ -52,6 +54,11 @@ impl Buffer {
         Buffer { size, inner }
     }
 
+    /// Returns the size of the buffer
+    pub fn size(&self) -> TermSize {
+        self.size
+    }
+
     /// Creates the global painter with access to the entire buffer
     ///
     /// For more information on using [`Painter`]s, please refer to the documentation there.
@@ -78,6 +85,51 @@ impl Buffer {
         let idx = (this.size.width.get() as usize) * (pos.row as usize) + (pos.col as usize);
 
         &mut this.inner[idx]
+    }
+
+    /// Writes the content of the buffer to the provided writer
+    ///
+    /// This is typically used with [`stdout()`], but may be given something else, for testing.
+    ///
+    /// If this function produces an error, no guarantees are made about the status of the writer
+    /// afterwards.
+    ///
+    /// [`stdout()`]: io::stdout
+    pub async fn draw(&mut self, mut writer: impl AsyncWrite + Unpin) -> io::Result<()> {
+        // TODO-ALG:
+        // This is incredibly naïve at the moment, and ignores most of the benefit of handling
+        // writing from one central place. This should be updated to an intelligent algorithm
+        // -- maybe have a look at what tui-rs does?
+
+        // Store all of our output into a temporary buffer, so that we ensure it outputs quickly
+        let mut buf: Vec<u8> = Vec::new();
+
+        for row_idx in 0..self.size.height() as usize {
+            let start = row_idx * (self.size.width() as usize);
+            let end = start + (self.size.width() as usize);
+
+            Buffer::draw_line(&mut buf, row_idx, &self.inner[start..end]);
+        }
+
+        writer.write(&buf).await?;
+        writer.flush().await?;
+
+        Ok(())
+    }
+
+    fn draw_line(buf: &mut impl Write, row_idx: usize, cells: &[Cell]) {
+        use crossterm::cursor::MoveTo;
+
+        let prefix = MoveTo(0, row_idx as u16);
+
+        let ansi_strings = (cells.iter())
+            .map(|cell| match cell.symbol.as_ref() {
+                Some(s) => cell.style.paint(s.as_str()),
+                None => cell.style.paint(" "),
+            })
+            .collect::<Vec<_>>();
+
+        write!(buf, "{}{}", prefix, ANSIStrings(&ansi_strings)).unwrap();
     }
 }
 

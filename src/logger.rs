@@ -73,13 +73,13 @@ init! {
                     // If there was an error, we'll send a message to anyone who cares that there
                     // was an error from trying to log a message
 
-                    io_tx.broadcast(Some(Arc::new(e)))
+                    io_tx.send(Some(Arc::new(e)))
                         .expect("failed to report logging IO failure from writing");
                 } else {
                     // If we didn't run into an error from writing, we'll try to flush
                     if let Err(e) = file.flush().await {
                         // Same error handling as from earlier
-                        io_tx.broadcast(Some(Arc::new(e)))
+                        io_tx.send(Some(Arc::new(e)))
                             .expect("failed to report logging IO failure from flushing");
                     }
                 }
@@ -153,10 +153,11 @@ pub fn io_errors() -> impl Stream<Item = Arc<IoError>> {
             .expect("logger has not been initialized"),
     );
 
-    let (mut tx, rx) = mpsc::channel(0);
+    let (tx, rx) = mpsc::channel(0);
     crate::runtime::spawn(async move {
-        while let Some(error) = errors_receiver.recv().await {
-            if let Some(e) = error {
+        while let Ok(()) = errors_receiver.changed().await {
+            let cloned: Option<Arc<IoError>> = (*errors_receiver.borrow()).clone();
+            if let Some(e) = cloned {
                 // After passing the value along, if they're no longer using this channel, we can
                 // be done here.
                 if tx.send(e).await.is_err() {
