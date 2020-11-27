@@ -285,8 +285,9 @@ impl Container {
 
         if let Err(e) = res {
             // If there was an error here, we probably should exit
-            log::error!("failed to write output: {}", e);
-            crate::runtime::unexpected_shutdown();
+            let msg = format!("failed to write output: {}", e);
+            log::error!("{}: {}", file!(), msg);
+            panic!("{}", msg);
         }
     }
 

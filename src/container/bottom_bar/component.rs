@@ -109,11 +109,7 @@ impl Component {
             Time(format) => Box::new(format.now()),
             IfElse(cond, if_true, if_false) => match cond.evaluate_as_bool(ctx).await {
                 true => if_true.evaluate(ctx).await,
-                false => {
-                    let r = if_false.evaluate(ctx).await;
-                    println!("if_false: {:?}", r.type_id());
-                    r
-                }
+                false => if_false.evaluate(ctx).await,
             },
             Not(c) => Box::new(!c.evaluate_as_bool(ctx).await),
             CAny(cs) => {

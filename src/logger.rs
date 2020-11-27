@@ -5,6 +5,7 @@
 //!
 //! This module doesn't provide much that can be used during the runtime of the program, instead
 //! merely setting it up to work with the standard logging macros.
+// @def "log is async" v0
 
 use crate::macros::{init, require_initialized};
 use arc_swap::{ArcSwapAny, ArcSwapOption};

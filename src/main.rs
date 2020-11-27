@@ -33,6 +33,8 @@ use clap::{Arg, ArgMatches};
 use std::ops::Deref;
 use std::process::exit;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 #[macro_use]
 mod macros;
@@ -86,7 +88,8 @@ fn main() {
     // initialized.
     //
     // We need to keep it separate because initializing the runtime sets a panic hook that won't
-    // display until we explicitly tell it to.
+    // display until we explicitly tell it to, so we need to isolate any panics to *outside* of
+    // this function.
     initialize! {
         mod runtime;
     }
@@ -98,14 +101,16 @@ fn main() {
     // We try to leave the alternate screen. That will only really fail due to some form of IO
     // error, which means that there isn't much we can do. Logging something that should be a user
     // error is really a last resort.
-    if let Err(e) = runtime::block_on(async { term::cleanup_terminal().await }) {
+    if let Err(e) = term::cleanup_terminal() {
         log::error!("failed to leave alternate screen: {:?}", e);
     }
 
-    runtime::slow_shutdown();
-
-    if let Err(e) = res {
-        std::panic::resume_unwind(e);
+    match res {
+        Ok(()) => runtime::slow_shutdown(),
+        Err(e) => {
+            runtime::unexpected_shutdown();
+            std::panic::resume_unwind(e);
+        }
     }
 }
 
@@ -180,7 +185,7 @@ fn continue_main_with_runtime(matches: &ArgMatches) {
         }
     };
 
-    if let Err(e) = runtime::block_on(async { term::prepare_terminal().await }) {
+    if let Err(e) = term::prepare_terminal() {
         eprintln!("fatal error: failed to prepare terminal: {}", e);
         exit(1);
     }
