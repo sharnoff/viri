@@ -1,3 +1,4 @@
+# Configuration for `reverse`: https://github.com/sharnoff/reverse
 def_match         = '''@def\s*([^\s]+|"[^"]*")\s*(v[\d\.]+)'''
 def_name_group    = 1
 def_version_group = 2
