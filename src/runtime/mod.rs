@@ -108,6 +108,8 @@ init! {
     // ^ really we only need to initialize this one, but it's nice to have redundancy in case of
     // changes.
 
+    lazy_static::initialize(&SHUTDOWN_NOTIFIER);
+
     mod panic;
 }
 
@@ -163,9 +165,21 @@ impl Display for RuntimeAlreadyShutdown {
 
 impl std::error::Error for RuntimeAlreadyShutdown {}
 
-// TODO-DOC
-pub fn shutdown_notifier() -> &'static Notify {
-    todo!()
+/// Returns a [`Notify`] that is triggered when runtime shutdown starts
+///
+/// The reference is returned as an opaque type so that the interface is limited to exactly the
+/// intended use. Exposing the full `&Notify` would allow anyone using this method to call
+/// `shutdown_notifier().notify_waiters()` to falsely indicate that a shudown had started. While
+/// this wouldn't be an issue in practice, limiting the API is a nice way of ensuring it *cannot*
+/// be.
+///
+/// ## Usage
+///
+/// Typical usage of this function will be in an event loop, in combination with a
+/// [`ShutdownWaiter`]. When there's some cleanup you'd like to do before shutting down, joining on
+/// the event stream and `shutdown_notifier`.
+pub fn shutdown_notifier() -> impl Future<Output = ()> {
+    SHUTDOWN_NOTIFIER.notified()
 }
 
 /// The default maximum duration we're willing to wait for things to shut down on their own
@@ -186,10 +200,6 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 // We use a Sender here because a `oneshot::Receiver` will finish blocking once all senders are
 // dropped. The receiver that we wait for is in `Executor.shutdown_rx`
 struct ShutdownWaiter(Arc<oneshot::Sender<()>>);
-
-lazy_static! {
-    static ref WAITERS: () = ();
-}
 
 impl ShutdownWaiter {
     /// Creates a new `ShutdownWaiter`, provided that the runtime has not already started shutting
@@ -276,8 +286,12 @@ pub fn slow_shutdown() {
     // point in the future.
     // @def slow_shutdown v0
 
-    // We take two steps here. First, we shut down the executor itself, followed by writing all
-    // panic messages. Panics are kept for later in case shutdown causes any.
+    // We take three steps here. First, we send out a signal to indicate that we're shutting down.
+    // Then, we do the bulk of the action - shutting down the executor itself. And we finish up by
+    // writing all panic messages that might have occured. We keep the panics for last in case
+    // shutdown causes any.
+
+    SHUTDOWN_NOTIFIER.notify_waiters();
 
     // TODO-CORRECTNESS: This should probably loop if there's other references to the executor -
     // that could happen if people are spawning tasks *right now*.
