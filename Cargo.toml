@@ -29,7 +29,7 @@ signal-hook = { version = "0.1.16" }
 smallstr = "0.2"
 smallvec = "1.5"
 syntect = { version = "4.2.0", default-features = false, features = ["regex-fancy", "parsing"] }
-tokio = { version = "0.3", features = ["sync", "fs", "stream", "rt", "rt-multi-thread", "io-util", "io-std", "time"] }
+tokio = { version = "^0.3.5", features = ["sync", "fs", "stream", "rt", "rt-multi-thread", "io-util", "io-std", "time"] }
 unicode-segmentation = "1.6"
 unicode-width = "0.1.7"
 uuid = { version = "0.8", features = ["v4"] }

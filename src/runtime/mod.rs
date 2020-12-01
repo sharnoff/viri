@@ -313,8 +313,8 @@ pub fn slow_shutdown() {
         eprintln!("Warning: shutting down timed out!");
     }
 
-    // See https://github.com/tokio-rs/tokio/pull/3174
-    exec.exec.shutdown_timeout(Duration::from_nanos(1));
+    // Immediately shutdown the executor
+    exec.exec.shutdown_background();
 
     panic::finalize();
 }
