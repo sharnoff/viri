@@ -1,5 +1,6 @@
 //! Macro(s) for help with configuration
 
+use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, quote_spanned, ToTokens};
@@ -26,6 +27,7 @@ struct MacroBuilder {
     builder_fields: Vec<TokenStream2>,
     from_builder_fields: Vec<TokenStream2>,
     to_builder_fields: Vec<TokenStream2>,
+    validate_calls: Vec<TokenStream2>,
 }
 
 #[rustfmt::skip]
@@ -81,6 +83,7 @@ pub fn config(input: TokenStream) -> TokenStream {
         builder_fields,
         from_builder_fields,
         to_builder_fields,
+        validate_calls,
     } = macro_builder;
 
     let config_struct_item = quote_spanned! {ident.span()=>
@@ -150,12 +153,24 @@ pub fn config(input: TokenStream) -> TokenStream {
             }
         },
     };
+    
+    let impl_validate = quote! {
+        impl #ident {
+            /// Validates the configuration, returning the first error that occurs
+            pub fn validate(&self) -> Result<(), String> {
+                #( #validate_calls?; )*
+
+                Ok(())
+            }
+        }
+    };
 
     quote!(
         #config_struct_item
         #build_struct_item
         #impl_from_builder
         #impl_config
+        #impl_validate
         #(#impl_for_children)*
     )
     .into()
@@ -172,7 +187,7 @@ fn process_use_field(field: UseField, ctx: &mut MacroBuilder, errors: &mut Vec<s
     let UseField {
         attrs,
         vis,
-        path,
+        path: config_ty,
         ident,
         ..
     } = field;
@@ -181,6 +196,23 @@ fn process_use_field(field: UseField, ctx: &mut MacroBuilder, errors: &mut Vec<s
         Ok(tuple) => tuple,
         Err(()) => return,
     };
+
+    ctx.validate_calls
+        .push(quote_spanned!(config_ty.span()=> self.#ident.validate()));
+
+    custom_attrs
+        .drain_filter(|attr| match attr {
+            CustomAttr::ValidateWith(_, _) => true,
+            _ => false,
+        })
+        .filter_map(|attr| match attr {
+            CustomAttr::ValidateWith(span, expr) => Some((span, expr)),
+            _ => None,
+        })
+        .for_each(|(_span, expr)| {
+            ctx.validate_calls
+                .push(quote!((#expr)(&self.#ident as &#config_ty)))
+        });
 
     let builder_ty;
     let maybe_flattened_attr;
@@ -203,21 +235,24 @@ fn process_use_field(field: UseField, ctx: &mut MacroBuilder, errors: &mut Vec<s
                 ));
                 return;
             }
+            // unreachable because we filter them out above:
+            CustomAttr::ValidateWith(_, _) => unreachable!(),
         };
 
-        builder_ty = quote_spanned!(path.span()=> <#path as crate::config::ChildConfig>::Builder);
-        maybe_flattened_attr = quote_spanned!(flatten_span=> #[serde(flatten)]);
-        from_builder_expr = quote_spanned!(path.span()=> builder.#ident.into());
-        into_builder_expr = quote_spanned!(path.span()=> <#path as crate::config::ChildConfig>::to_builder(&self.#ident));
-    } else {
         builder_ty =
-            quote_spanned!(path.span()=> Option<<#path as crate::config::ChildConfig>::Builder>);
+            quote_spanned!(config_ty.span()=> <#config_ty as crate::config::ChildConfig>::Builder);
+        maybe_flattened_attr = quote_spanned!(flatten_span=> #[serde(flatten)]);
+        from_builder_expr = quote_spanned!(config_ty.span()=> builder.#ident.into());
+        into_builder_expr = quote_spanned!(config_ty.span()=> <#config_ty as crate::config::ChildConfig>::to_builder(&self.#ident));
+    } else {
+        builder_ty = quote_spanned!(config_ty.span()=> Option<<#config_ty as crate::config::ChildConfig>::Builder>);
         maybe_flattened_attr = TokenStream2::new();
-        from_builder_expr = quote_spanned!(path.span()=> builder.#ident.unwrap_or_default().into());
-        into_builder_expr = quote_spanned!(path.span()=> Some(<#path as crate::config::ChildConfig>::to_builder(&self.#ident)));
+
+        from_builder_expr =
+            quote_spanned!(config_ty.span()=> builder.#ident.unwrap_or_default().into());
+        into_builder_expr = quote_spanned!(config_ty.span()=> Some(<#config_ty as crate::config::ChildConfig>::to_builder(&self.#ident)));
     }
 
-    let config_ty = quote_spanned!(path.span()=> #path);
     ctx.config_fields.push(quote! {
         #( #attrs )* #vis #ident: std::sync::Arc<#config_ty>
     });
@@ -249,6 +284,20 @@ fn process_normal_field(field: Field, ctx: &mut MacroBuilder, errors: &mut Vec<s
         Err(()) => return,
     };
 
+    custom_attrs
+        .drain_filter(|attr| match attr {
+            CustomAttr::ValidateWith(_, _) => true,
+            _ => false,
+        })
+        .filter_map(|attr| match attr {
+            CustomAttr::ValidateWith(span, expr) => Some((span, expr)),
+            _ => None,
+        })
+        .for_each(|(_span, expr)| {
+            ctx.validate_calls
+                .push(quote_spanned!(expr.span()=> (#expr)(&self.#ident.load() as &#ty)))
+        });
+
     let builder_ty;
     let from_builder_expr;
     let into_builder_expr;
@@ -256,7 +305,7 @@ fn process_normal_field(field: Field, ctx: &mut MacroBuilder, errors: &mut Vec<s
     if custom_attrs.len() > 1 {
         errors.push(syn::Error::new(
             custom_attrs[0].span(),
-            "Cannot have more than one config field attribute",
+            "Cannot have more than one complex config field attribute",
         ));
         return;
     } else if custom_attrs.len() == 1 {
@@ -265,10 +314,12 @@ fn process_normal_field(field: Field, ctx: &mut MacroBuilder, errors: &mut Vec<s
             CustomAttr::Flatten(span) => {
                 errors.push(syn::Error::new(
                     span,
-                    "Deserialization flattening is only permitted for config sub-configurations",
+                    "Deserialization flattening is only permitted for sub-configurations",
                 ));
                 return;
             }
+            // unreachable because we filter them out above:
+            CustomAttr::ValidateWith(_, _) => unreachable!(),
         };
 
         if let Some(v) = default_value.as_ref() {
@@ -414,6 +465,7 @@ enum CustomAttr {
     // The span for the attribute, replacement type for the builder, the function to convert from
     // from the builder type to the normal type, and the function to go in the opposite direction.
     BuilderType(Span, Type, Option<(Path, Path)>),
+    ValidateWith(Span, Expr),
 }
 
 impl Spanned for CustomAttr {
@@ -421,6 +473,7 @@ impl Spanned for CustomAttr {
         match self {
             CustomAttr::Flatten(s) => s.clone(),
             CustomAttr::BuilderType { 0: s, .. } => s.clone(),
+            CustomAttr::ValidateWith(s, _) => s.clone(),
         }
     }
 }
@@ -567,12 +620,11 @@ impl CustomAttr {
             None => return Err(attr),
         };
 
-        if ident == "builder" {
-            Ok(CustomAttr::parse_builder(span, attr.tokens))
-        } else if ident == "flatten" {
-            Ok(CustomAttr::parse_flatten(span, attr.tokens))
-        } else {
-            Err(attr)
+        match ident.to_string().as_str() {
+            "builder" => Ok(CustomAttr::parse_builder(span, attr.tokens)),
+            "flatten" => Ok(CustomAttr::parse_flatten(span, attr.tokens)),
+            "validate_with" => Ok(CustomAttr::parse_validate_with(span, attr.tokens)),
+            _ => Err(attr),
         }
     }
 
@@ -632,5 +684,17 @@ impl CustomAttr {
         }
 
         syn::parse2(tokens).map(move |Empty| CustomAttr::Flatten(span))
+    }
+
+    fn parse_validate_with(span: Span, tokens: TokenStream2) -> syn::Result<Self> {
+        #[derive(Parse)]
+        struct ValidateWith {
+            #[paren]
+            _paren_token: token::Paren,
+            #[inside(_paren_token)]
+            func: Expr,
+        }
+
+        syn::parse2::<ValidateWith>(tokens).map(move |val| CustomAttr::ValidateWith(span, val.func))
     }
 }

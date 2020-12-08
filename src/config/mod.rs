@@ -13,7 +13,6 @@ use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use std::any::{self, type_name, TypeId};
 use std::env;
-use std::process::exit;
 use std::sync::Arc;
 
 pub mod attr;
@@ -28,7 +27,7 @@ init! {
 }
 
 // Define the main, crate-level configuation
-// @def main-config v0
+// @def main-config v1
 config! {
     static ROOT_CONFIG;
 
@@ -44,6 +43,10 @@ config! {
         // NOTE: This really shouldn't be a string but a `fs::Path`, because then the location
         // given here wouldn't change if we changed our current working directory
         #[builder(Option<String>)]
+        #[validate_with(|s: &Option<String>| match s.as_ref().map(|s| s.as_str()) {
+            Some("") => Err("`log_file` path must be non-empty"),
+            _ => Ok(()),
+        })]
         pub log_file: Option<String>,
 
         /// The inital log level to use
@@ -206,36 +209,38 @@ impl Type {
 ///
 /// This function can only be run once, at program initialization. As such, it's only called from
 /// within `main`.
-pub fn set_initial_from_file(cfg_file: Option<&Path>) -> Arc<MainConfig> {
+pub fn set_initial_from_file(cfg_file: Option<&Path>) -> Result<Arc<MainConfig>, String> {
     if ROOT_CONFIG.load().is_some() {
         panic!(
             "cannot set initial configuration, `main_config` module has already been initialized"
         );
     }
 
-    let builder: MainConfigBuilder = runtime::block_on(async {
-        #[rustfmt::skip]
-        let cfg = (fs::read_to_string(cfg_file.as_ref()?).await)
-            .map(|s| serde_yaml::from_str(&s))
-            // Unwrap an IO error
-            .unwrap_or_else(|e| {
-                eprintln!("fatal error: failed to read config file {:?}: {}", cfg_file, e);
-                exit(1);
-            })
-            // Unwrap a serialization error
-            .unwrap_or_else(|e| {
-                eprintln!("fatal error: failed to parse config file {:?}: {}", cfg_file, e);
-                exit(1);
-            });
+    let builder: MainConfigBuilder = match cfg_file.as_ref() {
+        None => Default::default(),
+        Some(file_path) => {
+            #[rustfmt::skip]
+            let builder = runtime::block_on(async { fs::read_to_string(file_path).await })
+                .map(|s| serde_yaml::from_str(&s))
+                // Handle an IO error
+                .map_err(|e| {
+                    format!("fatal error: failed to read config file {:?}: {}", cfg_file, e)
+                })?
+                // Handle a serialization error
+                .map_err(|e| {
+                    format!("fatal error: failed to parse config file {:?}: {}", cfg_file, e)
+                })?;
 
-        Some(cfg)
-    })
-    .unwrap_or_default();
+            builder
+        }
+    };
 
     let arc: Arc<MainConfig> = Arc::new(builder.into());
+    arc.validate()
+        .map_err(|e| format!("invalid configuration: {}", e))?;
     ROOT_CONFIG.store(Some(arc.clone()));
 
-    arc
+    Ok(arc)
 }
 
 /// Attempts to find a directory containing configuration information, checking the standard

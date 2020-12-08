@@ -4,6 +4,8 @@
 //! `viri::macros` is subdivided. In order to comply with the compiler's (perhaps strange rules),
 //! we then have wrapper functions in the crate root for each of those.
 
+#![feature(drain_filter)]
+
 use proc_macro::TokenStream;
 
 mod async_fns;

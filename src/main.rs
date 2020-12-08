@@ -33,8 +33,6 @@ use clap::{Arg, ArgMatches};
 use std::ops::Deref;
 use std::process::exit;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 #[macro_use]
 mod macros;
@@ -43,6 +41,7 @@ mod config;
 mod container;
 mod event;
 mod fs;
+mod keys;
 mod logger;
 mod runtime;
 mod size;
@@ -133,7 +132,14 @@ fn continue_main_with_runtime(matches: &ArgMatches) {
     // The majority of the rest of this function just serves to enact the various pieces of
     // configuration information.
 
-    let main_config = config::set_initial_from_file(cfg_file.as_ref());
+    let main_config = match config::set_initial_from_file(cfg_file.as_ref()) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("{}", e);
+            exit(1);
+        }
+    };
+
     if let Some(file_name) = matches.value_of("log-file") {
         main_config.log_file.store(Arc::new(Some(file_name.into())));
     }

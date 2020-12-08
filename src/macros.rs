@@ -26,7 +26,7 @@
 /// ## Example
 ///
 /// The typical usage that we might expect can be found in [`crate::config`]:
-// @req main-config v0
+// @req main-config v1
 /// ```
 /// config! {
 ///     // Define the name of the static item storing the configuration
@@ -55,6 +55,14 @@
 ///         // Additionally, because we're manually specifying the builder, we don't need to give a
 ///         // default value - that's taken from the implementation of `Default` for the builder.
 ///         // This is all given by the `FromBuilder` trait.
+///         #[validate_with(|s: &Option<String>| match s.as_ref().map(|s| s.as_str()) {
+///             Some("") => Err("`log_file` path must be non-empty"),
+///             _ => Ok(()),
+///         })]
+///         // We can *also* have field validation! Validation is done with functions that return a
+///         // `Result<(), String>`, but can be specified with expressions, as is shown here.
+///         // Validation isn't just restricted to fields - we could have used it for the
+///         // sub-configs we included above.
 ///         pub log_file: Option<String>,
 ///         pub log_level: LevelFilter = LevelFilter::Warn,
 ///     }

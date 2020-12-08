@@ -207,8 +207,9 @@ dependencies = [
 
 [[package]]
 name = "derive-syn-parse"
-version = "0.1.2"
-source = "git+https://github.com/sharnoff/derive-syn-parse#6121c19021cad619587d12de17ea06aa0cc621ae"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "018329dce5ab44ca780b5a12cc3c4ece568c455677b764ccda660ceab8c67775"
 dependencies = [
  "proc-macro2",
  "quote",
