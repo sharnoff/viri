@@ -18,7 +18,6 @@
 use crate::macros::init;
 use backtrace::Backtrace;
 use lazy_static::lazy_static;
-use std::collections::HashMap;
 use std::io::{stderr, Write};
 use std::panic::{self, PanicInfo};
 use std::sync::{Mutex, MutexGuard};

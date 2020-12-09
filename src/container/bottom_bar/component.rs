@@ -1,7 +1,7 @@
 //! Individual components that can be displayed inside the bottom bar
 
 use super::{Context, TimeFormat};
-use crate::config::{Attribute, GetAttr, NamedFunction, Type};
+use crate::config::{Attribute, NamedFunction, Type};
 use crate::macros::async_method;
 use crate::runtime;
 use serde::{Deserialize, Serialize};

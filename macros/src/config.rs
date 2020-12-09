@@ -201,10 +201,7 @@ fn process_use_field(field: UseField, ctx: &mut MacroBuilder, errors: &mut Vec<s
         .push(quote_spanned!(config_ty.span()=> self.#ident.validate()));
 
     custom_attrs
-        .drain_filter(|attr| match attr {
-            CustomAttr::ValidateWith(_, _) => true,
-            _ => false,
-        })
+        .drain_filter(|attr| matches!(attr, CustomAttr::ValidateWith(_, _)))
         .filter_map(|attr| match attr {
             CustomAttr::ValidateWith(span, expr) => Some((span, expr)),
             _ => None,
@@ -285,10 +282,7 @@ fn process_normal_field(field: Field, ctx: &mut MacroBuilder, errors: &mut Vec<s
     };
 
     custom_attrs
-        .drain_filter(|attr| match attr {
-            CustomAttr::ValidateWith(_, _) => true,
-            _ => false,
-        })
+        .drain_filter(|attr| matches!(attr, CustomAttr::ValidateWith(_, _)))
         .filter_map(|attr| match attr {
             CustomAttr::ValidateWith(span, expr) => Some((span, expr)),
             _ => None,

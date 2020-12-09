@@ -3,7 +3,6 @@
 use super::KeyModifiers;
 use crate::{XFrom, XInto};
 use crossterm::event;
-use serde::{Deserialize, Serialize};
 
 /// A re-export of crossterm's `MouseButton`
 pub use crossterm::event::MouseButton;

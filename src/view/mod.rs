@@ -5,13 +5,12 @@
 //! This module only provides the facilities for interaction *between* [`View`]s; the entrypoint
 //! for handling the tree of `View`s is taken care of by the [`container`](crate::container) module.
 
-use crate::config::{attr, Attribute, GetAttrAny};
+use crate::config::{Attribute, GetAttrAny};
 use crate::container::{Input, Painter, Refresh};
 use crate::macros::{async_method, config, impl_GetAttrAny, init};
 use crate::{TermPos, TermSize, Textual};
 use std::any::Any;
 use std::ops::Deref;
-use tokio::io;
 
 mod file;
 mod splash;

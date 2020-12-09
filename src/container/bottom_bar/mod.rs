@@ -7,7 +7,6 @@ use crate::text::Cursor;
 use crate::{TermPos, TermSize, Text, Textual};
 use std::any::Any;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 mod component;
 mod layout;

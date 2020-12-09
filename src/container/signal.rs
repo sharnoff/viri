@@ -6,7 +6,6 @@ use crate::XInto;
 use smallvec::{smallvec, SmallVec};
 use std::error;
 use std::fmt::{self, Display, Formatter};
-use tokio::io;
 use tokio::stream::{Stream, StreamExt};
 
 /// A single singal provided to the container

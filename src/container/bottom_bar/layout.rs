@@ -24,7 +24,7 @@ pub(super) struct Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        use Component::{ErrorMessage, HasErrorMessage, IfElse, Input, Str};
+        use Component::{ErrorMessage, HasErrorMessage, IfElse, Input};
 
         let left = vec![IfElse(
             Box::new(HasErrorMessage),
