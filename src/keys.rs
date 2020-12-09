@@ -48,9 +48,6 @@ use std::marker::PhantomData;
 #[derive(Deserialize, Serialize)]
 #[serde(try_from = "UncheckedKeybindingSet")]
 pub struct KeybindingSet<T: Any> {
-    // TODO-FEATURE: We should be allowed to name components, e.g. 'Numerical' for numbers - so
-    // that we can reuse components in the full system. That's a little complicated though, and not
-    // *strictly* necessary right now
     #[serde(skip)]
     keys: AnnotatedComponent,
     #[serde(flatten)]
