@@ -272,7 +272,6 @@ where
 /// This is only intended for use inside of `main`, and should not be used inside of synchronous
 /// code anywhere else.
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    require_initialized!(self);
     EXECUTOR.load().as_ref().unwrap().exec.block_on(future)
 }
 

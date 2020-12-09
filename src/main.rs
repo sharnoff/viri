@@ -6,6 +6,7 @@
 //  * TODO-DOC: Places where documentation is desparately needed
 //  * TODO-CORRECTNESS: Where the code might not be correct, but works for now
 //  * TODO-FEATURE: Where a feature should be added
+//  * TODO-CLEAN: Where the code is a little messy, could probably be improved
 
 // Feature sets
 #![allow(incomplete_features)]
