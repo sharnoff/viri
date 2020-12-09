@@ -5,13 +5,27 @@
 //! submodule).
 
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, FnArg, Ident, ItemFn, LitStr, Pat, PatType, ReturnType, Signature};
+use syn::{FnArg, Ident, ItemFn, LitStr, Pat, PatType, ReturnType, Signature};
+
+macro_rules! parse_macro_input2 {
+    ($tokenstream:ident as $ty:ty) => {{
+        match syn::parse2::<$ty>($tokenstream) {
+            Ok(v) => v,
+            Err(err) => return err.to_compile_error(),
+        }
+    }};
+}
 
 pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let name = parse_macro_input!(attr as LitStr);
-    let func = parse_macro_input!(item as ItemFn);
+    named2(attr.into(), item.into()).into()
+}
+
+fn named2(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
+    let name = parse_macro_input2!(attr as LitStr);
+    let func = parse_macro_input2!(item as ItemFn);
 
     if let Err(e) = check_signature(&func.sig) {
         let err = e.to_compile_error();
@@ -26,6 +40,7 @@ pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut convert_wrapper_args = Vec::new();
     let mut input_type_ids = Vec::new();
     let mut passthrough_args = Vec::new();
+    let mut downcast_args = Vec::new();
 
     let required_num_args = func.sig.inputs.len();
 
@@ -50,6 +65,10 @@ pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
             crate::config::Type::new::<#ty>()
         });
         passthrough_args.push(quote!( #wrapper_arg_name ));
+        downcast_args.push(quote! {
+            let #wrapper_arg_name = *<Box<dyn std::any::Any + Send>>::downcast::<#ty>(#wrapper_arg_name)
+                .unwrap_or_else(|_| panic!("unexpected type for argument {}", #i));
+        });
         wrapper_arg_bindings.push(wrapper_arg_name);
     }
 
@@ -66,23 +85,9 @@ pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
     let base_fn_name = &func.sig.ident;
     let wrapper_name = format_ident!("__{}_named_wrapper", base_fn_name);
 
-    // Handle whether the function is async
-    let eval = match &func.sig.asyncness {
-        None => quote! {
-            // TODO: Typically, async functions will generate the future quickly, but take a
-            // long(er) time to evaluate. This would give the opposite effect. Is that desired? The
-            // alternative would be to wrap this in an async block without `.await`ing
-            std::future::ready(
-                Box::new(#base_fn_name( #( #passthrough_args, )* )) as
-                    Box<dyn std::any::Any + Send + Sync>
-            )
-        },
-        Some(_) => quote! {
-            async move {
-                Box::new(#base_fn_name( #( #passthrough_args, )* ).await) as
-                    Box<dyn std::any::Any + Send + Sync>
-            }
-        },
+    let maybe_await = match &func.sig.asyncness {
+        None => quote!(),
+        Some(_) => quote!(.await),
     };
 
     let wrapper_fn = quote! {
@@ -101,9 +106,12 @@ pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
                     args.len()
                 ));
 
-            let [#( #wrapper_arg_bindings, )*]: [Box<dyn std::any::Any + Send + Sync>; #required_num_args] = *args;
+            let [#( #wrapper_arg_bindings, )*] = *args;
 
-            #eval
+            #( #downcast_args )*
+
+            Box::new(#base_fn_name( #( #passthrough_args, )* ) #maybe_await) as
+                Box<dyn std::any::Any + Send + Sync>
         }
     };
 
@@ -185,4 +193,104 @@ fn check_signature(sig: &Signature) -> syn::Result<()> {
     }
 
     Ok(())
+}
+
+// Our tests here are mostly to check that the output is correct in
+#[cfg(test)]
+mod tests {
+    use super::named2;
+
+    test_macro! {
+        @name: single_arg_synchronous,
+        named2!("my-foo") {
+            fn foo(x: i32) -> i32 {
+                2*x + 3
+            }
+        } => {
+            fn foo(x: i32) -> i32 {
+                2*x + 3
+            }
+
+            #[viri_macros::async_method]
+            async fn __foo_named_wrapper(
+                input_args: Vec<Box<dyn std::any::Any + Send + Sync>>
+            ) -> Box<dyn std::any::Any + Send + Sync> {
+                use std::convert::TryInto;
+
+                let args: Box<[Box<dyn std::any::Any + Send + Sync>; 1usize]>;
+                args = input_args.into_boxed_slice().try_into()
+                    .unwrap_or_else(|args: Box<[_]>| panic!(
+                        "unexpected number of arguments. expected {}, found {}",
+                        1usize,
+                        args.len()
+                    ));
+
+                let [x,] = *args;
+
+                let x = *<Box<dyn std::any::Any + Send>>::downcast::<i32>(x)
+                    .unwrap_or_else(|_| panic!("unexpected type for argument {}", 0usize));
+
+                Box::new(foo(x,)) as
+                    Box<dyn std::any::Any + Send + Sync>
+            }
+
+            ::inventory::submit!(crate::config::named_fn::RegisteredFunction::new(
+                "my-foo",
+                vec![crate::config::Type::new::<i32>(),],
+                crate::config::Type::new::<i32>(),
+                __foo_named_wrapper,
+            ));
+        }
+    }
+
+    test_macro! {
+        @name: multi_args_async,
+        named2!("my-foo") {
+            #[other_attr]
+            async fn foo(x: i32, y: bool, z: i32) -> i32 {
+                match y { true => x, false => z }
+            }
+        } => {
+            #[other_attr]
+            async fn foo(x: i32, y: bool, z: i32) -> i32 {
+                match y { true => x, false => z }
+            }
+
+            #[viri_macros::async_method]
+            async fn __foo_named_wrapper(
+                input_args: Vec<Box<dyn std::any::Any + Send + Sync>>
+            ) -> Box<dyn std::any::Any + Send + Sync> {
+                use std::convert::TryInto;
+
+                let args: Box<[Box<dyn std::any::Any + Send + Sync>; 3usize]>;
+                args = input_args.into_boxed_slice().try_into()
+                    .unwrap_or_else(|args: Box<[_]>| panic!(
+                        "unexpected number of arguments. expected {}, found {}",
+                        3usize,
+                        args.len()
+                    ));
+
+                let [x, y, z,] = *args;
+
+                let x = *<Box<dyn std::any::Any + Send>>::downcast::<i32>(x)
+                    .unwrap_or_else(|_| panic!("unexpected type for argument {}", 0usize));
+
+                let y = *<Box<dyn std::any::Any + Send>>::downcast::<bool>(y)
+                    .unwrap_or_else(|_| panic!("unexpected type for argument {}", 1usize));
+
+                let z = *<Box<dyn std::any::Any + Send>>::downcast::<i32>(z)
+                    .unwrap_or_else(|_| panic!("unexpected type for argument {}", 2usize));
+
+                Box::new(foo(x, y, z,).await) as
+                    Box<dyn std::any::Any + Send + Sync>
+            }
+
+            ::inventory::submit!(crate::config::named_fn::RegisteredFunction::new(
+                "my-foo",
+                vec![crate::config::Type::new::<i32>(),crate::config::Type::new::<bool>(),crate::config::Type::new::<i32>(),],
+                crate::config::Type::new::<i32>(),
+                __foo_named_wrapper,
+            ));
+        }
+    }
 }

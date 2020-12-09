@@ -8,6 +8,56 @@
 
 use proc_macro::TokenStream;
 
+#[cfg(test)]
+macro_rules! test_macro {
+    (
+        @name: $fn_name:ident,
+        $macro_fn:ident! $(($($pre:tt)*))? {
+            $($inp:tt)*
+        } => {
+            $($out:tt)*
+        }
+    ) => {
+        #[test]
+        fn $fn_name() {
+            use proc_macro2::TokenStream;
+            use syn::parse_str;
+
+            // First convert the (right here) macro's tokens to a string
+            let input_str = stringify!($($inp)*);
+            let expected_str = stringify!($($out)*);
+
+            // Then turn that string into a token stream we can work with
+            let input_tokens: TokenStream = parse_str(input_str).unwrap();
+            let expected_tokens: TokenStream = parse_str(expected_str).unwrap();
+
+            // And then run the macro:
+            let output_tokens: TokenStream =
+                $macro_fn(
+                    $({
+                        let ts: TokenStream = parse_str(stringify!($($pre)*)).unwrap();
+                        ts.into()
+                    },)?
+                    input_tokens.into(),
+                )
+                .into();
+
+            let output_to_str = output_tokens.to_string();
+            // We re-convert expected tokens to a string, because I'm not 100% sure that stringify!
+            // will produce the same formatting.
+            let expected_to_str = expected_tokens.to_string();
+
+            if output_to_str != expected_to_str {
+                panic!(
+                    "output != expected\noutput = ```\n{}\n```,\nexpected = ```\n{}\n```",
+                    output_to_str,
+                    expected_to_str,
+                )
+            }
+        }
+    };
+}
+
 mod async_fns;
 mod attr;
 mod config;
