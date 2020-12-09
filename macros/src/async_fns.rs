@@ -4,7 +4,9 @@ use quote::{quote, quote_spanned, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, Attribute, Block, Ident, Signature, Token, TypeBareFn, Visibility};
+use syn::{
+    parse_macro_input, Attribute, Block, Ident, Lifetime, Signature, Token, TypeBareFn, Visibility,
+};
 
 // Part of the output type
 struct NewMethodSignature {
@@ -95,7 +97,11 @@ fn check_signature(sig: Signature) -> syn::Result<NewMethodSignature> {
     }
 
     let has_reference = inputs.iter().any(HasRef::has_ref);
-    let output = make_output_type(has_reference, output);
+    let lifetimes = generics
+        .lifetimes()
+        .map(|def| def.lifetime.clone())
+        .collect();
+    let output = make_output_type(has_reference, lifetimes, output);
 
     Ok(NewMethodSignature {
         constness,
@@ -157,7 +163,15 @@ pub fn async_fn(input: TokenStream) -> TokenStream {
     }
 
     let has_ref = lifetimes.is_some() || inputs.iter().any(|arg| arg.ty.has_ref());
-    let new_output = make_output_type(has_ref, output);
+    let lifetimes_list = match lifetimes.as_ref() {
+        None => Vec::new(),
+        Some(lfs) => lfs
+            .lifetimes
+            .iter()
+            .map(|def| def.lifetime.clone())
+            .collect(),
+    };
+    let new_output = make_output_type(has_ref, lifetimes_list, output);
 
     quote!(
         #lifetimes #unsafety #abi #fn_token ( #inputs ) -> #new_output
@@ -165,24 +179,29 @@ pub fn async_fn(input: TokenStream) -> TokenStream {
     .into()
 }
 
-fn make_output_type(has_reference: bool, output: syn::ReturnType) -> TokenStream2 {
+fn make_output_type(
+    has_reference: bool,
+    lifetimes: Vec<Lifetime>,
+    output: syn::ReturnType,
+) -> TokenStream2 {
     use syn::ReturnType::{Default, Type};
 
     match output {
-        Default => wrap_future(has_reference, quote! { () }),
-        Type(_arrow, ty) => wrap_future(has_reference, ty),
+        Default => wrap_future(has_reference, lifetimes, quote! { () }),
+        Type(_arrow, ty) => wrap_future(has_reference, lifetimes, ty),
     }
 }
 
-fn wrap_future(has_reference: bool, ty: impl ToTokens) -> TokenStream2 {
-    let maybe_lifetime = match has_reference {
-        true => quote!( + '_ ),
-        false => quote!(),
+fn wrap_future(has_reference: bool, lifetimes: Vec<Lifetime>, ty: impl ToTokens) -> TokenStream2 {
+    let tail_lifetime = match lifetimes.as_slice() {
+        [] if has_reference => quote!( + '_ ),
+        [] => quote!(),
+        _ => quote!(#( + #lifetimes )*),
     };
 
     quote_spanned! {
         ty.span()=>
-        std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output=#ty> + Send + Sync #maybe_lifetime>>
+        std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output=#ty> + Send + Sync #tail_lifetime>>
     }
 }
 
