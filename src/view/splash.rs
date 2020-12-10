@@ -1,5 +1,6 @@
 //! Wrapper module for the [`SplashView`]
 
+use super::file::FileView;
 use super::*;
 use crate::container::paint::Styled;
 use ansi_term::{Color, Style};
@@ -17,9 +18,15 @@ impl View for SplashView {
     async fn handle(
         &mut self,
         input: Input,
-        bottom_bar: &mut dyn Textual,
+        _bottom_bar: &mut dyn Textual,
     ) -> (OutputSignal, Option<Input>) {
-        todo!()
+        // For any input, we replace ourselves with a blank file buffer
+        (
+            OutputSignal::ReplaceThis(Box::new(|size, refresh| {
+                Box::new(FileView::new_blank(size, refresh.clone()))
+            })),
+            Some(input),
+        )
     }
 
     #[async_method]

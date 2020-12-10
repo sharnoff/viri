@@ -45,7 +45,7 @@ use std::marker::PhantomData;
 ///
 /// With the usage of this type, there really isn't much more here than meets the eye. Construction
 /// is entirely through deserialization.
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(try_from = "UncheckedKeybindingSet")]
 pub struct KeybindingSet<T: Any> {
     #[serde(skip)]
@@ -91,7 +91,8 @@ impl<T: Any> KeybindingSet<T> {
 }
 
 /// An unchecked version of [`KeybindingSet`]; used only for deserialization
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename = "KeybindingSet")]
 struct UncheckedKeybindingSet {
     #[serde(flatten)]
     names: HashMap<String, Component>,
@@ -137,7 +138,7 @@ pub struct KeyEvent {
 /// The precise behavior when concatenating two lists of types is to join the lists. No matter the
 /// split between the lists, the output type will be the same - i.e.
 /// `Concat(Concat(A, B), Concat(C, D))` is the same as  `Concat(A, B, C, D)`)
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 enum Component {
     /// Any of a (nonempty) set of `Component`s. Conflicts are not allowed
     Union(Vec<Component>),
@@ -512,12 +513,13 @@ impl KeySet {
 
 /// The result of matching an input string on an [`AnnotatedComponent`]
 ///
-/// This is produced by the [`match`](AnnotatedComponent::match) method
+/// This is produced by the [`match`](AnnotatedComponent::match) method. Wherever a conclusive
+/// result is given, the number of keys required to reach that result is given as well.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MatchResult {
     NeedsMore,
     Matched { len: usize },
-    NoMatch,
+    NoMatch { len: usize },
 }
 
 // TODO-CLEAN: The two methods defined below are very similar. This could probably be refactored to
@@ -533,18 +535,18 @@ impl AnnotatedComponent {
         }
 
         match &self.kind {
-            Atom {
-                key: key_set,
-                repeated,
-            } => {
-                let n = input.iter().take_while(|k| key_set.contains(k)).count();
-                match n {
-                    0 => NoMatch,
-                    // TODO-ALG: We shouldn't consume the entire input above if we only require the
-                    // first key
-                    _ if !repeated => Matched { len: 1 },
-                    len => Matched { len },
+            #[rustfmt::skip]
+            Atom { key: key_set, repeated: false } => {
+                match key_set.contains(&input[0]) {
+                    true => Matched { len: 1 },
+                    false => NoMatch { len: 1 },
                 }
+            },
+            #[rustfmt::skip]
+            Atom { key: key_set, repeated: true } => {
+                // repeated atoms may match with a length of zero
+                let len = input.iter().take_while(|k| key_set.contains(k)).count();
+                Matched { len }
             }
             Map(_, comp) => comp.matches(input),
             Union(comps) => {
@@ -554,14 +556,16 @@ impl AnnotatedComponent {
                     }
                 }
 
-                NoMatch
+                NoMatch { len: 1 }
             }
+            #[rustfmt::skip]
             Concat(comps) => {
                 let mut consumed = 0;
                 for c in comps {
                     match c.matches(&input[consumed..]) {
                         Matched { len } => consumed += len,
-                        res @ NoMatch | res @ NeedsMore => return res,
+                        NoMatch { len } => return NoMatch { len: consumed + len },
+                        res @ NeedsMore => return res,
                     }
                 }
 
@@ -656,7 +660,7 @@ impl AnnotatedComponent {
 }
 
 ////////////////////////////////////////////////////////////
-// Component-like debug for AnnotatedComponent             /
+// Component-like debug for AnnotatedComponent            //
 ////////////////////////////////////////////////////////////
 
 impl AnnotatedComponent {
@@ -724,6 +728,20 @@ impl Display for KeySet {
             Any(None) => write!(f, "any character"),
             Any(Some(mods)) => write!(f, "{:?} + any character", mods),
         }
+    }
+}
+
+////////////////////////////////////////////////////////////
+// impl Debug for KeybindingSet                           //
+////////////////////////////////////////////////////////////
+
+// TODO-CORRECTNESS: Why does this require the 'static bound on T?
+impl<T: 'static> Debug for KeybindingSet<T> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("KeybindingSet")
+            .field("keys", &"...")
+            .field("inner", &self.inner_unchecked)
+            .finish()
     }
 }
 

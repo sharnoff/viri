@@ -1,7 +1,7 @@
 //! Wrapper module for the [`FileView`]
 
 use super::{OutputSignal, View};
-use crate::container::{Input, Painter};
+use crate::container::{Input, Painter, Refresh};
 use crate::fs::Path;
 use crate::macros::{async_method, id, impl_GetAttrAny};
 use crate::text::{Cursor, Textual};
@@ -14,10 +14,11 @@ pub struct FileView {
     cursor: Cursor,
     locator: Locator,
     size: TermSize,
+    refresh: Refresh,
 }
 
 id! {
-    /// Sample documentation for `BlankId`
+    /// A unique identifier for 'blank' files - scratch buffers not tied to any concrete file
     struct BlankId;
 }
 
@@ -30,18 +31,21 @@ impl BlankId {
     }
 }
 
+/// The place that an individual file is located - either through the filesystem or as a scratch
+/// file
 enum Locator {
     Blank(BlankId),
     Local(Path),
 }
 
 impl FileView {
-    fn new_blank(size: TermSize) -> FileView {
+    pub fn new_blank(size: TermSize, refresh: Refresh) -> FileView {
         FileView {
             text: (),
             cursor: Cursor::new_single(),
             locator: Locator::Blank(BlankId::new()),
             size,
+            refresh,
         }
     }
 }

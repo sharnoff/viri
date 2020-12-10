@@ -7,39 +7,47 @@
 
 use crate::config::{Attribute, GetAttrAny};
 use crate::container::{Input, Painter, Refresh};
+use crate::keys::KeybindingSet;
 use crate::macros::{async_method, config, impl_GetAttrAny, init};
+use crate::utils::Never;
 use crate::{TermPos, TermSize, Textual};
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::ops::Deref;
 
 mod file;
 mod splash;
 
+pub use file::FileView;
 pub use splash::SplashView;
 
 init!();
 
 config! {
     pub struct Config (ConfigBuilder) {
-        // #[builder(Vec<KeyBinding> => KeyBinding::to_hashes, KeyBinding::from_hashes)]
-        // key_bindings: () = (),
+        keys: Modes<KeybindingSet<Command<Never>>> = default_keybindings(),
     }
 }
 
+fn default_keybindings() -> Modes<KeybindingSet<Command<Never>>> {
+    todo!()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum Command<T> {
+    // TODO-FEATURE: add other general commands here
+    ChangeMode(ModeKind),
+    Other(T),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Modes<T> {
+    // TODO
+    inner: T,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModeKind {}
-
-#[derive(Debug, Copy, Clone, Default, serde::Serialize, serde::Deserialize)]
-struct KeyBinding;
-
-impl KeyBinding {
-    fn to_hashes(keys: Vec<KeyBinding>) -> () {
-        todo!()
-    }
-
-    fn from_hashes(hashes: &()) -> Vec<KeyBinding> {
-        todo!()
-    }
-}
 
 /// The raison d'être of this module
 ///

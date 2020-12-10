@@ -44,6 +44,7 @@ mod event;
 mod fs;
 mod keys;
 mod logger;
+mod modes;
 mod runtime;
 mod size;
 mod term;
