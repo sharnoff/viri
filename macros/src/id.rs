@@ -1,8 +1,8 @@
 use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
-use quote::{quote, quote_spanned};
+use quote::{quote, quote_spanned, ToTokens};
 use syn::punctuated::Punctuated;
-use syn::{parse_macro_input, token, Attribute, Ident, Token, Type, Visibility};
+use syn::{parse_macro_input, token, Attribute, GenericParam, Ident, Token, Type, Visibility};
 
 // The input - something like:
 //
@@ -34,10 +34,28 @@ struct InputTail {
 
 #[derive(Parse)]
 struct Slice {
+    #[peek(Token![<])]
+    generics: Option<PrefixGenerics>,
     #[bracket]
     bracket: token::Bracket,
     #[inside(bracket)]
     ty: Type,
+}
+
+#[derive(Parse)]
+struct PrefixGenerics {
+    open: Token![<],
+    #[call(Punctuated::parse_separated_nonempty)]
+    params: Punctuated<GenericParam, Token![,]>,
+    close: Token![>],
+}
+
+impl ToTokens for PrefixGenerics {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.open.to_tokens(tokens);
+        self.params.to_tokens(tokens);
+        self.close.to_tokens(tokens);
+    }
 }
 
 pub fn id(input: TokenStream) -> TokenStream {
@@ -61,10 +79,12 @@ pub fn id(input: TokenStream) -> TokenStream {
     if let Some(tail) = inp.tail {
         for slice in tail.slices.into_iter() {
             let span = slice.bracket.span;
+            let generics = slice.generics;
             let ty = slice.ty;
+
             impl_index.push(quote_spanned! {
                 span=>
-                impl std::ops::Index<#ident> for [#ty] {
+                impl #generics std::ops::Index<#ident> for [#ty] {
                     type Output = #ty;
 
                     fn index(&self, idx: #ident) -> &Self::Output {
@@ -72,7 +92,25 @@ pub fn id(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                impl std::ops::IndexMut<#ident> for [#ty] {
+                impl #generics std::ops::IndexMut<#ident> for [#ty] {
+                    fn index_mut(&mut self, idx: #ident) -> &mut Self::Output {
+                        &mut self[idx.0]
+                    }
+                }
+
+                // We need to explicitly implement on `Vec` here because the implementation of
+                // index, etc. doesn't come from dereferencing to &[T] - it's actually a unique
+                // implementation for `Idx: SliceIndex`. We can't implement `SliceIndex` because
+                // it's sealed, so we just implement here instead.
+                impl #generics std::ops::Index<#ident> for Vec<#ty> {
+                    type Output = #ty;
+
+                    fn index(&self, idx: #ident) -> &Self::Output {
+                        &self[idx.0]
+                    }
+                }
+
+                impl #generics std::ops::IndexMut<#ident> for Vec<#ty> {
                     fn index_mut(&mut self, idx: #ident) -> &mut Self::Output {
                         &mut self[idx.0]
                     }

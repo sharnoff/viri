@@ -429,6 +429,7 @@ pub use viri_macros::async_method;
 /// // Note both Index and IndexMut:
 /// impl std::ops::Index<Bar> for [Foo] { /* -- snip -- */ }
 /// impl std::ops::IndexMut<Bar> for [Foo] { /* -- snip -- */ }
+/// // (and equivalent implementations for Vec<Foo> as well)
 /// ```
 ///
 /// You can actually specify multiple such array types to allow indexing into, by separating them
@@ -441,5 +442,12 @@ pub use viri_macros::async_method;
 ///
 /// ```
 /// id![pub(super) struct Bar];
+/// ```
+///
+/// Specifying generic bounds on the arrays is done by a prefixed angle-brackets notation, exactly
+/// how you'd find in the syntax for implementation:
+///
+/// ```
+/// id![struct Bar in <T> [Foo<T>], <S: Debug> [Baz<S>]
 /// ```
 pub use viri_macros::id;
