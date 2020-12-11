@@ -3,12 +3,11 @@
 // TODO-DOC - this module needs a lot of documentation to explain what's going on
 
 use super::Type;
+use crate::any::{Any, BoxedAny, TypeId};
 use crate::macros::{async_fn, async_method, init, AttrType};
 use arc_swap::ArcSwapOption;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize, Serializer};
-use std::any::Any;
-use std::any::TypeId;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -42,11 +41,10 @@ init! {
 ///
 /// ```
 /// // Note: the signature is actually more like this:
-/// type AttrFunction = async fn(&(dyn Any + Send + Sync)) -> Box<dyn Any + 'static + Send + Sync>;
+/// type AttrFunction = async fn(&(dyn Any + Send + Sync)) -> BoxedAny;
 /// ```
 // @def AttrFunction-typedef v0
-pub type AttrFunction =
-    async_fn![fn(&(dyn Any + Send + Sync)) -> Box<dyn Any + 'static + Send + Sync>];
+pub type AttrFunction = async_fn![fn(&(dyn Any + Send + Sync)) -> BoxedAny];
 
 // The internal registry of attributes, their names, and the functions that produce them
 struct Registry {
@@ -100,7 +98,7 @@ impl Attribute {
     }
 
     /// Returns the default value of the attribute
-    pub fn default(&self) -> Box<dyn Any + 'static + Send + Sync> {
+    pub fn default(&self) -> BoxedAny {
         (self.definition().get_default)()
     }
 
@@ -126,7 +124,7 @@ pub struct AttributeDefinition {
     name: &'static str,
     value: Attribute,
     type_info: Type,
-    get_default: fn() -> Box<dyn Any + 'static + Send + Sync>,
+    get_default: fn() -> BoxedAny,
 }
 
 impl AttributeDefinition {
@@ -137,7 +135,7 @@ impl AttributeDefinition {
         name: &'static str,
         value: Attribute,
         type_info: Type,
-        get_default: fn() -> Box<dyn Any + 'static + Send + Sync>,
+        get_default: fn() -> BoxedAny,
     ) -> AttributeDefinition {
         AttributeDefinition {
             name,
@@ -236,7 +234,7 @@ pub trait GetAttr: GetAttrAny {
 ///
 /// impl GetAttrAny for Foo {
 ///     #[async_method]
-///     async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+///     async fn get_attr_any(&self, attr: Attribute) -> Option<BoxedAny> {
 ///         // The implementation just goes to the provided `get_attr_any` function,
 ///         // which does all of the heavy lifting.
 ///         attr::get_attr_any(self, attr).await
@@ -254,7 +252,7 @@ pub trait GetAttr: GetAttrAny {
 ///
 /// impl GetAttrAny for Box<dyn Foo> {
 ///     #[async_method]
-///     async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+///     async fn get_attr_any(&self, attr: Attribute) -> Option<BoxedAny> {
 ///         (Box::deref(self) as impl GetAttrAny).get_attr_any(attr).await
 ///     }
 /// }
@@ -264,7 +262,7 @@ pub trait GetAttrAny {
     ///
     /// While this method may look complex, it is actually just a desugared version of:
     /// ```
-    /// async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> { ... }
+    /// async fn get_attr_any(&self, attr: Attribute) -> Option<BoxedAny> { ... }
     /// ```
     /// The returned type is guaranteed to have a [`Type`] equal to [`attr.value_type()`].
     ///
@@ -273,7 +271,7 @@ pub trait GetAttrAny {
     ///
     /// [`attr.value_type()`]: Attribute::value_type
     #[async_method]
-    async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>>;
+    async fn get_attr_any(&self, attr: Attribute) -> Option<BoxedAny>;
 }
 
 impl<T: GetAttrAny + Send + Sync> GetAttr for T {
@@ -283,11 +281,7 @@ impl<T: GetAttrAny + Send + Sync> GetAttr for T {
     where
         AttrToken<Attr>: TypedAttr,
     {
-        self.get_attr_any(Attr).await.map(|output| {
-            *(output as Box<dyn Any + Send>)
-                .downcast::<AttrType![Attr]>()
-                .unwrap_or_else(|_| panic!("unexpected type from `get_attr_any`"))
-        })
+        self.get_attr_any(Attr).await.map(BoxedAny::downcast)
     }
 }
 
@@ -299,10 +293,7 @@ impl<T: GetAttrAny + Send + Sync> GetAttr for T {
 /// This function is essentially responsible for providing the actual implementation of the
 /// expected behavior, using the values provided by the macros. All method calls to get attributes
 /// ultimately boil down to a call to this function.
-pub async fn get_attr_any<T: Any + Send + Sync>(
-    this: &T,
-    attr: Attribute,
-) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+pub async fn get_attr_any<T: Any + Send + Sync>(this: &T, attr: Attribute) -> Option<BoxedAny> {
     let guard = REGISTRY.load();
     let func = guard
         .as_ref()
@@ -321,7 +312,7 @@ pub struct Nothing;
 
 impl GetAttrAny for Nothing {
     #[async_method]
-    async fn get_attr_any(&self, _attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+    async fn get_attr_any(&self, _attr: Attribute) -> Option<BoxedAny> {
         None
     }
 }
@@ -352,7 +343,7 @@ pub struct AttrToken<const Attr: Attribute>;
 ///
 /// For more information on the internals, please refer to the [module-level documentation](self).
 pub trait TypedAttr {
-    type Type;
+    type Type: Send + Sync;
 
     /// The default value of the attribute
     fn default_value() -> Self::Type;

@@ -1,11 +1,11 @@
 //! Wrapper module for [`BottomBar`] and related types
 
+use crate::any::BoxedAny;
 use crate::config::{Attribute, Configurable, GetAttr, GetAttrAny};
 use crate::container::Painter;
 use crate::macros::{async_method, config};
 use crate::text::Cursor;
 use crate::{TermPos, TermSize, Text, Textual};
-use std::any::Any;
 use std::sync::Arc;
 
 mod component;
@@ -118,7 +118,7 @@ pub struct BBCtx<T: Send + Sync + GetAttrAny> {
 
 impl<T: Send + Sync + GetAttrAny> GetAttrAny for BBCtx<T> {
     #[async_method]
-    async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+    async fn get_attr_any(&self, attr: Attribute) -> Option<BoxedAny> {
         self.attr_provider.get_attr_any(attr).await
     }
 }

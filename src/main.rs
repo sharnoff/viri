@@ -38,6 +38,7 @@ use std::sync::Arc;
 #[macro_use]
 mod macros;
 
+mod any;
 mod config;
 mod container;
 mod event;

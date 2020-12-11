@@ -1,11 +1,12 @@
 //! Individual components that can be displayed inside the bottom bar
 
 use super::{Context, TimeFormat};
-use crate::config::{Attribute, NamedFunction, Type};
+use crate::any::BoxedAny;
+use crate::any::Type;
+use crate::config::{Attribute, NamedFunction};
 use crate::macros::async_method;
 use crate::runtime;
 use serde::{Deserialize, Serialize};
-use std::any::Any;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Formatter};
 use std::sync::Arc;
@@ -79,14 +80,14 @@ impl Component {
     ///
     /// Please note that the signature of this function should properly be more like:
     /// ```ignore
-    /// pub async fn evaluate<'a>(&'a self, ctx: &Arc<impl Context>) -> Box<dyn Any + Send + Sync> { ... }
+    /// pub async fn evaluate<'a>(&'a self, ctx: &Arc<impl Context>) -> BoxedAny { ... }
     /// ```
     /// The reason we return a `Pin<Box<dyn Future>>` is due to constraints when defining recursive
     /// `async` functions.
     ///
     /// [`self.output_type()`]: Self::output_type
     #[async_method] // We need this because the function is recursive
-    pub async fn evaluate<'a>(&'a self, ctx: &'a Arc<impl Context>) -> Box<dyn Any + Send + Sync> {
+    pub async fn evaluate<'a>(&'a self, ctx: &'a Arc<impl Context>) -> BoxedAny {
         use Component::{
             Any as CAny, Attr, ErrorMessage, Func, HasErrorMessage, IfElse, Input, IsSelected, Not,
             Str, Time,
@@ -105,27 +106,27 @@ impl Component {
                 .get_attr_any(*attr)
                 .await
                 .unwrap_or_else(|| attr.default()),
-            Str(s) => Box::new(s.clone()),
-            Time(format) => Box::new(format.now()),
+            Str(s) => BoxedAny::new(s.clone()),
+            Time(format) => BoxedAny::new(format.now()),
             IfElse(cond, if_true, if_false) => match cond.evaluate_as_bool(ctx).await {
                 true => if_true.evaluate(ctx).await,
                 false => if_false.evaluate(ctx).await,
             },
-            Not(c) => Box::new(!c.evaluate_as_bool(ctx).await),
+            Not(c) => BoxedAny::new(!c.evaluate_as_bool(ctx).await),
             CAny(cs) => {
                 for c in cs {
                     if c.evaluate_as_bool(ctx).await {
                         // For some reason, this one needs an explicit cast
-                        return Box::new(true) as Box<dyn Any + Send + Sync>;
+                        return BoxedAny::new(true);
                     }
                 }
 
-                Box::new(false)
+                BoxedAny::new(false)
             }
-            ErrorMessage => Box::new(ctx.get_error_message().to_owned()),
-            HasErrorMessage => Box::new(ctx.has_error_message()),
-            Input => Box::new(ctx.current_input().unwrap_or("").to_owned()),
-            IsSelected => Box::new(ctx.current_input().is_some()),
+            ErrorMessage => BoxedAny::new(ctx.get_error_message().to_owned()),
+            HasErrorMessage => BoxedAny::new(ctx.has_error_message()),
+            Input => BoxedAny::new(ctx.current_input().unwrap_or("").to_owned()),
+            IsSelected => BoxedAny::new(ctx.current_input().is_some()),
         }
     }
 
@@ -133,7 +134,7 @@ impl Component {
     ///
     /// This requires that the output type is a boolean, but does not check.
     async fn evaluate_as_bool<'a>(&'a self, ctx: &'a Arc<impl Context>) -> bool {
-        *self.evaluate(ctx).await.downcast_ref::<bool>().unwrap()
+        self.evaluate(ctx).await.downcast()
     }
 }
 

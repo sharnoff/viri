@@ -60,9 +60,8 @@ pub fn new_attrs(input: TokenStream) -> TokenStream {
             ::inventory::submit!(crate::config::attr::AttributeDefinition::new(
                 #name_as_str,
                 crate::config::attr::Attribute::#name,
-                crate::config::Type::new::<#ty>(),
-                || std::boxed::Box::new(<#token as crate::config::attr::TypedAttr>::default_value()) as
-                    std::boxed::Box<dyn std::any::Any + 'static + Send + Sync>,
+                crate::any::Type::new::<#ty>(),
+                || crate::any::BoxedAny::new(<#token as crate::config::attr::TypedAttr>::default_value()),
             ));
         };
 
@@ -135,7 +134,7 @@ pub fn provide_attrs(input: TokenStream) -> TokenStream {
                 #[allow(non_snake_case)]
                 #[viri_macros::async_method]
                 async fn #func_name ( this: &dyn std::any::Any + 'static + Send + Sync )
-                        -> Box<dyn std::any::Any + 'static + Send + Sync> {
+                        -> crate::any::BoxedAny {
                     // Downcast `this` into the base type we're implementing on
                     let this = #downcast_to_self;
 
@@ -146,7 +145,7 @@ pub fn provide_attrs(input: TokenStream) -> TokenStream {
                         }
                     }
 
-                    Box::new(this.#func_name().await) as Box<dyn std::any::Any + 'static + Send + Sync>
+                    crate::any::BoxedAny::new(this.#func_name().await)
                 }
             };
 
@@ -197,7 +196,7 @@ pub fn impl_get_attr_any(input: TokenStream) -> TokenStream {
             async fn get_attr_any(
                 &self,
                 attr: crate::config::Attribute
-            ) -> Option<Box<dyn std::any::Any + 'static + Send + Sync>> {
+            ) -> Option<crate::any::BoxedAny> {
                 crate::config::attr::get_attr_any(self, attr).await
             }
         }

@@ -303,7 +303,7 @@ pub use viri_macros::provide_attrs;
 /// ```
 /// impl crate::config::GetAttrAny for #ty {
 ///     #[async_method]
-///     async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+///     async fn get_attr_any(&self, attr: Attribute) -> Option<BoxedAny> {
 ///         crate::config::attr::get_attr_any(self, attr).await
 ///     }
 /// }

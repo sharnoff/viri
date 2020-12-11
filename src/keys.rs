@@ -26,12 +26,12 @@
 //!
 //! [named functions]: crate::config::NamedFunction
 
-use crate::config::{NamedFunction, Type};
+use crate::any::{Any, BoxedAny, Type};
+use crate::config::NamedFunction;
 use crate::event::KeyCode;
 use crate::macros::async_method;
 use maplit::hashset;
 use serde::{Deserialize, Serialize};
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -47,7 +47,7 @@ use std::marker::PhantomData;
 /// is entirely through deserialization.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(try_from = "UncheckedKeybindingSet")]
-pub struct KeybindingSet<T: Any> {
+pub struct KeybindingSet<T: Any + Send + Sync> {
     #[serde(skip)]
     keys: AnnotatedComponent,
     #[serde(flatten)]
@@ -56,7 +56,7 @@ pub struct KeybindingSet<T: Any> {
     _marker: PhantomData<T>,
 }
 
-impl<T: Any> KeybindingSet<T> {
+impl<T: Any + Send + Sync> KeybindingSet<T> {
     /// Returns whether there is a matching keybinding for the input
     #[inline(always)]
     pub fn matches(&self, input: &[KeyEvent]) -> MatchResult {
@@ -83,10 +83,13 @@ impl<T: Any> KeybindingSet<T> {
     /// ```
     pub async fn output(&self, input: &[KeyEvent]) -> T {
         let (len, mut vals) = self.keys.output_consumed(input).await;
+
         assert!(len == input.len());
         assert!(vals.len() == 1);
-        *<Box<dyn Any + Send>>::downcast::<T>(vals.remove(0) as Box<dyn Any + Send>)
-            .unwrap_or_else(|_| panic!("unexpected type returned from keybinding output"))
+        vals.remove(0)
+            .try_downcast()
+            .map_err(|err| format!("unexpected type returned from keybinding output: {}", err))
+            .unwrap()
     }
 }
 
@@ -579,17 +582,14 @@ impl AnnotatedComponent {
     /// This should only be called for valid matches, as given by [`AnnotatedComponent::matches`].
     /// This function will panic if that is not the case.
     #[async_method]
-    async fn output_consumed<'a>(
-        &'a self,
-        input: &'a [KeyEvent],
-    ) -> (usize, Vec<Box<dyn Send + Sync + Any>>) {
+    async fn output_consumed<'a>(&'a self, input: &'a [KeyEvent]) -> (usize, Vec<BoxedAny>) {
         use AnnotatedComponentKind::{Atom, Concat, Map, Union};
         use KeyCode::Char;
         use KeySet::{Any, Range, Single};
 
         macro_rules! any {
             ($ty:ty: $expr:expr) => {{
-                Box::new($expr) as Box<$ty> as Box<dyn Send + Sync + std::any::Any>
+                BoxedAny::new($expr)
             }};
         }
 
@@ -618,7 +618,7 @@ impl AnnotatedComponent {
                 let out = match key_set {
                     Single(_) => any!(Vec<KeyEvent>: Vec::from(&input[..n])),
                     Range { .. } | Any(_) => {
-                        let list = (input[..n].iter())
+                        let list: Vec<char> = (input[..n].iter())
                             .map(|ev| match ev.code {
                                 Char(c) => c,
                                 _ => unreachable!(),
@@ -736,7 +736,7 @@ impl Display for KeySet {
 ////////////////////////////////////////////////////////////
 
 // TODO-CORRECTNESS: Why does this require the 'static bound on T?
-impl<T: 'static> Debug for KeybindingSet<T> {
+impl<T: 'static + Any + Send + Sync> Debug for KeybindingSet<T> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("KeybindingSet")
             .field("keys", &"...")
@@ -749,7 +749,7 @@ impl<T: 'static> Debug for KeybindingSet<T> {
 // Conversion `UncheckedKeybindingSet` -> `KeybindingSet` //
 ////////////////////////////////////////////////////////////
 
-impl<T: Any> TryFrom<UncheckedKeybindingSet> for KeybindingSet<T> {
+impl<T: Any + Send + Sync> TryFrom<UncheckedKeybindingSet> for KeybindingSet<T> {
     type Error = String;
 
     fn try_from(set: UncheckedKeybindingSet) -> Result<Self, String> {
@@ -951,8 +951,12 @@ mod tests {
 
         let (len, mut out) = crate::runtime::block_on(comp.output_consumed(&input));
         assert!(out.len() == 1);
-        let out = *<Box<dyn Any + Send>>::downcast::<Foo>(out.remove(0))
-            .unwrap_or_else(|_| panic!("unexpected output type"));
+
+        let out: Foo = out
+            .remove(0)
+            .try_downcast()
+            .map_err(|err| format!("unexpected output type: {}", err))
+            .unwrap();
 
         assert_eq!(len, 5);
 

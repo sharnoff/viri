@@ -1,10 +1,10 @@
 //! Wrapper module for the bottom bar context
 
 use super::bottom_bar::Context;
+use crate::any::BoxedAny;
 use crate::config::attr::{Attribute, GetAttrAny};
 use crate::macros::async_method;
 use crate::view::View;
-use std::any::Any;
 
 pub(super) struct BBCtx<'a> {
     pub(super) view: Option<&'a dyn View>,
@@ -28,7 +28,7 @@ impl<'a> Context for BBCtx<'a> {
 
 impl<'a> GetAttrAny for BBCtx<'a> {
     #[async_method]
-    async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+    async fn get_attr_any(&self, attr: Attribute) -> Option<BoxedAny> {
         match self.view {
             Some(v) => v.get_attr_any(attr).await,
             None => None,

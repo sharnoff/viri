@@ -2,12 +2,12 @@
 //
 // TODO-DOC - this module needs a fair amount of documentation to explain how it works
 
-use super::Type;
+use crate::any::BoxedAny;
+use crate::any::{Any, Type};
 use crate::macros::{async_fn, init};
 use arc_swap::ArcSwapOption;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize, Serializer};
-use std::any::Any;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -46,13 +46,13 @@ lazy_static! {
 ///
 /// ```
 /// // Note: the signature is actually more like this:
-/// type FnPtr = async fn(Vec<Box<dyn Any + Send + Sync>>) -> Box<dyn Any + Send + Sync>;
+/// type FnPtr = async fn(Vec<BoxedAny>) -> BoxedAny;
 /// ```
 ///
 /// This is primarily for internal use, and exists only as an abbreviation.
 ///
 /// [`named`]: crate::macros::named
-pub type FnPtr = async_fn![fn(Vec<Box<dyn Any + Send + Sync>>) -> Box<dyn Any + Send + Sync>];
+pub type FnPtr = async_fn![fn(Vec<BoxedAny>) -> BoxedAny];
 
 /// (*Internal*) The inner representation of a named function
 ///
@@ -144,12 +144,9 @@ impl NamedFunction {
     /// should be validated before calling this function with [`correct_input_types`].
     ///
     /// [`correct_input_types`]: Self::correct_input_types
-    pub async fn apply(
-        &self,
-        inputs: Vec<Box<dyn Any + Send + Sync>>,
-    ) -> Box<dyn Any + Send + Sync> {
+    pub async fn apply(&self, inputs: Vec<BoxedAny>) -> BoxedAny {
         let output = (self.0.fn_ptr)(inputs).await;
-        debug_assert_eq!((&*output).type_id(), self.0.output.id());
+        debug_assert_eq!(output.inner_type(), self.0.output);
 
         output
     }
@@ -207,10 +204,14 @@ pub struct TypedNamedFunction<F: FuncType> {
 
 impl<F: FuncType> TypedNamedFunction<F> {
     /// The typed equivalent of [`NamedFunction::apply`]
-    pub async fn apply(&self, inputs: F::Inputs) -> F::Output {
-        let output = self.func.apply(F::inputs_to_dyn_vec(inputs)).await;
-        *<Box<dyn Any + Send>>::downcast(output)
-            .unwrap_or_else(|_| panic!("unexpected output type from typed named function"))
+    pub async fn apply(&self, inputs: F::Inputs) -> F::Output
+    where
+        F::Output: Any + Send + Sync,
+    {
+        self.func
+            .apply(F::inputs_to_dyn_vec(inputs))
+            .await
+            .downcast()
     }
 }
 
@@ -245,12 +246,12 @@ pub trait FuncType {
 
     /// A helper function to convert to a list of inputs that can be supplied to
     /// [`NamedFunction::apply`]
-    fn inputs_to_dyn_vec(inp: Self::Inputs) -> Vec<Box<dyn Any + Send + Sync>>;
+    fn inputs_to_dyn_vec(inp: Self::Inputs) -> Vec<BoxedAny>;
 }
 
 macro_rules! impl_FuncType {
     ($out:ident; $head:ident $idx:tt $(, $tail:ident $tail_idx:tt)*) => {
-        impl<$out: Any, $head $(, $tail)*> FuncType for dyn Fn($head $(, $tail)*) -> $out
+        impl<$out: Any + Send + Sync, $head $(, $tail)*> FuncType for dyn Fn($head $(, $tail)*) -> $out
         where
             $head: Any + Send + Sync,
             $($tail: Any + Send + Sync,)*
@@ -263,10 +264,10 @@ macro_rules! impl_FuncType {
 
             type Output = $out;
 
-            fn inputs_to_dyn_vec(inputs: Self::Inputs) -> Vec<Box<dyn Any + Send + Sync>> {
-                let mut inps = <Vec<Box<dyn Any + Send + Sync>>>::new();
-                inps.push(Box::new(inputs.$idx));
-                $(inps.push(Box::new(inputs.$tail_idx));)*
+            fn inputs_to_dyn_vec(inputs: Self::Inputs) -> Vec<BoxedAny> {
+                let mut inps = <Vec<BoxedAny>>::new();
+                inps.push(BoxedAny::new(inputs.$idx));
+                $(inps.push(BoxedAny::new(inputs.$tail_idx));)*
                 inps.reverse();
                 inps
             }
@@ -280,7 +281,7 @@ macro_rules! impl_FuncType {
 
             type Output = $out;
 
-            fn inputs_to_dyn_vec(inp: ()) -> Vec<Box<dyn Any + Send + Sync>> {
+            fn inputs_to_dyn_vec(inp: ()) -> Vec<BoxedAny> {
                 Vec::new()
             }
         }

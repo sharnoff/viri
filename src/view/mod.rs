@@ -5,6 +5,7 @@
 //! This module only provides the facilities for interaction *between* [`View`]s; the entrypoint
 //! for handling the tree of `View`s is taken care of by the [`container`](crate::container) module.
 
+use crate::any::BoxedAny;
 use crate::config::{Attribute, GetAttrAny};
 use crate::container::{Input, Painter, Refresh};
 use crate::keys::KeybindingSet;
@@ -12,7 +13,6 @@ use crate::macros::{async_method, config, impl_GetAttrAny, init};
 use crate::utils::Never;
 use crate::{TermPos, TermSize, Textual};
 use serde::{Deserialize, Serialize};
-use std::any::Any;
 use std::ops::Deref;
 
 mod file;
@@ -79,7 +79,7 @@ pub trait View: Send + Sync + GetAttrAny {
 
 impl<D: Send + Sync + Deref<Target = dyn View>> GetAttrAny for D {
     #[async_method]
-    async fn get_attr_any(&self, attr: Attribute) -> Option<Box<dyn Any + 'static + Send + Sync>> {
+    async fn get_attr_any(&self, attr: Attribute) -> Option<BoxedAny> {
         (Deref::deref(self) as &dyn View).get_attr_any(attr).await
     }
 }

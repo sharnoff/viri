@@ -37,7 +37,6 @@ fn named2(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
     }
 
     let mut wrapper_arg_bindings = Vec::new();
-    let mut convert_wrapper_args = Vec::new();
     let mut input_type_ids = Vec::new();
     let mut passthrough_args = Vec::new();
     let mut downcast_args = Vec::new();
@@ -56,18 +55,15 @@ fn named2(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
             Ident::new(&name, pat.span())
         });
 
-        convert_wrapper_args.push(quote! {
-            let #wrapper_arg_name: #ty = *#wrapper_arg_name.downcast::<#ty>()
-                .unwrap_or_else(|_| panic!("unexpected type provided as input"));
-        });
         input_type_ids.push(quote_spanned! {
             ty.span()=>
-            crate::config::Type::new::<#ty>()
+            crate::any::Type::new::<#ty>()
         });
         passthrough_args.push(quote!( #wrapper_arg_name ));
         downcast_args.push(quote! {
-            let #wrapper_arg_name = *<Box<dyn std::any::Any + Send>>::downcast::<#ty>(#wrapper_arg_name)
-                .unwrap_or_else(|_| panic!("unexpected type for argument {}", #i));
+            let #wrapper_arg_name = #wrapper_arg_name.try_downcast()
+                .map_err(|err| format!("unexpected type for argument {}: {}", #i, err))
+                .unwrap();
         });
         wrapper_arg_bindings.push(wrapper_arg_name);
     }
@@ -79,7 +75,7 @@ fn named2(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
 
     let output_type_id = quote_spanned! {
         func.sig.output.span()=>
-        crate::config::Type::new::<#output_ty>()
+        crate::any::Type::new::<#output_ty>()
     };
 
     let base_fn_name = &func.sig.ident;
@@ -94,11 +90,11 @@ fn named2(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
         // All wrapper functions are async, but we need to phrase them without the syntax sugar
         // because we otherwise get a type mismatch - hence why we use `#[async_method]` here.
         #[viri_macros::async_method]
-        async fn #wrapper_name( input_args: Vec<Box<dyn std::any::Any + Send + Sync>> )
-                -> Box<dyn std::any::Any + Send + Sync> {
+        async fn #wrapper_name( input_args: Vec<crate::any::BoxedAny> )
+                -> crate::any::BoxedAny {
             use std::convert::TryInto;
 
-            let args: Box<[Box<dyn std::any::Any + Send + Sync>; #required_num_args]>;
+            let args: Box<[crate::any::BoxedAny; #required_num_args]>;
             args = input_args.into_boxed_slice().try_into()
                 .unwrap_or_else(|args: Box<[_]>| panic!(
                     "unexpected number of arguments. expected {}, found {}",
@@ -110,8 +106,7 @@ fn named2(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
 
             #( #downcast_args )*
 
-            Box::new(#base_fn_name( #( #passthrough_args, )* ) #maybe_await) as
-                Box<dyn std::any::Any + Send + Sync>
+            crate::any::BoxedAny::new(#base_fn_name( #( #passthrough_args, )* ) #maybe_await)
         }
     };
 
@@ -213,11 +208,11 @@ mod tests {
 
             #[viri_macros::async_method]
             async fn __foo_named_wrapper(
-                input_args: Vec<Box<dyn std::any::Any + Send + Sync>>
-            ) -> Box<dyn std::any::Any + Send + Sync> {
+                input_args: Vec<crate::any::BoxedAny>
+            ) -> crate::any::BoxedAny {
                 use std::convert::TryInto;
 
-                let args: Box<[Box<dyn std::any::Any + Send + Sync>; 1usize]>;
+                let args: Box<[crate::any::BoxedAny; 1usize]>;
                 args = input_args.into_boxed_slice().try_into()
                     .unwrap_or_else(|args: Box<[_]>| panic!(
                         "unexpected number of arguments. expected {}, found {}",
@@ -227,17 +222,17 @@ mod tests {
 
                 let [x,] = *args;
 
-                let x = *<Box<dyn std::any::Any + Send>>::downcast::<i32>(x)
-                    .unwrap_or_else(|_| panic!("unexpected type for argument {}", 0usize));
+                let x = x.try_downcast()
+                    .map_err(|err| format!("unexpected type for argument {}: {}", 0usize, err))
+                    .unwrap();
 
-                Box::new(foo(x,)) as
-                    Box<dyn std::any::Any + Send + Sync>
+                crate::any::BoxedAny::new(foo(x,))
             }
 
             ::inventory::submit!(crate::config::named_fn::RegisteredFunction::new(
                 "my-foo",
-                vec![crate::config::Type::new::<i32>(),],
-                crate::config::Type::new::<i32>(),
+                vec![crate::any::Type::new::<i32>(),],
+                crate::any::Type::new::<i32>(),
                 __foo_named_wrapper,
             ));
         }
@@ -258,11 +253,11 @@ mod tests {
 
             #[viri_macros::async_method]
             async fn __foo_named_wrapper(
-                input_args: Vec<Box<dyn std::any::Any + Send + Sync>>
-            ) -> Box<dyn std::any::Any + Send + Sync> {
+                input_args: Vec<crate::any::BoxedAny>
+            ) -> crate::any::BoxedAny {
                 use std::convert::TryInto;
 
-                let args: Box<[Box<dyn std::any::Any + Send + Sync>; 3usize]>;
+                let args: Box<[crate::any::BoxedAny; 3usize]>;
                 args = input_args.into_boxed_slice().try_into()
                     .unwrap_or_else(|args: Box<[_]>| panic!(
                         "unexpected number of arguments. expected {}, found {}",
@@ -272,23 +267,25 @@ mod tests {
 
                 let [x, y, z,] = *args;
 
-                let x = *<Box<dyn std::any::Any + Send>>::downcast::<i32>(x)
-                    .unwrap_or_else(|_| panic!("unexpected type for argument {}", 0usize));
+                let x = x.try_downcast()
+                    .map_err(|err| format!("unexpected type for argument {}: {}", 0usize, err))
+                    .unwrap();
 
-                let y = *<Box<dyn std::any::Any + Send>>::downcast::<bool>(y)
-                    .unwrap_or_else(|_| panic!("unexpected type for argument {}", 1usize));
+                let y = y.try_downcast()
+                    .map_err(|err| format!("unexpected type for argument {}: {}", 1usize, err))
+                    .unwrap();
 
-                let z = *<Box<dyn std::any::Any + Send>>::downcast::<i32>(z)
-                    .unwrap_or_else(|_| panic!("unexpected type for argument {}", 2usize));
+                let z = z.try_downcast()
+                    .map_err(|err| format!("unexpected type for argument {}: {}", 2usize, err))
+                    .unwrap();
 
-                Box::new(foo(x, y, z,).await) as
-                    Box<dyn std::any::Any + Send + Sync>
+                crate::any::BoxedAny::new(foo(x,y,z,).await)
             }
 
             ::inventory::submit!(crate::config::named_fn::RegisteredFunction::new(
                 "my-foo",
-                vec![crate::config::Type::new::<i32>(),crate::config::Type::new::<bool>(),crate::config::Type::new::<i32>(),],
-                crate::config::Type::new::<i32>(),
+                vec![crate::any::Type::new::<i32>(),crate::any::Type::new::<bool>(),crate::any::Type::new::<i32>(),],
+                crate::any::Type::new::<i32>(),
                 __foo_named_wrapper,
             ));
         }

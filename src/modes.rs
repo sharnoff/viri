@@ -8,6 +8,7 @@
 //! [`Mode`]s are generic over the output type; the output type is only required to have some way to
 //! extract information about switching modes and limit
 
+use crate::any::Any;
 use crate::keys::{KeyEvent, KeybindingSet};
 use crate::macros::id;
 use smallvec::SmallVec;
@@ -57,7 +58,7 @@ id! {
 }
 
 /// A marker trait for types that may be used as a command output for [`Mode`]s
-pub trait ModeOutput: 'static {
+pub trait ModeOutput: 'static + Any + Send + Sync {
     /// If the output allows switching to a new mode, returns the mode that it switched to
     ///
     /// Switching modes will be respected, even if there
@@ -269,7 +270,7 @@ mod tests {
         Success(T),
     }
 
-    impl<T: 'static> ModeOutput for SampleOutput<ModeKind, T> {
+    impl<T: 'static + Any + Send + Sync> ModeOutput for SampleOutput<ModeKind, T> {
         fn as_switch_mode(&self) -> Option<ModeKind> {
             use SampleOutput::{SwitchMode, SwitchModeAndProvider};
 
