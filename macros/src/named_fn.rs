@@ -10,15 +10,6 @@ use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{FnArg, Ident, ItemFn, LitStr, Pat, PatType, ReturnType, Signature};
 
-macro_rules! parse_macro_input2 {
-    ($tokenstream:ident as $ty:ty) => {{
-        match syn::parse2::<$ty>($tokenstream) {
-            Ok(v) => v,
-            Err(err) => return err.to_compile_error(),
-        }
-    }};
-}
-
 pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
     named2(attr.into(), item.into()).into()
 }

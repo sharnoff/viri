@@ -96,7 +96,7 @@ impl RegisteredFunction {
 ///
 /// [`named`]: crate::macros::named
 #[derive(Copy, Clone, Debug, Deserialize)]
-#[serde(try_from = "&str")]
+#[serde(try_from = "String")]
 pub struct NamedFunction(&'static RegisteredFunction);
 
 impl NamedFunction {
@@ -131,6 +131,11 @@ impl NamedFunction {
     /// Returns the name given to the function
     pub fn name(&self) -> &'static str {
         self.0.name
+    }
+
+    /// Returns the expected input types to the function
+    pub fn input_types(&self) -> &'static [Type] {
+        &self.0.input
     }
 
     /// Returns the output type of the function
@@ -398,16 +403,16 @@ impl Serialize for NamedFunction {
     }
 }
 
-impl TryFrom<&str> for NamedFunction {
+impl TryFrom<String> for NamedFunction {
     type Error = String;
 
-    fn try_from(name: &str) -> Result<NamedFunction, String> {
+    fn try_from(name: String) -> Result<NamedFunction, String> {
         let guard = REGISTRY.load();
         let registry = guard
             .as_ref()
             .expect("cannot deserialize before `config::named_fn` has been initialized");
 
-        match registry.get(name) {
+        match registry.get(name.as_str()) {
             None => Err(format!("cannot find named function '{}'", name)),
             Some(func) => Ok(NamedFunction(*func)),
         }

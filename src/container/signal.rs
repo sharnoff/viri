@@ -61,8 +61,8 @@ pub fn make_event_stream() -> Result<impl Stream<Item = Signal>, Error> {
     // leaving that for later.
     Ok(crossterm_events.filter_map(|res| {
         res.ok().map(|event| match event {
-            Key(k_ev) => Signal::Input(Input::Keys(smallvec![k_ev.xinto()])),
-            Mouse(m_ev) => Signal::Input(Input::Mouse(m_ev.xinto())),
+            Key(k_ev) => Signal::Input(Input::Keys(smallvec![k_ev.into()])),
+            Mouse(m_ev) => Signal::Input(Input::Mouse(m_ev.into())),
             Resize(cols, rows) => Signal::Resize(TermSize::new(cols, rows)),
         })
     }))

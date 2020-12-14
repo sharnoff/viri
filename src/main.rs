@@ -17,6 +17,7 @@
     rustc_attrs,
     const_fn,
     const_generics,
+    specialization,
 )]
 // Other flags:
 #![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
@@ -71,6 +72,7 @@ use fs::{File, Path};
 fn initalize_custom_modules() {
     initialize! {
         // your module here
+        mod any;
         mod container;
         mod view;
         mod config;

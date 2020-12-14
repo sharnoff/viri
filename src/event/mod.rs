@@ -12,9 +12,7 @@
 //! [`signal`]: crate::container::signal
 
 mod key;
-mod mods;
 mod mouse;
 
-pub use key::{KeyCode, KeyEvent};
-pub use mods::KeyModifiers;
-pub use mouse::{MouseButton, MouseEvent};
+pub use key::{KeyCode, KeyEvent, KeyModifiers};
+pub use mouse::{MouseButton, MouseEvent, MouseModifiers};

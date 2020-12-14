@@ -58,9 +58,19 @@ macro_rules! test_macro {
     };
 }
 
+macro_rules! parse_macro_input2 {
+    ($tokenstream:ident as $ty:ty) => {{
+        match syn::parse2::<$ty>($tokenstream) {
+            Ok(v) => v,
+            Err(err) => return err.to_compile_error(),
+        }
+    }};
+}
+
 mod async_fns;
 mod attr;
 mod config;
+mod dyn_serde;
 mod id;
 mod init_expr;
 mod named_fn;
@@ -88,6 +98,7 @@ macros! {
     attr::{new_attrs, provide_attrs, attr_type, impl_get_attr_any},
     async_fns::async_fn,
     id::id,
+    dyn_serde::register_dyn_clone,
 }
 
 #[proc_macro_attribute]
@@ -98,4 +109,9 @@ pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn async_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     async_fns::async_method(attr, item)
+}
+
+#[proc_macro_derive(SerdeDynClone)]
+pub fn serde_dyn_clone(item: TokenStream) -> TokenStream {
+    dyn_serde::serde_dyn_clone(item)
 }

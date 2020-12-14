@@ -11,12 +11,21 @@
 //! There isn't a guiding philosophy here; it's mostly just a mixed bag of helpful things. A few
 //! relevant things from [`std::any`] are re-exported here.
 
+use crate::macros::init;
+use lazy_static::lazy_static;
 use std::any::type_name;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::hash::{Hash, Hasher};
 
 // Re-export a couple things from the standard library:
 pub use std::any::{Any, TypeId};
+
+init! {
+    lazy_static::initialize(&REGISTRY);
+    panic!("number of collected types: {}", REGISTRY.len());
+}
 
 /// A replacement for [`std::any::TypeId`] with names built-in
 ///
@@ -33,6 +42,12 @@ pub struct Type {
 impl PartialEq for Type {
     fn eq(&self, other: &Type) -> bool {
         self.id == other.id
+    }
+}
+
+impl Hash for Type {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state)
     }
 }
 
@@ -58,6 +73,17 @@ impl Type {
     /// different for equal types. This should only be used to provide diagnostic information.
     pub fn name(&self) -> &'static str {
         self.name
+    }
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for Type {
+    type Value = Box<dyn DynClone>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        deserialize_dyn_clone(deserializer, self)
     }
 }
 
@@ -174,9 +200,17 @@ impl Error for TypeError {}
 ///
 /// A blanket implementation of this trait is given for all applicable types: anything that
 /// implements both [`Clone`] and [`Any`].
+///
+/// There is also deserialization of particular types implementing `DynClone` provided by the
 pub trait DynClone: 'static + Any + Send + Sync {
     /// Produces a value that can create further clones
     fn dyn_clone(&self) -> Box<dyn DynClone>;
+
+    /// Returns the base type of the value
+    fn base_type(&self) -> Type;
+
+    /// Converts a reference to `dyn DynClone` to a reference to `dyn Any`
+    fn as_any(&self) -> &(dyn Any + Send + Sync);
 
     /// Produces a more general [`BoxedAny`], which cannot be cloned but does have extra type
     /// information attached.
@@ -188,7 +222,273 @@ impl<T: 'static + Any + Send + Sync + Clone> DynClone for T {
         Box::new(self.clone())
     }
 
+    fn base_type(&self) -> Type {
+        Type::new::<T>()
+    }
+
+    fn as_any(&self) -> &(dyn Any + Send + Sync) {
+        self
+    }
+
     fn clone_to_boxed_any(&self) -> BoxedAny {
         BoxedAny::new(self.clone())
+    }
+}
+
+impl serde::Serialize for dyn DynClone {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_dyn_clone(serializer, self)
+    }
+}
+
+/// (*Internal*) The global deserializer type
+pub type Deserializer<'a> = &'a mut serde_yaml::Deserializer<'a>;
+
+/// (*Internal*) The global deserializer's error type
+pub type DeserializerError = <Deserializer<'static> as serde::Deserializer<'static>>::Error;
+
+/// (*Internal*) The global serializer type
+pub type Serializer = serde_yaml::Serializer;
+
+/// (*Internal*) A registered (`Type`, `Deserializer`) pair with the function to deserialize to
+/// that type
+///
+/// Construction of this type is only for internal use by the [`#[derive(DeserializeDynClone)]`] and
+/// [`register_DynClone!`] macros.
+///
+/// This assumes that the global deserializer is - in particular - `serde_yaml::de::Deserializer`,
+/// as given by the [`Deserializer`] type alias.
+///
+/// [`#[derive(DeserializeDynClone)]`]: crate::macros::DeserializeDynClone
+/// [`register_DynClone!`]: crate::macros::register_DynClone
+pub struct RegisteredSerde {
+    pub base_ty: Type,
+    pub ser_ptr: for<'a> fn(
+        Serializer,
+        &'a dyn DynClone,
+    ) -> Result<
+        <Serializer as serde::Serializer>::Ok,
+        <Serializer as serde::Serializer>::Error,
+    >,
+    pub de_ptr: for<'a> fn(Deserializer<'a>) -> Result<Box<dyn DynClone>, DeserializerError>,
+}
+
+struct Serde<S, D> {
+    ser: S,
+    de: D,
+}
+
+lazy_static! {
+    /// (*Internal*) The registry of types and their deserialization functions
+    static ref REGISTRY: HashMap<
+        Type,
+        Serde<
+            for<'a> fn(Serializer, &'a dyn DynClone) -> Result<<Serializer as serde::Serializer>::Ok, <Serializer as serde::Serializer>::Error>,
+            for<'a> fn(Deserializer<'a>) -> Result<Box<dyn DynClone>, DeserializerError>,
+        >
+    > = {
+        // This isn't required to be here (it doesn't run code), but it's nice to have everything
+        // in one place.
+        inventory::collect!(RegisteredSerde);
+
+        inventory::iter::<RegisteredSerde>().map(|d| {
+            (d.base_ty, Serde { ser: d.ser_ptr, de: d.de_ptr })
+        }).collect()
+    };
+}
+
+/// Deserializes the given [`Type`] implementing [`DynClone`]
+///
+/// This is the entrypoint to dynamic deserialization, generally used for configuration
+/// (particularly [`KeybindingSet`]s).
+///
+// TODO-DOC: This needs an example; good to add once the dynamic deserialization in keybindings
+// is working. Also need a note about `serialize_dyn_clone`
+///
+/// If the deserializer is not the same type as the alias [`crate::any::Deserializer`], this
+/// function will panic. It will also panic if the type is not recognized.
+pub fn deserialize_dyn_clone<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    as_type: Type,
+) -> Result<Box<dyn DynClone>, D::Error> {
+    trait DeserializeDynClone<'de>: serde::Deserializer<'de> {
+        fn deserialize_dyn_clone(self, as_type: Type) -> Result<Box<dyn DynClone>, Self::Error>;
+    }
+
+    impl<'de, D: serde::Deserializer<'de>> DeserializeDynClone<'de> for D {
+        default fn deserialize_dyn_clone(
+            self,
+            _as_type: Type,
+        ) -> Result<Box<dyn DynClone>, Self::Error> {
+            panic!("unrecognized deserializer")
+        }
+    }
+
+    impl<'a, 'de> DeserializeDynClone<'de> for Deserializer<'a> {
+        fn deserialize_dyn_clone(
+            self,
+            as_type: Type,
+        ) -> Result<Box<dyn DynClone>, DeserializerError> {
+            match REGISTRY.get(&as_type) {
+                Some(Serde { de, .. }) => de(self),
+                None => panic!(
+                    "no registered deserializer found for type `{}`",
+                    as_type.name()
+                ),
+            }
+        }
+    }
+
+    deserializer.deserialize_dyn_clone(as_type)
+}
+
+pub fn serialize_dyn_clone<S: serde::Serializer>(
+    serializer: S,
+    dyn_clone: &dyn DynClone,
+) -> Result<S::Ok, S::Error> {
+    trait SerializeDynClone: serde::Serializer {
+        fn serialize_dyn_clone(self, dyn_clone: &dyn DynClone) -> Result<Self::Ok, Self::Error>;
+    }
+
+    impl<S: serde::Serializer> SerializeDynClone for S {
+        default fn serialize_dyn_clone(self, _: &dyn DynClone) -> Result<Self::Ok, Self::Error> {
+            panic!("unrecognized serializer");
+        }
+    }
+
+    impl SerializeDynClone for Serializer {
+        fn serialize_dyn_clone(self, dyn_clone: &dyn DynClone) -> Result<Self::Ok, Self::Error> {
+            match REGISTRY.get(&dyn_clone.base_type()) {
+                Some(Serde { ser, .. }) => ser(self, dyn_clone),
+                None => panic!(
+                    "no registered serializer found for type `{}`",
+                    dyn_clone.base_type().name()
+                ),
+            }
+        }
+    }
+
+    serializer.serialize_dyn_clone(dyn_clone)
+}
+
+/// A map of [`Type`]s to functions producing them
+///
+/// This is essentially a strongly-typed wrapper around a `HashMap` of boxed functions. The
+/// facilities here are designed around using a collection of functions to produce an output type,
+/// choosing the correct function based on the types that they output.
+///
+/// As such, this map cannot contain multiple functions producing the same output type, even if
+/// they take different inputs.
+#[derive(Default)]
+pub struct TypedFnMap<Ctx> {
+    inner: HashMap<Type, TypedMapEntry<Ctx>>,
+}
+
+/// An individual entry in the [`TypedFnMap`]
+///
+/// Values of this type are only made available when they're discarded due to duplicates from the
+/// [`TypedMap::insert`] method. The fields here are public in the hopes that error mesages might
+/// be improved.
+pub struct TypedMapEntry<Ctx> {
+    pub input_type: Type,
+    pub output_type: Type,
+    // TODO-FEATURE: We should generalize over the signature of these functions, so that
+    // `TypedFnMap` doesn't *need* to only be for `Box<dyn DynClone>`, but maybe for any container
+    // that can be constructed from any type.
+    pub func: Box<dyn Fn(Ctx, BoxedAny) -> Result<Box<dyn DynClone>, String>>,
+}
+
+impl<Ctx> TypedFnMap<Ctx> {
+    /// Constructs a new, empty `TypedFnMap`
+    pub fn new() -> Self {
+        TypedFnMap {
+            inner: HashMap::new(),
+        }
+    }
+
+    /// Inserts a function into the `TypedFnMap`, returning the previous entry providing that
+    /// output type, if there was any
+    pub fn insert<Inp, Out>(
+        &mut self,
+        func: impl 'static + Fn(Ctx, Inp) -> Result<Out, String>,
+    ) -> Option<TypedMapEntry<Ctx>>
+    where
+        Inp: Any + Send + Sync,
+        Out: DynClone,
+    {
+        let input_type = Type::new::<Inp>();
+        let output_type = Type::new::<Out>();
+
+        let new_entry = TypedMapEntry {
+            input_type,
+            output_type,
+            func: Box::new(move |ctx, any| {
+                let val = any
+                    .try_downcast()
+                    .expect("unexpected input type to `TypedMap` entry");
+
+                Ok(Box::new(func(ctx, val)?) as Box<Out> as Box<dyn DynClone>)
+            }),
+        };
+
+        self.inner.insert(output_type, new_entry)
+    }
+
+    /// Uses the target type to create the correct input, mapping that with a pre-defined function,
+    /// if available
+    ///
+    /// Upon success, this method returns the original type (before being cloned), paired with the
+    /// value after being mapped by a pre-registered function, if any applicable function exists. If
+    /// there was no applicable function to produce the desired output type, `create_input` will
+    /// simply be called with the output type and the second returned value will be a clone of the
+    /// first.
+    ///
+    /// This method primarily exists to support the specifics of [`KeybindingSet`] deserialization.
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// use crate::any::{Type, TypedFnMap, DynClone};
+    ///
+    /// fn parse_any(input: &str, ty: Type) -> Result<Box<dyn DynClone>, String> {
+    ///     // This function is magic. For the sake of this example,
+    ///     // we'll just assume that it exists. This is not too
+    ///     // dissimilar to how dynamic deserialization works.
+    ///     // (see: crate::any::deserialize_dyn_clone)
+    ///     # unimplemented!()
+    /// }
+    ///
+    /// fn foo(input: &str, fn_map: TypedFnMap) {
+    ///     // The actual example of how to use this:
+    ///     let (original, mapped) = fn_map
+    ///         .map(Type::new::<String>(), |e| e, |t| parse_any(input, ty))
+    ///         .expect("failed to parse");
+    ///
+    ///     // do stuff with `original` and `mapped` ...
+    /// }
+    /// ```
+    /// Internally, after deserializing [`KeybindingSet`]s, we use `mapped` as the actual value of
+    /// the constant but serialize with `original` (because it is the value that was initially
+    /// deserialized).
+    pub fn map<E>(
+        &self,
+        context: Ctx,
+        target: Type,
+        from_string: impl Fn(String) -> E,
+        create_input: impl FnOnce(Type) -> Result<Box<dyn DynClone>, E>,
+    ) -> Result<(Box<dyn DynClone>, Box<dyn DynClone>), E> {
+        match self.inner.get(&target) {
+            None => {
+                let original = create_input(target)?;
+                let cloned = (&*original).dyn_clone();
+                Ok((original, cloned))
+            }
+            Some(entry) => {
+                let original = create_input(entry.input_type)?;
+                let mapped = (entry.func)(context, (&*original).clone_to_boxed_any())
+                    .map_err(from_string)?;
+                Ok((original, mapped))
+            }
+        }
     }
 }

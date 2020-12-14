@@ -1,6 +1,5 @@
 //! Wrapper module around [`KeyEvent`] and [`KeyCode`]
 
-use super::KeyModifiers;
 use crate::{XFrom, XInto};
 use crossterm::event;
 use serde::{Deserialize, Serialize};
@@ -12,20 +11,10 @@ pub struct KeyEvent {
     pub mods: Option<KeyModifiers>,
 }
 
-impl XFrom<event::KeyEvent> for KeyEvent {
-    fn xfrom(mut ev: event::KeyEvent) -> Self {
-        use event::KeyModifiers as Mods;
-
-        match &mut ev.code {
-            event::KeyCode::Char(ref mut c) if c.is_ascii_uppercase() => {
-                c.make_ascii_lowercase();
-                ev.modifiers |= Mods::SHIFT;
-            }
-            _ => (),
-        }
-
+impl From<event::KeyEvent> for KeyEvent {
+    fn from(mut ev: event::KeyEvent) -> Self {
         Self {
-            code: ev.code.xinto(),
+            code: ev.code.into(),
             mods: ev.modifiers.xinto(),
         }
     }
@@ -53,8 +42,8 @@ pub enum KeyCode {
     Esc,
 }
 
-impl XFrom<event::KeyCode> for KeyCode {
-    fn xfrom(code: event::KeyCode) -> KeyCode {
+impl From<event::KeyCode> for KeyCode {
+    fn from(code: event::KeyCode) -> KeyCode {
         use KeyCode::*;
         match code {
             event::KeyCode::Backspace => Backspace,
@@ -79,27 +68,35 @@ impl XFrom<event::KeyCode> for KeyCode {
     }
 }
 
-/*
-impl KeyEvent {
-    pub fn none(c: char) -> KeyEvent {
-        KeyEvent {
-            code: KeyCode::Char(c),
-            mods: KeyModifiers::NONE,
-        }
-    }
+/// A set of modifiers attached to a single [`KeyEvent`]
+///
+/// This is quite different from crossterm's [`KeyModifiers`](crossterm::event::KeyModifiers)
+/// because (1) it disregards shift and (2) it explicitly lists possible combinations of the
+/// remaining modifiers (none of them may occur here).
+///
+/// It's worth noting `alt+ctrl` is not possible for key inputs, but *is* possible on mouse inputs
+/// - those are represented by [`MouseModifiers`](super::MouseModifiers).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum KeyModifiers {
+    Alt,
+    Ctrl,
+}
 
-    pub fn shift(c: char) -> KeyEvent {
-        KeyEvent {
-            code: KeyCode::Char(c),
-            mods: KeyModifiers::SHIFT,
-        }
-    }
+// We need to implement XFrom in order to get conversion to Option
+impl XFrom<event::KeyModifiers> for Option<KeyModifiers> {
+    fn xfrom(mods: event::KeyModifiers) -> Self {
+        use crossterm::event::KeyModifiers as Mods;
 
-    pub fn ctrl(c: char) -> KeyEvent {
-        KeyEvent {
-            code: KeyCode::Char(c),
-            mods: KeyModifiers::CTRL,
+        let has_ctrl = mods.contains(Mods::CONTROL);
+        let has_alt = mods.contains(Mods::ALT);
+
+        use KeyModifiers::*;
+
+        match (has_alt, has_ctrl) {
+            (false, false) => None,
+            (true, false) => Some(Alt),
+            (false, true) => Some(Ctrl),
+            (true, true) => panic!("unexpected key input combination; please file a bug report indicating that this error occured"),
         }
     }
 }
-*/

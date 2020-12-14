@@ -94,7 +94,7 @@ pub fn config(input: TokenStream) -> TokenStream {
     };
 
     let build_struct_item = quote_spanned! {builder_name.span()=>
-        #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+        #[derive(Default, serde::Serialize, serde::Deserialize)]
         #vis struct #builder_name {
             #( #builder_fields, )*
         }

@@ -5,14 +5,16 @@
 //! This module only provides the facilities for interaction *between* [`View`]s; the entrypoint
 //! for handling the tree of `View`s is taken care of by the [`container`](crate::container) module.
 
-use crate::any::BoxedAny;
+use crate::any::{Any, BoxedAny};
 use crate::config::{Attribute, GetAttrAny};
 use crate::container::{Input, Painter, Refresh};
-use crate::keys::KeybindingSet;
+use crate::event::KeyEvent;
 use crate::macros::{async_method, config, impl_GetAttrAny, init};
+use crate::modes::{ModeKind, ModeOutput, ModeSet, TryFromWithModes};
 use crate::utils::Never;
 use crate::{TermPos, TermSize, Textual};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ops::Deref;
 
 mod file;
@@ -25,29 +27,65 @@ init!();
 
 config! {
     pub struct Config (ConfigBuilder) {
-        keys: Modes<KeybindingSet<Command<Never>>> = default_keybindings(),
+        keys: ModeSet<Command<Never>> = default_keybindings(),
     }
 }
 
-fn default_keybindings() -> Modes<KeybindingSet<Command<Never>>> {
+fn default_keybindings() -> ModeSet<Command<Never>> {
     todo!()
 }
 
+// @def view::Command v0
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum Command<T> {
+enum Command<T, M = ModeKind> {
     // TODO-FEATURE: add other general commands here
-    ChangeMode(ModeKind),
+    ChangeMode(M),
+    NoSuchKeybinding(Vec<KeyEvent>),
     Other(T),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Modes<T> {
-    // TODO
-    inner: T,
+impl<T: 'static + Any + Send + Sync> ModeOutput for Command<T>
+where
+    T: 'static + Any + Send + Sync + Clone,
+{
+    type WithModesSet = Self;
+
+    fn as_switch_mode(&self) -> Option<ModeKind> {
+        match self {
+            Command::ChangeMode(k) => Some(*k),
+            _ => None,
+        }
+    }
+
+    fn switches_provider(&self) -> bool {
+        match self {
+            Command::ChangeMode(_) | Command::Other(_) | Command::NoSuchKeybinding(_) => false,
+        }
+    }
+
+    fn make_failed(keys: Vec<KeyEvent>) -> Self {
+        Command::NoSuchKeybinding(keys)
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ModeKind {}
+impl<T> TryFromWithModes for Command<T> {
+    type Input = Command<T, String>;
+
+    fn try_from_with_modes(
+        input: Self::Input,
+        modes: &HashMap<String, ModeKind>,
+    ) -> Result<Command<T>, String> {
+        use Command::*;
+
+        let this = match input {
+            ChangeMode(m) => ChangeMode(ModeKind::try_from_with_modes(m, modes)?),
+            NoSuchKeybinding(ks) => NoSuchKeybinding(ks),
+            Other(t) => Other(t),
+        };
+
+        Ok(this)
+    }
+}
 
 /// The raison d'être of this module
 ///
