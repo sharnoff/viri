@@ -26,7 +26,8 @@
     unreachable_patterns,
     unused_must_use,
     unused_imports,
-    unused_mut
+    unused_mut,
+    bare_trait_objects
 )]
 
 use clap::{Arg, ArgMatches};

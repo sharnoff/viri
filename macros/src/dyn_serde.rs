@@ -32,7 +32,7 @@ fn submit_ty(ty: impl ToTokens) -> TokenStream {
                     de: crate::any::Deserializer<'a>,
                 ) -> Result<Box<dyn crate::any::DynClone>, crate::any::DeserializerError> {
                     <#ty as serde::Deserialize>::deserialize(de)
-                        .map(|v| <Box<#ty>>::new(v) as Box<crate::any::DynClone>)
+                        .map(|v| <Box<#ty>>::new(v) as Box<dyn crate::any::DynClone>)
                 }
 
                 __de
@@ -44,8 +44,6 @@ fn submit_ty(ty: impl ToTokens) -> TokenStream {
                     serializer: _S,
                     dyn_clone: &'a dyn crate::any::DynClone,
                 ) -> Result<<_S as serde::Serializer>::Ok, <_S as serde::Serializer>::Error> {
-                    use crate::any::{Any, DynClone};
-
                     let v = dyn_clone.as_any()
                         .downcast_ref::<#ty>()
                         .ok_or_else(|| format!("unexpected type: expected `{}`, found `{}`", crate::any::Type::new::<#ty>().name(), dyn_clone.base_type().name()))

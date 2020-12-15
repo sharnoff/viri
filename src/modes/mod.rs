@@ -453,7 +453,7 @@ mod tests {
         #[crate::macros::named("modes::test::make_number")]
         fn make_number(head: char, tail: Vec<char>) -> u32 {
             let base = '0' as u32;
-            let mut n = head as u32 - base;
+            let n = head as u32 - base;
             tail.into_iter().fold(n, |n, c| n * 10 + (c as u32) - base)
         }
 
