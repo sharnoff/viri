@@ -1,12 +1,14 @@
+use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, quote_spanned};
-use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, Block, Item, Path, Stmt};
 
 /// A wrapper struct to parse the inside of a block expression
+#[derive(Parse)]
 struct InnerBlock {
+    #[call(Block::parse_within)]
     stmts: Vec<Stmt>,
 }
 
@@ -85,12 +87,4 @@ pub fn require_initialized(input: TokenStream) -> TokenStream {
         assert!(is_initialized);
     })
     .into()
-}
-
-impl Parse for InnerBlock {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(InnerBlock {
-            stmts: Block::parse_within(input)?,
-        })
-    }
 }

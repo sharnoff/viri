@@ -4,23 +4,27 @@
 //! refer there for additional information. Documentation for the macros can be found where they are
 //! re-exported (in the `macros` submodule).
 
+use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
-use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{braced, parse_macro_input, Attribute, Expr, Ident, Token, Type, Visibility};
+use syn::{parse_macro_input, token, Attribute, Expr, Ident, Token, Type, Visibility};
 
 // Meta-note: Fields with the name `attr(s)` refer to item attributes, not "attributes" as used in
 // the editor.
 
 /// The input to the `new_attrs!` macro
+#[derive(Parse)]
 struct NewAttrsInput {
+    #[parse_terminated(AttrDefinition::parse)]
     inner: Punctuated<AttrDefinition, Token![,]>,
 }
 
+#[derive(Parse)]
 struct AttrDefinition {
+    #[call(Attribute::parse_outer)]
     attrs: Vec<Attribute>,
     vis: Visibility,
     name: Ident,
@@ -87,12 +91,18 @@ pub fn new_attrs(input: TokenStream) -> TokenStream {
 }
 
 /// Input for the `provide_attrs!` macro
+#[derive(Parse)]
 struct ProvideAttrsInput {
     base_ty: Type,
     _right_arrow: Token![=>],
+    #[brace]
+    _brace: token::Brace,
+    #[inside(_brace)]
+    #[parse_terminated(AttrValue::parse)]
     values: Punctuated<AttrValue, Token![,]>,
 }
 
+#[derive(Parse)]
 struct AttrValue {
     name: Ident,
     _right_arrow: Token![=>],
@@ -202,54 +212,4 @@ pub fn impl_get_attr_any(input: TokenStream) -> TokenStream {
         }
     )
     .into()
-}
-
-///////////////////////////
-// Parse Implementations //
-///////////////////////////
-
-impl Parse for NewAttrsInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(NewAttrsInput {
-            inner: input.parse_terminated(AttrDefinition::parse)?,
-        })
-    }
-}
-
-impl Parse for AttrDefinition {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(AttrDefinition {
-            attrs: input.call(Attribute::parse_outer)?,
-            vis: input.parse()?,
-            name: input.parse()?,
-            _colon: input.parse()?,
-            ty: input.parse()?,
-            _eq: input.parse()?,
-            expr: input.parse()?,
-        })
-    }
-}
-
-impl Parse for ProvideAttrsInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(ProvideAttrsInput {
-            base_ty: input.parse()?,
-            _right_arrow: input.parse()?,
-            values: {
-                let curlies;
-                braced!(curlies in input);
-                curlies.parse_terminated(AttrValue::parse)?
-            },
-        })
-    }
-}
-
-impl Parse for AttrValue {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(AttrValue {
-            name: input.parse()?,
-            _right_arrow: input.parse()?,
-            expr: input.parse()?,
-        })
-    }
 }

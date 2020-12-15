@@ -1,7 +1,7 @@
+use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, quote_spanned, ToTokens};
-use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
@@ -19,13 +19,22 @@ struct NewMethodSignature {
     output: TokenStream2,
 }
 
+#[derive(Parse)]
 struct MethodItem {
+    #[call(Attribute::parse_outer)]
     attrs: Vec<Attribute>,
     vis: Visibility,
     defaultness: Option<Token![default]>,
     sig: Signature,
-    default: Option<Block>,
-    semi_token: Option<Token![;]>,
+    body: MethodBody,
+}
+
+#[derive(Parse)]
+enum MethodBody {
+    #[peek(syn::token::Brace, name = "curly braces")]
+    Default(Block),
+    #[peek(Token![;], name = "semicolon")]
+    Semi(Token![;]),
 }
 
 pub fn async_method(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -44,8 +53,7 @@ pub fn async_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         vis,
         defaultness,
         sig,
-        default,
-        semi_token,
+        body,
     } = method;
 
     // First, check a few things about the signature - notably including at
@@ -54,7 +62,7 @@ pub fn async_method(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let new_body = new_method_body(default, semi_token);
+    let new_body = new_method_body(body);
 
     quote!(
         #( #attrs )*
@@ -115,16 +123,13 @@ fn check_signature(sig: Signature) -> syn::Result<NewMethodSignature> {
 }
 
 // one of the two arguments will always be provided - never both or neither
-fn new_method_body(default: Option<Block>, semi_token: Option<Token![;]>) -> TokenStream2 {
-    if let Some(semi) = semi_token {
-        return quote!( #semi );
-    }
-
-    let block = default.expect("method had neither function body nor semicolon");
-
-    quote_spanned! {
-        block.span()=>
-        { std::boxed::Box::pin(async move #block) }
+fn new_method_body(body: MethodBody) -> TokenStream2 {
+    match body {
+        MethodBody::Semi(token) => quote!( #token ),
+        MethodBody::Default(block) => quote_spanned! {
+            block.span()=>
+            { std::boxed::Box::pin(async move #block) }
+        },
     }
 }
 
@@ -275,31 +280,6 @@ impl HasRef for syn::Path {
             }),
             Parenthesized(_) | None => false,
         }
-    }
-}
-
-impl Parse for MethodItem {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let attrs = input.call(Attribute::parse_outer)?;
-        let vis = input.parse()?;
-        let defaultness = input.parse()?;
-        let sig = input.parse()?;
-
-        let semi_token = input.parse::<Option<Token![;]>>()?;
-        let mut default = None;
-
-        if semi_token.is_none() {
-            default = Some(input.parse()?);
-        }
-
-        Ok(MethodItem {
-            attrs,
-            vis,
-            defaultness,
-            sig,
-            semi_token,
-            default,
-        })
     }
 }
 

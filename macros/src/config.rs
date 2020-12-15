@@ -623,43 +623,23 @@ impl CustomAttr {
     }
 
     fn parse_builder(span: Span, tokens: TokenStream2) -> syn::Result<Self> {
+        #[derive(Parse)]
         struct BuilderAttr {
+            #[paren]
             _paren_token: token::Paren,
+            #[inside(_paren_token)]
             ty: Type,
+            #[inside(_paren_token)]
+            #[peek(Token![=>])]
             tail: Option<BuilderTail>,
         }
 
+        #[derive(Parse)]
         struct BuilderTail {
             _arrow: Token![=>],
             from_builder: Path,
             _comma: Token![,],
             into_builder: Path,
-        }
-
-        impl Parse for BuilderAttr {
-            fn parse(input: ParseStream) -> syn::Result<Self> {
-                let paren;
-                Ok(BuilderAttr {
-                    _paren_token: parenthesized!(paren in input),
-                    ty: paren.parse()?,
-                    tail: BuilderTail::try_parse(&paren)?,
-                })
-            }
-        }
-
-        impl BuilderTail {
-            fn try_parse(input: ParseStream) -> syn::Result<Option<Self>> {
-                if !input.peek(Token![=>]) {
-                    return Ok(None);
-                }
-
-                Ok(Some(BuilderTail {
-                    _arrow: input.parse()?,
-                    from_builder: input.parse()?,
-                    _comma: input.parse()?,
-                    into_builder: input.parse()?,
-                }))
-            }
         }
 
         syn::parse2::<BuilderAttr>(tokens).map(move |attr| {
@@ -669,13 +649,8 @@ impl CustomAttr {
     }
 
     fn parse_flatten(span: Span, tokens: TokenStream2) -> syn::Result<Self> {
+        #[derive(Parse)]
         struct Empty;
-
-        impl Parse for Empty {
-            fn parse(_input: ParseStream) -> syn::Result<Self> {
-                Ok(Empty)
-            }
-        }
 
         syn::parse2(tokens).map(move |Empty| CustomAttr::Flatten(span))
     }
