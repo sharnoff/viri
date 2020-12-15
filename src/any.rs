@@ -24,7 +24,6 @@ pub use std::any::{Any, TypeId};
 
 init! {
     lazy_static::initialize(&REGISTRY);
-    panic!("number of collected types: {}", REGISTRY.len());
 }
 
 /// A replacement for [`std::any::TypeId`] with names built-in

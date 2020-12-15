@@ -12,7 +12,7 @@ pub struct KeyEvent {
 }
 
 impl From<event::KeyEvent> for KeyEvent {
-    fn from(mut ev: event::KeyEvent) -> Self {
+    fn from(ev: event::KeyEvent) -> Self {
         Self {
             code: ev.code.into(),
             mods: ev.modifiers.xinto(),

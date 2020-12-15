@@ -536,7 +536,6 @@ impl<'e, 'p, 'de, Ctx: Copy> Visitor<'de> for ComponentVisitor<'e, 'p, Ctx> {
             (Field::Map, variant) => variant.tuple_variant(2, MapVisitor(self)),
             (Field::Named, variant) => variant.newtype_variant_seed(NamedVisitor(self)),
             (Field::Const, variant) => variant.tuple_variant(2, ConstVisitor(self)),
-            _ => todo!(),
         }
     }
 }

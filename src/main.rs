@@ -19,16 +19,14 @@
     const_generics,
     specialization,
 )]
-// Other flags:
-#![allow(clippy::needless_lifetimes)] // They aren't needless due to a bug with GATs
-#![warn(clippy::style, clippy::perf)]
+// Lint flags:
 #![deny(
-    clippy::perf,
-    clippy::len_zero,
-    clippy::redundant_closure,
     private_in_public,
     mutable_borrow_reservation_conflict,
-    unused_must_use
+    unreachable_patterns,
+    unused_must_use,
+    unused_imports,
+    unused_mut
 )]
 
 use clap::{Arg, ArgMatches};

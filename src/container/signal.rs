@@ -2,7 +2,6 @@
 
 use crate::event::{KeyEvent, MouseEvent};
 use crate::TermSize;
-use crate::XInto;
 use smallvec::{smallvec, SmallVec};
 use std::error;
 use std::fmt::{self, Display, Formatter};

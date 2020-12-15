@@ -66,7 +66,7 @@ impl StyledString<Vec<Symbol>> {
 
 impl StyledContent<Vec<Symbol>> {
     /// Ensures that the content is within the required width by removing symbols from the left
-    pub fn trim_left_to(mut self, width: usize) -> Self {
+    pub fn trim_left_to(self, width: usize) -> Self {
         let mut new_segments = Vec::new();
 
         // We need to walk backwards through the list of symbols, removing rest once we have enough
