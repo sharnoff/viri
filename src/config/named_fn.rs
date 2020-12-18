@@ -1,6 +1,57 @@
 //! Support for (de-)serializable user-defined functions
-//
-// TODO-DOC - this module needs a fair amount of documentation to explain how it works
+//!
+//! Before a description of the functionality provided, it might be useful to have an explanation
+//! of the motivation behind providing user-defined functions.
+//!
+//! ## Motivation
+//!
+//! Like nearly all technically interesting constructions in this project, named functions exist
+//! primarily to help with configuration - specifically for keybindings. More information is
+//! available in the [`keys`] and [`modes`] modules, but the reason is essentially this:
+//!
+//! [`keys`]: crate::keys
+//! [`modes`]: crate::modes
+//!
+//! Because all keybindings aren't just for matching - they actually *produce* the output values as
+//! well - there needs to be some way of transforming the values that are emitted. One half of this
+//! is provided by the `Const` variants of the keybindings, with [dynamic deserialization], but the
+//! other half is provided here, by mapping those values (or: a list of values) through a function
+//! to produce the desired output type.
+//!
+//! This is a core component of the configuration system, and so it's worth describing at length
+//! here.
+//!
+//! ## Features
+//!
+//! This section serves primarily as an extension of the documentation provided for the [`named`]
+//! macro. At risk of repeating the documentation there, the primary usage is simply providing a
+//! name for a pre-existing, non-generic function. For example:
+//!
+//! ```
+//! use crate::macros::named;
+//!
+//! // Even though we do have a return type here, it isn't *strictly* necessary.
+//! #[named("so_long_and")]
+//! fn thanks_for_all_the(n: usize) -> usize {
+//!     for _ in 0..n {
+//!         println!("fish!");
+//!     }
+//!
+//!     n
+//! }
+//! ```
+//!
+//! This then allows deserializing the string "so_long_and" into this function, providing the
+//! concrete interface guaranteed by a [`NamedFunction`].
+//!
+// TODO-FEATURE/TODO-DOC: Once named functions are expanded a little, this should be updated to
+// have other use cases here. That's essentially why the so much here has not been written yet.
+//!
+//! [`named`]: crate::macros::named
+//!
+//! ## Implementation
+//!
+// TODO-DOC
 
 use crate::any::BoxedAny;
 use crate::any::{Any, Type};
