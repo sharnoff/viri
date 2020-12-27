@@ -502,7 +502,7 @@ impl KeySet {
             // (Range, *)
             (Range(xlo, xhi, xmods), Range(ylo, yhi, ymods)) if xmods == ymods => {
                 match (xlo.max(ylo), xhi.min(yhi)) {
-                    (lo, hi) if lo <= hi => Some(Range(*lo, *hi, *xmods)),
+                    (lo, hi) if lo < hi => Some(Range(*lo, *hi, *xmods)),
                     _ => None,
                 }
             }
