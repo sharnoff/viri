@@ -6,6 +6,8 @@
 
 mod cursor;
 mod diff;
+pub mod history;
+mod history_core;
 
 pub use cursor::{Cursor, Pos};
 pub use diff::Diff;

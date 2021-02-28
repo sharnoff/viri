@@ -5,11 +5,9 @@ use std::ops::{Deref, Range};
 
 // TODO-FEATURE: `Collect` is valuable, but currently not needed.
 // mod collect;
-mod history;
 mod max_vec;
 
 // pub use collect::Collect;
-pub use history::{EditHistory, EditId};
 pub use max_vec::MaxVec;
 
 /// A marker trait for various types of containers that can be used to reference byte slices

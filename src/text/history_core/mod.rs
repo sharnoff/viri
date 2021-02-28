@@ -227,9 +227,10 @@ pub struct Edit<Time, R> {
     /// guaranteed to be correct are if it has no unapplied dependencies and all its dependent
     /// edits are unapplied (i.e. when it's in `EditHistory.topmost_applied` or
     /// `.bottommost_unapplied`).
-    diff: Diff<R>,
+    pub diff: Diff<R>,
 
-    time: Time,
+    /// The tagged time at which the edit occured
+    pub time: Time,
 
     /// The stack of edits requesting this edit be present (or not)
     cause_stack: CauseStack,
@@ -279,13 +280,13 @@ pub struct EditResult<R> {
     /// failed.
     ///
     /// In short, if you pass `override_newer = Yes`, this is safe to unwrap.
-    new_id: EditId,
+    pub new_id: EditId,
 
     /// The diff(s) that occured as a result of applying the edit. This is often, but not always,
     /// the original diff passed in.
     ///
     /// The [`Diff`]s should be applied in order, without modification to any of them
-    diffs: SmallVec<[Diff<R>; 1]>,
+    pub diffs: SmallVec<[Diff<R>; 1]>,
 
     /// The edits that were removed as a result of the edit. Edits within the `fixed` are not
     /// removed.
@@ -293,7 +294,7 @@ pub struct EditResult<R> {
     /// When provided here, the edits are not yet de-allocated. They can be accessed externally
     /// with the [`get_edit`](EditHistory::get_edit) method, and fully dropped with the
     /// [`drop_edits`](EditHistory::drop_edits) method.
-    removed: Vec<EditId>,
+    pub removed: Vec<EditId>,
 }
 
 /// The result of undoing an edit within an [`EditHistory`]
