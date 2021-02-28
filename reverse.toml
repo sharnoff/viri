@@ -5,4 +5,5 @@ def_version_group = 2
 req_match         = '''@req\s*([^\s]+|"[^"]*")\s*(v[\d\.]+)'''
 req_name_group    = 1
 req_version_group = 2
-exclude           = ["target", ".git", "macros/target"]
+warn_match        = '''@(req|def)'''
+exclude           = ["target", ".git", "macros/target", "reverse.toml"]
