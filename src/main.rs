@@ -1,23 +1,30 @@
 //! A rusty editor
 
 // "todo" categories:
-//  * TODO-ERROR: Places where error handling should be improved
-//  * TODO-ALG: Places where algorithms could be improved for efficiency
-//  * TODO-DOC: Places where documentation is desparately needed
+//  * TODO-ERROR: Where error handling should be improved
+//  * TODO-ALG: Where algorithms could be improved for efficiency
+//  * TODO-PERF: Where a small, independent performance improvement could be made
+//  * TODO-DOC: Where documentation is desparately needed
 //  * TODO-CORRECTNESS: Where the code might not be correct, but works for now
 //  * TODO-FEATURE: Where a feature should be added
 //  * TODO-CLEAN: Where the code is a little messy, could probably be improved
+//  * TODO-RFC#2229: Mess that can be fixed once RFC #2229 lands
 
 // Feature sets
 #![allow(incomplete_features)]
 #![feature(
     // generic_associated_types,
-    const_type_name, // allows `any::type_name` in a const context
+    const_type_name, // Allows `any::type_name` in a const context
     const_type_id, // Allows `TypeId::of` in a const context
-    rustc_attrs,
-    const_fn,
-    const_generics,
-    specialization,
+    rustc_attrs,   // Allows config! and init! trickery
+    const_fn, // Allows trait bounds in const fns -- `any::Type::new`
+    const_generics, // Needed for a whole bunch of things.
+    specialization,     // required for dynamic deserialization
+    generic_associated_types, // Required for `RangeSlice::Value`
+    // required for `text::diff::MaxVec`:
+    maybe_uninit_extra,
+    maybe_uninit_slice,
+    maybe_uninit_uninit_array,
 )]
 // Lint flags:
 #![deny(

@@ -5,8 +5,10 @@
 // low-level Pos
 
 mod cursor;
+mod diff;
 
 pub use cursor::{Cursor, Pos};
+pub use diff::Diff;
 
 // TODO-FEATURE
 pub trait Text {}
