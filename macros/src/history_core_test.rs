@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-//! Helper macro for testing an `EditHistory`
+//! Helper macro for testing a `HistoryCore`
 //!
 //! More information about this macro is available in the documentation for that module's tests.
 
@@ -143,7 +143,7 @@ struct Edits {
 }
 
 #[rustfmt::skip]
-pub fn edit_history_test(input: TokenStream) -> TokenStream {
+pub fn history_core_test(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as TestInput);
 
     // Generate the code for the function body. We start with `start`:
@@ -156,7 +156,7 @@ pub fn edit_history_test(input: TokenStream) -> TokenStream {
         use ::std::boxed::Box;
         use ::std::vec::Vec;
         use ::std::str::from_utf8 as str_from_utf8;
-        use crate::text::diff::history::{EditHistory, EditId};
+        use crate::text::diff::history::{HistoryCore, EditId};
     };
 
     func_body.extend(quote_spanned! {
@@ -167,7 +167,7 @@ pub fn edit_history_test(input: TokenStream) -> TokenStream {
     func_body.extend(quote! {
         let mut ids = <BTreeMap<&str, EditId>>::new();
         let mut names = <BTreeMap<EditId, &str>>::new();
-        let mut history = <EditHistory<usize, Box<[u8]>>>::new(#start_len);
+        let mut history = <HistoryCore<usize, Box<[u8]>>>::new(#start_len);
         let mut next_time = 0_usize;
     });
 

@@ -1,7 +1,7 @@
 //! Wrapper module for the [`PosMap`] type, a specialized data structure used to implement
-//! [`EditHistory::edit`]
+//! [`HistoryCore::edit`]
 //!
-//! [`EditHistory::edit`]: super::EditHistory::edit
+//! [`HistoryCore::edit`]: super::HistoryCore::edit
 
 use super::ranged::{Constant, IndexedRangeSlice, Ranged};
 use super::{BytesRef, Edit, EditId};
@@ -12,7 +12,7 @@ use std::ops::Range;
 // `Translation` is defined lower down in this module.
 use Translation::{Edited, Shifted};
 
-/// A specialized data structure used to implement [`EditHistory::edit`]
+/// A specialized data structure used to implement [`HistoryCore::edit`]
 ///
 /// There's a very specific problem that this is designed to solve: When we're adding an "old"
 /// edit, we can't immediately determine where it should go. We're given its position from *when it
@@ -27,13 +27,13 @@ pub(super) struct PosMap<Time, R> {
     /// with their position in the text object
     ///
     /// We essentially require all positions to be updated for each undo we simulate, just like how
-    /// the `EditHistory` does for any operation.
+    /// the `HistoryCore` does for any operation.
     bottommost_undone: BTreeMap<EditId, usize>,
 
     /// If it's desired, store the blame
     blame: Option<Ranged<Constant<Option<EditId>>>>,
 
-    /// Ensure that a `PosMap` can't be shared between `EditHistory`s - or at least not for ones
+    /// Ensure that a `PosMap` can't be shared between `HistoryCore`s - or at least not for ones
     /// with different types
     marker: PhantomData<(Time, R)>,
 }

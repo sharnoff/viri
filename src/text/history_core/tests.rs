@@ -1,4 +1,4 @@
-//! Testing for [`EditHistory`]
+//! Testing for [`HistoryCore`]
 //!
 //! This module primarily consists of hand-written test cases. These get a little tedious to write,
 //! so we have a macro for allowing us to express these a little more nicely. This macro is defined
@@ -17,7 +17,7 @@
 //! Note that `(<pre-context>)`, `(<post-context>)`, and `(<additionally undone>)` are all
 //! optional.
 
-use viri_macros::edit_history_test as test_case;
+use viri_macros::history_core_test as test_case;
 
 test_case! {
     fn simple_constructive() {

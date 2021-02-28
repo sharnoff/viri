@@ -5,7 +5,7 @@
 //! [`History`] struct, which does what it says it does.
 
 use super::diff::{BytesRef, Diff};
-use super::history_core::{EditHistory as CoreHistory, EditId};
+use super::history_core::{EditId, HistoryCore as CoreHistory};
 use std::cmp::Ordering;
 
 /// The time each edit is made, paired with an increasing counter to be independent of timing

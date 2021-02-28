@@ -1,8 +1,8 @@
-//! Wrapper module for the [`EditHistory`] type
+//! Wrapper module for the [`HistoryCore`] type
 //!
 //! In short, edit histories provide a method for managing clustered groups of [`Diff`]s on the
 //! same text object, with support for undoing and redoing edits on the individual level. Further
-//! information is provided in the [type's documentation](EditHistory).
+//! information is provided in the [type's documentation](HistoryCore).
 //!
 //! This is the most basic abstraction provided over sets of [`Diff`]s, with additional
 //! functionality provided by building on top of this.
@@ -35,10 +35,10 @@ use pos_map::{PosMap, TrackBlame};
 use ranged::{RangeSlice, Ranged};
 
 /// (*Internal*) The individual record of the regions a particular edit is responsible for
-/// affecting, as in [`EditHistory.blame`] or [`EditHistory.shadow`].
+/// affecting, as in [`HistoryCore.blame`] or [`HistoryCore.shadow`].
 ///
-/// [`EditHistory.blame`]: EditHistory#structfield.blame
-/// [`EditHistory.shadow`]: EditHistory#structfield.shadow
+/// [`HistoryCore.blame`]: HistoryCore#structfield.blame
+/// [`HistoryCore.shadow`]: HistoryCore#structfield.shadow
 type Blame = Ranged<Option<BlameRange>>;
 
 /// (*Internal*) The blame for a region of bytes, alongside the offset from the position of the
@@ -82,7 +82,7 @@ impl RangeSlice for BlameRange {
 /// the representation of a byte slice used for [`Diff`]s, required to implement [`BytesRef`].
 ///
 /// The interface for this type is currently (pending further use-cases) quite limited; an
-/// `EditHistory` is created with the [`new`](Self::new) function and functionality is primarily
+/// `HistoryCore` is created with the [`new`](Self::new) function and functionality is primarily
 /// exposed through the [`edit`], [`undo`], [`redo`], and [`try_{undo,redo}`] methods.
 ///
 /// The [module-level documentation] has more detailed information about usage of this type.
@@ -92,7 +92,7 @@ impl RangeSlice for BlameRange {
 /// [`edit`]: Self::redo
 /// [`try_{undo,redo}`]: Self::try_undo
 /// [module-level documentation]: self
-pub struct EditHistory<Time, R> {
+pub struct HistoryCore<Time, R> {
     /// The full list of edits, indexed by their `EditId`s
     ///
     /// Values of `None` indicate an edit that has been discarded. The minimum index of these
@@ -152,10 +152,10 @@ pub struct EditHistory<Time, R> {
     count: UniqueEditId,
 }
 
-/// (*Internal*) The edits stored in an [`EditHistory`]
+/// (*Internal*) The edits stored in a [`HistoryCore`]
 ///
 /// This is extracted out so that we can provide the [`get`](Self::get) and
-/// [`get_mut`](Self::get_mut) methods without requiring a full borrow on the `EditHistory` itself.
+/// [`get_mut`](Self::get_mut) methods without requiring a full borrow on the `HistoryCore` itself.
 struct Edits<Time, R> {
     /// The internal list of edits
     ls: Vec<Option<Edit<Time, R>>>,
@@ -164,7 +164,7 @@ struct Edits<Time, R> {
 /// A unique identifier corresponding to a single [`Edit`]
 ///
 /// It should be noted that `EditId`s are only unique for the lifetime of an edit; after an
-/// edit is discarded (a side-effect that may occur from calls to [`EditHistory::edit`]), the
+/// edit is discarded (a side-effect that may occur from calls to [`HistoryCore::edit`]), the
 /// corresponding `EditId` *will* be re-used.
 //
 // A note for the curious:
@@ -178,7 +178,7 @@ struct Edits<Time, R> {
 /// [module-level documentation](self).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EditId {
-    /// The index in the [`EditHistory`]'s list of edits that this points to
+    /// The index in the [`HistoryCore`]'s list of edits that this points to
     idx: usize,
 
     /// The unique identifier given to the corresponding edit; used for checking that this `EditId`
@@ -207,8 +207,8 @@ impl UniqueEditId {
 /// module, but the descriptions available here may provide some additional insight not given by the
 /// [module-level documentation](self).
 ///
-/// An `Edit` can be returned from an [`EditHistory`] by the [`get_edit`](EditHistory::get_edit) or
-/// [`drop_edits`](EditHistory::drop_edits) methods. This struct is primarily provided so that - if
+/// An `Edit` can be returned from a [`HistoryCore`] by the [`get_edit`](HistoryCore::get_edit) or
+/// [`drop_edits`](HistoryCore::drop_edits) methods. This struct is primarily provided so that - if
 /// edits are at some point discarded, their pieces may be retreived later.
 pub struct Edit<Time, R> {
     /// A unique id given to this edit alone; used for ensuring that [`EditId`]s pointing to the
@@ -225,7 +225,7 @@ pub struct Edit<Time, R> {
     ///
     /// The position of the diff is almost never correct. The *only* conditions under which it's
     /// guaranteed to be correct are if it has no unapplied dependencies and all its dependent
-    /// edits are unapplied (i.e. when it's in `EditHistory.topmost_applied` or
+    /// edits are unapplied (i.e. when it's in `HistoryCore.topmost_applied` or
     /// `.bottommost_unapplied`).
     pub diff: Diff<R>,
 
@@ -256,12 +256,12 @@ pub struct Edit<Time, R> {
     /// All edits `e` in `after` contain the [id](EditId) of this edit in `e.before`.
     after: Vec<(isize, EditId)>,
 
-    /// The previous region of `EditHistory.blame` that this edit was constructed on top of
+    /// The previous region of `HistoryCore.blame` that this edit was constructed on top of
     ///
     /// The size of the blame region is equal to `2 * self.old.len() + 1`
     previous_blame: Blame,
 
-    /// Like `previous_blame`, but for `EditHistory.shadow`. This field is only `Some(...)` if the
+    /// Like `previous_blame`, but for `HistoryCore.shadow`. This field is only `Some(...)` if the
     /// edit has been undone at some point
     ///
     /// Similarly to `previous_blame`, the size of the region is equal to `2 * self.new.len() + 1`
@@ -269,13 +269,13 @@ pub struct Edit<Time, R> {
     previous_shadow: Option<Blame>,
 }
 
-/// The result of adding an [`Edit`] to the [`EditHistory`]
+/// The result of adding an [`Edit`] to the [`HistoryCore`]
 ///
-/// For more information, see [`EditHistory::edit`] - the only method that returns this type.
+/// For more information, see [`HistoryCore::edit`] - the only method that returns this type.
 pub struct EditResult<R> {
     /// The id of the new `Edit`, if the edit was successful
     ///
-    /// If [`EditHistory::edit`] was passed `override_newer = Yes`, then this will never be `None`.
+    /// If [`HistoryCore::edit`] was passed `override_newer = Yes`, then this will never be `None`.
     /// If `override_newer = No`, this value equalling `None` indicates that applying the edit
     /// failed.
     ///
@@ -292,20 +292,20 @@ pub struct EditResult<R> {
     /// removed.
     ///
     /// When provided here, the edits are not yet de-allocated. They can be accessed externally
-    /// with the [`get_edit`](EditHistory::get_edit) method, and fully dropped with the
-    /// [`drop_edits`](EditHistory::drop_edits) method.
+    /// with the [`get_edit`](HistoryCore::get_edit) method, and fully dropped with the
+    /// [`drop_edits`](HistoryCore::drop_edits) method.
     pub removed: Vec<EditId>,
 }
 
-/// The result of undoing an edit within an [`EditHistory`]
+/// The result of undoing an edit within a [`HistoryCore`]
 ///
 /// This type is essentially the same as [`RedoResult`], but made distinct as part of an effort to
 /// guard against accidental incorrect usage.
 ///
 /// This contains both the required change to the text object and the set of other edits that may
 /// have been undone as well. It is the responsibility of the caller to record that these edits were
-/// undone - or separately check with [`EditHistory::is_present`] before calls to
-/// [`undo`](EditHistory::undo).
+/// undone - or separately check with [`HistoryCore::is_present`] before calls to
+/// [`undo`](HistoryCore::undo).
 pub struct UndoResult<R> {
     /// The change(s) required to the text object to account for this action
     ///
@@ -317,15 +317,15 @@ pub struct UndoResult<R> {
     pub undone: SmallVec<[EditId; 1]>,
 }
 
-/// The result of redoing an edit within an [`EditHistory`]
+/// The result of redoing an edit within a [`HistoryCore`]
 ///
 /// This type is essentially the same as [`UndoResult`], but made distinct as part of an effort to
 /// guard against accidental incorrect usage.
 ///
 /// This contains both the required change to the text object and the set of other edits that may
 /// have been redone as well. It is the responsibility of the caller to record that these edits were
-/// redone - or separately check with [`EditHistory::is_present`] before calls to
-/// [`redo`](EditHistory::redo).
+/// redone - or separately check with [`HistoryCore::is_present`] before calls to
+/// [`redo`](HistoryCore::redo).
 pub struct RedoResult<R> {
     /// The change(s) required to the text object to account for this action, in order
     ///
@@ -392,34 +392,34 @@ impl<Time, R> Edits<Time, R> {
 ////////////////
 
 /// An abstraction over immutable, unordered collections of [`EditId`]s, with access to an
-/// [`EditHistory`]
+/// [`HistoryCore`]
 ///
 /// There are standalone implementations provided for the standard library's set types: both
 /// [`BTreeSet`] and [`HashSet`]. The trait primarily exists so that the set of "fixed" edits used
-/// in [`EditHistory::edit`] does not need to be stored separately, and that the API need not be
+/// in [`HistoryCore::edit`] does not need to be stored separately, and that the API need not be
 /// dependent on particular outside data structures being used.
 ///
 /// There is also an implementation provided for zero-length arrays, allowing them to serve as the
 /// empty set.
 pub trait EditSet<Time, R> {
     /// Returns whether set contains the provided value
-    fn contains(&self, history: &EditHistory<R, Time>, edit: EditId) -> bool;
+    fn contains(&self, history: &HistoryCore<R, Time>, edit: EditId) -> bool;
 }
 
 impl<Time, R> EditSet<Time, R> for BTreeSet<EditId> {
-    fn contains(&self, _history: &EditHistory<R, Time>, edit: EditId) -> bool {
+    fn contains(&self, _history: &HistoryCore<R, Time>, edit: EditId) -> bool {
         BTreeSet::contains(self, &edit)
     }
 }
 
 impl<Time, R> EditSet<Time, R> for HashSet<EditId> {
-    fn contains(&self, _history: &EditHistory<R, Time>, edit: EditId) -> bool {
+    fn contains(&self, _history: &HistoryCore<R, Time>, edit: EditId) -> bool {
         HashSet::contains(self, &edit)
     }
 }
 
 impl<Time, R> EditSet<Time, R> for [EditId; 0] {
-    fn contains(&self, _history: &EditHistory<R, Time>, _edit: EditId) -> bool {
+    fn contains(&self, _history: &HistoryCore<R, Time>, _edit: EditId) -> bool {
         false
     }
 }
@@ -428,15 +428,15 @@ impl<'a, Time, R, S> EditSet<Time, R> for &'a S
 where
     S: EditSet<Time, R>,
 {
-    fn contains(&self, history: &EditHistory<R, Time>, edit: EditId) -> bool {
+    fn contains(&self, history: &HistoryCore<R, Time>, edit: EditId) -> bool {
         S::contains(*self, history, edit)
     }
 }
 
-impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
-    /// Creates a new, blank `EditHistory` for a text object with the given length
+impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
+    /// Creates a new, blank `HistoryCore` for a text object with the given length
     pub fn new(len: usize) -> Self {
-        EditHistory {
+        HistoryCore {
             edits: Edits { ls: Vec::new() },
             last_unused: None,
             blame: Ranged::new(None, 2 * len + 1),
@@ -460,7 +460,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
     ///
     /// This method will panic on any invalid `EditId`: always for edits that have since been
     /// dropped (with [`drop_edits`](Self::drop_edits)), and sometimes for edits corresponding to a
-    /// different [`EditHistory`].
+    /// different [`HistoryCore`].
     pub fn get_edit(&self, id: EditId) -> &Edit<Time, R> {
         self.edits.get("", id)
     }
@@ -572,7 +572,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
     /// The [module-level documentation](self) is required pre-reading for understanding this
     /// method.
     ///
-    /// `EditHistory::edit` works as you'd expect for normal cases; it's only the corner cases that
+    /// `HistoryCore::edit` works as you'd expect for normal cases; it's only the corner cases that
     /// add complexity to this method. As such, it is vitally important that you understand the
     /// precise behavior here before using it.
     ///
@@ -906,7 +906,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
     /// that are additionally undone here is returned as part of the [`UndoResult`]; this list
     /// *must* be processed.
     ///
-    /// Whether an edit has already been undone can be checked with [`EditHistory::is_present`].
+    /// Whether an edit has already been undone can be checked with [`HistoryCore::is_present`].
     /// For a fallible version of this edit, see [`try_undo`](Self::try_undo).
     pub fn undo(&mut self, id: EditId) -> UndoResult<R> {
         self.do_op::<Undo>(id).into()
@@ -933,7 +933,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
     /// edits that are redone here is returned as part of the [`RedoResult`]; this list *must* be
     /// processed.
     ///
-    /// Whether an edit has already been redone can be checked with [`EditHistory::is_present`].
+    /// Whether an edit has already been redone can be checked with [`HistoryCore::is_present`].
     /// For a fallible version of this method, see [`try_redo`](Self::try_redo).
     ///
     /// [`undo`]: Self::undo
@@ -947,7 +947,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
 // Internal implementation details //
 /////////////////////////////////////
 
-/// (*Internal*) The result of an operation, from [`EditHistory::do_op`] or [`EditHistory::try_op`]
+/// (*Internal*) The result of an operation, from [`HistoryCore::do_op`] or [`HistoryCore::try_op`]
 ///
 /// This only exists temporarily, before it is converted to an [`UndoResult`] or [`RedoResult`],
 /// which is provided the implementations of [`Into`].
@@ -978,7 +978,7 @@ impl<R> Into<UndoResult<R>> for OpResult<R> {
     }
 }
 
-impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
+impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
     fn make_pos_map(&self, time: &Time, track_blame: TrackBlame) -> PosMap<Time, R> {
         let mut pos_map = PosMap::new(self.len(), track_blame);
 
@@ -1124,7 +1124,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
     ///
     /// This method doesn't update any edit-local values (`diff`, `cause_stack`, etc.)
     fn update_single_op<Op: Operation<Time>>(&mut self, id: EditId) {
-        // There's a few structures in the `EditHistory` that need updating whenever we perform an
+        // There's a few structures in the `HistoryCore` that need updating whenever we perform an
         // operation, namely: `blame`, `topmost_applied`, and `bottommost_unapplied`.
         //
         // The essential change to `blame` is that we're either setting a range to equal this
@@ -1136,7 +1136,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
         // Because all of the edits in those sets must have valid diff positions, we also shift
         // those if needed.
 
-        let edit = self.edits.get_mut("`EditHistory` internal error: ", id);
+        let edit = self.edits.get_mut("`HistoryCore` internal error: ", id);
         let edit_idx = edit.diff.diff_idx;
 
         // Here, "old" and "new" refer to before & after this method is called; while the values
@@ -1172,7 +1172,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
 
             let restored_shadow = (edit.previous_shadow)
                 .take()
-                .expect("`EditHistory` internal error: redo edit without previous shadow");
+                .expect("`HistoryCore` internal error: redo edit without previous shadow");
             self.shadow.replace(old_blame_range, restored_shadow);
         }
 
@@ -1202,7 +1202,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
 
         // Shift everything in topmost_applied and bottommost_unapplied:
         for &id in (self.topmost_applied.iter()).chain(self.bottommost_unapplied.iter()) {
-            let edit = self.edits.get_mut("`EditHistory` internal error: ", id);
+            let edit = self.edits.get_mut("`HistoryCore` internal error: ", id);
             let pos = &mut edit.diff.diff_idx;
             if *pos < (edit_idx + old_size) {
                 *pos += new_size;
@@ -1215,7 +1215,7 @@ impl<Time: Clone + Ord, R: BytesRef> EditHistory<Time, R> {
         // `bottommost_unapplied`:
 
         for (offset, id) in edit_required_by {
-            let mut edit = self.edits.get_mut("`EditHistory` internal error: ", id);
+            let mut edit = self.edits.get_mut("`HistoryCore` internal error: ", id);
             edit.diff.diff_idx = (edit_idx as isize + offset) as usize;
         }
     }

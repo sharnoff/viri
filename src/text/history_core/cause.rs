@@ -114,7 +114,7 @@ impl CauseStack {
     /// Removes the edit from the top of the stack, returning both (i) whether the edit was there,
     /// and (ii) whether the edit changed state
     ///
-    /// This is used in the implementation of [`EditHistory::do_op`](super::EditHistory::do_op), in
+    /// This is used in the implementation of [`HistoryCore::do_op`](super::HistoryCore::do_op), in
     /// order to account for reverting the changes corresponding to an edit, when those changes
     /// depend on the edit.
     pub fn remove_if_top(&mut self, id: EditId) -> (bool, bool) {

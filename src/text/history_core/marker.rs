@@ -29,7 +29,7 @@ pub(super) trait Operation<Time: Ord> {
     // the ordering, whereas redoing keeps it.
     //
     // The main reason for this is because the description of the algorithm defined below in
-    // `EditHistory::required_changes` is in terms of undoing, so we don't change the ordering
+    // `HistoryCore::required_changes` is in terms of undoing, so we don't change the ordering
     // of undo.
     type Ord: Ord;
 

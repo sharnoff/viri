@@ -10,11 +10,11 @@ use std::ops::Range;
 /// (*Internal*) A helper struct for collecting many adjacent [`Diff`]s into a single, larger
 /// [`Diff`]
 ///
-/// This exists primarily as a helper type for operations on [`EditHistory`], but could
+/// This exists primarily as a helper type for operations on [`HistoryCore`], but could
 /// theoretically be applied elsewhere. Typical usage starts with [`Collect::new`], adds multiple
 /// edits with [`add_edit`], and finishes with [`into_single`].
 ///
-/// [`EditHistory`]: super::EditHistory
+/// [`HistoryCore`]: super::HistoryCore
 /// [`add_edit`]: Self::add_edit
 /// [`into_single`]: Self::add_single
 //

@@ -23,7 +23,7 @@ impl<T> BytesRef for T where T: Clone + From<Box<[u8]>> + Deref<Target = [u8]> {
 /// This is inspired by Google's [diff-match-patch] library and its specification of a format
 /// similar to [Unidiff]: it includes the bytes being replaced, their location, but not the context
 /// on either side. The reason we don't include any context is because it becomes prohibitively
-/// difficult to maintain within the [`EditHistory`] system, and would simply be an additional
+/// difficult to maintain within the [`HistoryCore`] system, and would simply be an additional
 /// source of bugs.
 ///
 /// Typical construction of a `Diff` is done directly through the fields. This is because they

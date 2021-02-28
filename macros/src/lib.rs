@@ -71,6 +71,7 @@ mod async_fns;
 mod attr;
 mod config;
 mod dyn_serde;
+mod history_core_test;
 mod id;
 mod init_expr;
 mod named_fn;
@@ -99,6 +100,7 @@ macros! {
     async_fns::async_fn,
     id::id,
     dyn_serde::register_dyn_clone,
+    history_core_test::history_core_test,
 }
 
 #[proc_macro_attribute]
