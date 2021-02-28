@@ -11,6 +11,16 @@ use std::sync::atomic::{AtomicU8, Ordering};
 //   2: Fully prepared - raw mode enabled + in alternate screen
 static TERM_STATUS: AtomicU8 = AtomicU8::new(0);
 
+fn ct_to_io(err: crossterm::ErrorKind) -> io::Error {
+    use crossterm::ErrorKind::IoError;
+    use io::ErrorKind::Other;
+
+    match err {
+        IoError(e) => e,
+        e @ _ => io::Error::new(Other, Box::new(e)),
+    }
+}
+
 /// Prepares the terminal for standard use in the editor
 ///
 /// This function does a couple things: (1) Enable [raw mode], and (2) switch to the alternate
@@ -31,7 +41,7 @@ pub fn prepare_terminal() -> io::Result<()> {
     //   (1) Enable raw mode, and
     //   (2) Enter the alternate screen
 
-    crossterm::terminal::enable_raw_mode()?;
+    crossterm::terminal::enable_raw_mode().map_err(ct_to_io)?;
 
     match io::stdout().execute(EnterAlternateScreen) {
         Ok(_) => {
@@ -54,21 +64,20 @@ pub fn prepare_terminal() -> io::Result<()> {
 /// case.
 pub fn cleanup_terminal() -> io::Result<()> {
     use crossterm::terminal::LeaveAlternateScreen;
-    use crossterm::{ErrorKind, ExecutableCommand};
+    use crossterm::ExecutableCommand;
 
     // We have a couple things to do here:
     //  (1) leave the alternate screen, and
     //  (2) disable raw mode
 
-    match io::stdout().execute(LeaveAlternateScreen) {
-        Ok(_) => (),
-        Err(ErrorKind::IoError(e)) => return Err(e),
-        _ => unreachable!(),
-    }
-
-    crossterm::terminal::disable_raw_mode()
+    io::stdout()
+        .execute(LeaveAlternateScreen)
+        .map_err(ct_to_io)?;
+    crossterm::terminal::disable_raw_mode().map_err(ct_to_io)
 }
 
 pub fn get_size() -> io::Result<TermSize> {
-    crossterm::terminal::size().map(TermSize::from_pair)
+    crossterm::terminal::size()
+        .map(TermSize::from_pair)
+        .map_err(ct_to_io)
 }

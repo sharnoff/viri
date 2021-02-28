@@ -22,6 +22,7 @@ pub enum MouseEvent {
     Down(MouseButton, MousePos, Option<MouseModifiers>),
     Up(MouseButton, MousePos, Option<MouseModifiers>),
     Drag(MouseButton, MousePos, Option<MouseModifiers>),
+    Moved(MousePos, Option<MouseModifiers>),
     ScrollDown(MousePos, Option<MouseModifiers>),
     ScrollUp(MousePos, Option<MouseModifiers>),
 }
@@ -41,14 +42,21 @@ pub enum MouseModifiers {
 
 impl From<event::MouseEvent> for MouseEvent {
     fn from(ev: event::MouseEvent) -> Self {
-        use event::MouseEvent::{Down, Drag, ScrollDown, ScrollUp, Up};
+        use event::MouseEventKind::{Down, Drag, Moved, ScrollDown, ScrollUp, Up};
 
-        match ev {
-            Down(b, x, y, mods) => Self::Down(b, MousePos { x, y }, mods.xinto()),
-            Up(b, x, y, mods) => Self::Up(b, MousePos { x, y }, mods.xinto()),
-            Drag(b, x, y, mods) => Self::Drag(b, MousePos { x, y }, mods.xinto()),
-            ScrollDown(x, y, mods) => Self::ScrollDown(MousePos { x, y }, mods.xinto()),
-            ScrollUp(x, y, mods) => Self::ScrollUp(MousePos { x, y }, mods.xinto()),
+        let pos = MousePos {
+            x: ev.column,
+            y: ev.row,
+        };
+        let mods = ev.modifiers.xinto();
+
+        match ev.kind {
+            Down(b) => Self::Down(b, pos, mods),
+            Up(b) => Self::Up(b, pos, mods),
+            Drag(b) => Self::Drag(b, pos, mods),
+            Moved => Self::Moved(pos, mods),
+            ScrollDown => Self::ScrollDown(pos, mods),
+            ScrollUp => Self::ScrollUp(pos, mods),
         }
     }
 }
