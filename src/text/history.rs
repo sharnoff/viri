@@ -58,8 +58,9 @@ impl<R: BytesRef, Time: Clone> History<R, Time> {
         }
     }
 
-    /// Constructively adds a new edit
-    fn edit(&mut self, diff: Diff<R>, time: Time) -> Diff<R> {
+    /// Constructively adds a new edit, returning the resulting [`Diff`] and the [`EditId`] it is
+    /// labelled with
+    fn edit(&mut self, diff: Diff<R>, time: Time) -> (Diff<R>, EditId) {
         let t = LinearTime {
             counter: self.counter,
             time,
@@ -81,7 +82,7 @@ impl<R: BytesRef, Time: Clone> History<R, Time> {
     }
 
     /// Undoes a single edit, returning the time it occured at, if there was one
-    fn undo(&mut self) -> Option<(Diff<R>, &Time)> {
+    fn undo(&mut self) -> Option<(Diff<R>, EditId, &Time)> {
         let id = self.edit_stack[self.stack_pos.checked_sub(1)?];
 
         let mut res = self.core.undo(id);
@@ -90,12 +91,12 @@ impl<R: BytesRef, Time: Clone> History<R, Time> {
 
         self.stack_pos -= 1;
 
-        let diff = res.diffs.remove(0);
+        let (diff, _) = res.diffs.remove(0);
         let time = &self.core.get_edit(id).time.time;
-        Some((diff, time))
+        Some((diff, id, time))
     }
 
-    fn redo(&mut self) -> Option<(Diff<R>, &Time)> {
+    fn redo(&mut self) -> Option<(Diff<R>, EditId, &Time)> {
         let id = *self.edit_stack.get(self.stack_pos)?;
 
         let mut res = self.core.redo(id);
@@ -104,8 +105,8 @@ impl<R: BytesRef, Time: Clone> History<R, Time> {
 
         self.stack_pos += 1;
 
-        let diff = res.diffs.remove(0);
+        let (diff, _) = res.diffs.remove(0);
         let time = &self.core.get_edit(id).time.time;
-        Some((diff, time))
+        Some((diff, id, time))
     }
 }

@@ -282,11 +282,12 @@ pub struct EditResult<R> {
     /// In short, if you pass `override_newer = Yes`, this is safe to unwrap.
     pub new_id: EditId,
 
-    /// The diff(s) that occured as a result of applying the edit. This is often, but not always,
-    /// the original diff passed in.
+    /// The diff(s) that occured as a result of applying the edit, alongside the edits that
+    /// produced them. This is often, but not always, the original diff passed in. This list will
+    /// always contain an entry corresponding to `new_id`.
     ///
     /// The [`Diff`]s should be applied in order, without modification to any of them
-    pub diffs: SmallVec<[Diff<R>; 1]>,
+    pub diffs: SmallVec<[(Diff<R>, EditId); 1]>,
 
     /// The edits that were removed as a result of the edit. Edits within the `fixed` are not
     /// removed.
@@ -307,10 +308,11 @@ pub struct EditResult<R> {
 /// undone - or separately check with [`HistoryCore::is_present`] before calls to
 /// [`undo`](HistoryCore::undo).
 pub struct UndoResult<R> {
-    /// The change(s) required to the text object to account for this action
+    /// The change(s) required to the text object to account for this action, alongside the edits
+    /// that caused them
     ///
     /// The [`Diff`]s should be applied in order, without modification to any of them
-    pub diffs: SmallVec<[Diff<R>; 1]>,
+    pub diffs: SmallVec<[(Diff<R>, EditId); 1]>,
 
     /// The complete list of edits that were un-applied as a direct result of undoing this edit,
     /// *including this one*.
@@ -327,10 +329,11 @@ pub struct UndoResult<R> {
 /// redone - or separately check with [`HistoryCore::is_present`] before calls to
 /// [`redo`](HistoryCore::redo).
 pub struct RedoResult<R> {
-    /// The change(s) required to the text object to account for this action, in order
+    /// The change(s) required to the text object to account for this action, alongside the edits
+    /// that caused them
     ///
     /// The [`Diff`]s should be applied in order, without modification to any of them
-    pub diffs: SmallVec<[Diff<R>; 1]>,
+    pub diffs: SmallVec<[(Diff<R>, EditId); 1]>,
 
     /// The complete list of edits that were re-applied as a direct result of reapplying this edit,
     /// *including this one*.
@@ -839,7 +842,7 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
         );
 
         // Calculate the final `Diff`:
-        resulting_diffs.push(diff.clone());
+        resulting_diffs.push((diff.clone(), new_id));
 
         // Remove everything in `edit.before` from `self.topmost_applied`, add the new edit. Also
         // add the new edit to all `e.after` for `e` in `before`.
@@ -952,8 +955,9 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
 /// This only exists temporarily, before it is converted to an [`UndoResult`] or [`RedoResult`],
 /// which is provided the implementations of [`Into`].
 struct OpResult<R> {
-    /// The change required to the text object because of the operation
-    diffs: SmallVec<[Diff<R>; 1]>,
+    /// The change required to the text object because of the operation, alongside the edits that
+    /// caused them
+    diffs: SmallVec<[(Diff<R>, EditId); 1]>,
 
     /// The complete list of edits that were changed as a result of performing the operation,
     /// including the one requested
@@ -1083,8 +1087,8 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
         for &id in queue.iter().rev() {
             let edit = self.edits.get("", id);
             match Op::IS_UNDO {
-                true => diffs.push(edit.diff.clone().invert()),
-                false => diffs.push(edit.diff.clone()),
+                true => diffs.push((edit.diff.clone().invert(), id)),
+                false => diffs.push((edit.diff.clone(), id)),
             }
 
             self.update_single_op::<Op>(id);

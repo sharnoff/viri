@@ -156,7 +156,7 @@ pub fn history_core_test(input: TokenStream) -> TokenStream {
         use ::std::boxed::Box;
         use ::std::vec::Vec;
         use ::std::str::from_utf8 as str_from_utf8;
-        use crate::text::diff::history::{HistoryCore, EditId};
+        use crate::text::history_core::{HistoryCore, EditId};
     };
 
     func_body.extend(quote_spanned! {
@@ -235,7 +235,7 @@ pub fn history_core_test(input: TokenStream) -> TokenStream {
 
                     #maybe_record_name
 
-                    res.diffs.iter().for_each(|d| d.apply(&mut bytes));
+                    res.diffs.iter().for_each(|(d, _)| d.apply(&mut bytes));
 
                     as_str = ::std::str::from_utf8(&bytes)
                         .expect("edit did not result in utf8 string");
@@ -271,7 +271,7 @@ pub fn history_core_test(input: TokenStream) -> TokenStream {
                         .collect::<std::collections::BTreeSet<_>>();
                     assert_eq!(expected_undos, actual_undos);
 
-                    res.diffs.iter().for_each(|d| d.apply(&mut bytes));
+                    res.diffs.iter().for_each(|(d, _)| d.apply(&mut bytes));
                     as_str = std::str::from_utf8(&bytes)
                         .expect("undo did not result in utf8 string");
                 }
@@ -301,7 +301,7 @@ pub fn history_core_test(input: TokenStream) -> TokenStream {
                         .collect::<std::collections::BTreeSet<_>>();
                     assert_eq!(expected_redos, actual_redos);
 
-                    res.diffs.iter().for_each(|d| d.apply(&mut bytes));
+                    res.diffs.iter().for_each(|(d, _)| d.apply(&mut bytes));
                     as_str = std::str::from_utf8(&bytes)
                         .expect("redo did not result in utf8 string");
                 }
