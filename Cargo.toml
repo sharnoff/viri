@@ -26,7 +26,7 @@ log = { version = "0.4", features = ["serde"] }
 maplit = "1.0.2"
 # num_bigint = "0.3.1"
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_yaml = { git = "https://github.com/sharnoff/serde-yaml", branch = "public-Deserializer" }
+serde_yaml = "0.8"
 # signal-hook = { version = "0.1.16" }
 smallstr = "0.2"
 smallvec = "1.5"

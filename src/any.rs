@@ -241,13 +241,13 @@ impl serde::Serialize for dyn DynClone {
 }
 
 /// (*Internal*) The global deserializer type
-pub type Deserializer<'a> = &'a mut serde_yaml::Deserializer<'a>;
+pub type Deserializer<'a> = serde_yaml::Deserializer<'a>;
 
 /// (*Internal*) The global deserializer's error type
 pub type DeserializerError = <Deserializer<'static> as serde::Deserializer<'static>>::Error;
 
 /// (*Internal*) The global serializer type
-pub type Serializer = serde_yaml::Serializer;
+pub type Serializer<'a> = &'a mut serde_yaml::Serializer<Vec<u8>>;
 
 /// (*Internal*) A registered (`Type`, `Deserializer`) pair with the function to deserialize to
 /// that type
@@ -263,11 +263,11 @@ pub type Serializer = serde_yaml::Serializer;
 pub struct RegisteredSerde {
     pub base_ty: Type,
     pub ser_ptr: for<'a> fn(
-        Serializer,
+        Serializer<'a>,
         &'a dyn DynClone,
     ) -> Result<
-        <Serializer as serde::Serializer>::Ok,
-        <Serializer as serde::Serializer>::Error,
+        <Serializer<'a> as serde::Serializer>::Ok,
+        <Serializer<'a> as serde::Serializer>::Error,
     >,
     pub de_ptr: for<'a> fn(Deserializer<'a>) -> Result<Box<dyn DynClone>, DeserializerError>,
 }
@@ -282,7 +282,7 @@ lazy_static! {
     static ref REGISTRY: HashMap<
         Type,
         Serde<
-            for<'a> fn(Serializer, &'a dyn DynClone) -> Result<<Serializer as serde::Serializer>::Ok, <Serializer as serde::Serializer>::Error>,
+            for<'a> fn(Serializer<'a>, &'a dyn DynClone) -> Result<<Serializer<'a> as serde::Serializer>::Ok, <Serializer<'a> as serde::Serializer>::Error>,
             for<'a> fn(Deserializer<'a>) -> Result<Box<dyn DynClone>, DeserializerError>,
         >
     > = {
@@ -314,7 +314,7 @@ pub fn deserialize_dyn_clone<'de, D: serde::Deserializer<'de>>(
         fn deserialize_dyn_clone(self, as_type: Type) -> Result<Box<dyn DynClone>, Self::Error>;
     }
 
-    impl<'de, D: serde::Deserializer<'de>> DeserializeDynClone<'de> for D {
+    impl<'de, D: serde::de::Deserializer<'de>> DeserializeDynClone<'de> for D {
         default fn deserialize_dyn_clone(
             self,
             _as_type: Type,
@@ -323,7 +323,7 @@ pub fn deserialize_dyn_clone<'de, D: serde::Deserializer<'de>>(
         }
     }
 
-    impl<'a, 'de> DeserializeDynClone<'de> for Deserializer<'a> {
+    impl<'de> DeserializeDynClone<'de> for Deserializer<'de> {
         fn deserialize_dyn_clone(
             self,
             as_type: Type,
@@ -349,13 +349,13 @@ pub fn serialize_dyn_clone<S: serde::Serializer>(
         fn serialize_dyn_clone(self, dyn_clone: &dyn DynClone) -> Result<Self::Ok, Self::Error>;
     }
 
-    impl<S: serde::Serializer> SerializeDynClone for S {
+    impl<S: serde::ser::Serializer> SerializeDynClone for S {
         default fn serialize_dyn_clone(self, _: &dyn DynClone) -> Result<Self::Ok, Self::Error> {
             panic!("unrecognized serializer");
         }
     }
 
-    impl SerializeDynClone for Serializer {
+    impl<'a> SerializeDynClone for Serializer<'a> {
         fn serialize_dyn_clone(self, dyn_clone: &dyn DynClone) -> Result<Self::Ok, Self::Error> {
             match REGISTRY.get(&dyn_clone.base_type()) {
                 Some(Serde { ser, .. }) => ser(self, dyn_clone),
