@@ -221,7 +221,7 @@ impl Layout {
         let start_cols;
         let mut cutoff: Parts<Option<u16>> = Default::default();
 
-        // This expression is analagous to:
+        // This expression is analogous to:
         //   if w.left + w.center + w.right < painter.width(), then
         //   let space give the difference
         if let Some(space) = painter

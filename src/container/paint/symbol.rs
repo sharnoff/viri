@@ -88,7 +88,7 @@ impl Symbol {
 /// Conversion to an iterator of [`Symbol`]s
 ///
 /// This trait is the primary method for constructing a sequence of `Symbol`s. It should hopefully
-/// be fairly self explanatory. It is mostly analagous to the standard library's [`IntoIterator]`,
+/// be fairly self explanatory. It is mostly analogous to the standard library's [`IntoIterator]`,
 /// but specialized to `Symbol`s.
 ///
 /// It is implemented for `&str`, `String`, `Cow<str>`, and `Vec<Symbol>`.
