@@ -91,7 +91,8 @@ impl<R: BytesRef, Time: Clone> History<R, Time> {
 
         self.stack_pos -= 1;
 
-        let (diff, _) = res.diffs.remove(0);
+        let (diff, i) = res.diffs.remove(0);
+        debug_assert_eq!(i, id);
         let time = &self.core.get_edit(id).time.time;
         Some((diff, id, time))
     }
@@ -105,7 +106,8 @@ impl<R: BytesRef, Time: Clone> History<R, Time> {
 
         self.stack_pos += 1;
 
-        let (diff, _) = res.diffs.remove(0);
+        let (diff, i) = res.diffs.remove(0);
+        debug_assert_eq!(i, id);
         let time = &self.core.get_edit(id).time.time;
         Some((diff, id, time))
     }
