@@ -500,6 +500,6 @@ pub use viri_macros::async_method;
 /// how you'd find in the syntax for implementation:
 ///
 /// ```
-/// id![struct Bar in <T> [Foo<T>], <S: Debug> [Baz<S>]
+/// id![struct Bar in <T> [Foo<T>], <S: Debug> [Baz<S>]]
 /// ```
 pub use viri_macros::id;
