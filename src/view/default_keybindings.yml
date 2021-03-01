@@ -1,0 +1,43 @@
+# Default `View` keybindings
+#
+# Note that this is necessarily more limited than what's given as
+# the default for the file viewer, because we don't have the
+# additional commands available.
+#
+# This is a WORK IN PROGRESS
+mode_names: ['normal']
+# ^ because a general `View` doesn't have knowledge of inserting, we don't either.
+start_with: 'normal'
+modes:
+  normal:
+    Union:
+      # map by `snd` so we only take the value produced
+      Map:
+        - "utils::snd"
+        # Operations on splits - all with a leading Ctrl+w
+        - Concat:
+          - Atom: { key: { Single: { code: { Char: 'w' }, mods: Ctrl } } }
+          - Union:
+
+            # Ctrl+h for focus left
+            - Const:
+              - Atom: { key: { Single: { code: { Char: 'h' } } } }
+              - { Focus: { Direction: Left } }
+
+            # Ctrl+j for focus down
+            - Const:
+              - Atom: { key: { Single: { code: { Char: 'j' } } } }
+              - { Focus: { Direction: Down } }
+
+            # Ctrl+k for focus up
+            - Const:
+              - Atom: { key: { Single: { code: { Char: 'k' } } } }
+              - { Focus: { Direction: Up } }
+
+            # Ctrl+l for focus right
+            - Const:
+              - Atom: { key: { Single: { code: { Char: 'l' } } } }
+              - { Focus: { Direction: Right } }
+
+  # TODO: add numerical prefixes
+  parts: {}

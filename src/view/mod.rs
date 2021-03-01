@@ -32,6 +32,15 @@ config! {
 }
 
 fn default_keybindings() -> ModeSet<Command<Never>> {
+    /*
+    register_DynClone!(Command<Never, String>);
+
+    let yaml_str = include_str!("default_keybindings.yml");
+
+    serde_yaml::from_str(yaml_str)
+        .unwrap_or_else(|e| panic!("failed to deserialize built-in `View` keybindings: {}", e))
+    */
+
     todo!()
 }
 
@@ -40,8 +49,14 @@ fn default_keybindings() -> ModeSet<Command<Never>> {
 enum Command<T, M = ModeKind> {
     // TODO-FEATURE: add other general commands here
     ChangeMode(M),
+    Focus(Focus),
     NoSuchKeybinding(Vec<KeyEvent>),
     Other(T),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum Focus {
+    Direction(Direction),
 }
 
 impl<T: 'static + Any + Send + Sync> ModeOutput for Command<T>
@@ -59,7 +74,8 @@ where
 
     fn switches_provider(&self) -> bool {
         match self {
-            Command::ChangeMode(_) | Command::Other(_) | Command::NoSuchKeybinding(_) => false,
+            Command::ChangeMode(_) | Command::Focus(_) => true,
+            Command::Other(_) | Command::NoSuchKeybinding(_) => false,
         }
     }
 
@@ -80,6 +96,7 @@ impl<T> TryFromWithModes for Command<T> {
         let this = match input {
             ChangeMode(m) => ChangeMode(ModeKind::try_from_with_modes(m, modes)?),
             NoSuchKeybinding(ks) => NoSuchKeybinding(ks),
+            Focus(f) => Focus(f),
             Other(t) => Other(t),
         };
 
