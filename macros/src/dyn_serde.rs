@@ -38,12 +38,12 @@ fn submit_ty(ty: impl ToTokens) -> TokenStream {
                 __de
             },
             ser_ptr: {
-                type _S = crate::any::Serializer;
+                type _S<'a> = crate::any::Serializer<'a>;
 
                 fn __ser<'a>(
-                    serializer: _S,
+                    serializer: _S<'a>,
                     dyn_clone: &'a dyn crate::any::DynClone,
-                ) -> Result<<_S as serde::Serializer>::Ok, <_S as serde::Serializer>::Error> {
+                ) -> Result<<_S<'a> as serde::Serializer>::Ok, <_S<'a> as serde::Serializer>::Error> {
                     let v = dyn_clone.as_any()
                         .downcast_ref::<#ty>()
                         .ok_or_else(|| format!("unexpected type: expected `{}`, found `{}`", crate::any::Type::new::<#ty>().name(), dyn_clone.base_type().name()))
