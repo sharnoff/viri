@@ -260,8 +260,13 @@ impl HasRef for syn::Type {
             Tuple(tuple) => tuple.elems.iter().any(HasRef::has_ref),
             Verbatim(_) => false, // Can't tell for this one, either.
 
-            // Hm... this should really use #[non_exhaustive] instead.
-            __Nonexhaustive => false,
+            // There's a note about why this is the case in the internal documentation for this
+            // type. Essentially, the #[cfg(test)] allows the addition of new types to fail tests,
+            // without breaking normal builds.
+            #[cfg(test)]
+            __TestExhaustive => false,
+            #[cfg(not(test))]
+            _ => false,
         }
     }
 }
