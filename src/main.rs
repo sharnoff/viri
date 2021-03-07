@@ -8,6 +8,7 @@
 //  * TODO-CORRECTNESS: Where the code might not be correct, but works for now
 //  * TODO-FEATURE: Where a feature should be added
 //  * TODO-CLEAN: Where the code is a little messy, could probably be improved
+//  * TODO-API: Where an API may need to be adjusted or reconsidered
 //  * TODO-RFC#2229: Mess that can be fixed once RFC #2229 lands
 
 // Feature sets
@@ -20,7 +21,7 @@
     const_fn, // Allows trait bounds in const fns -- `any::Type::new`
     const_generics, // Needed for a whole bunch of things.
     specialization,     // required for dynamic deserialization
-    generic_associated_types, // Required for `RangeSlice::Value`
+    maybe_uninit_ref, // Required for `init::LazyInit::deref`
     // required for `text::diff::MaxVec`:
     maybe_uninit_extra,
     maybe_uninit_slice,
@@ -50,6 +51,7 @@ mod config;
 mod container;
 mod event;
 mod fs;
+mod init;
 mod keys;
 mod logger;
 mod modes;
