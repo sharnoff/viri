@@ -7,7 +7,7 @@
 //!  * [Named functions] - [`named`]
 //!  * [Dynamic (de-)serialization] - [`SerdeDynClone`], [`register_DynClone`]
 //!  * Async functions - [`async_method`], [`async_fn`]
-//!  * Miscellaneous pieces - [`id`]
+//!  * Miscellaneous pieces - [`id`], [`flag`]
 //!
 //! This module works in conjunction with the `viri-macros` crate, which provides some of the
 //! backing procedural macros necessary for this to work. Generally, `viri-macros` is treated as
@@ -503,3 +503,55 @@ pub use viri_macros::async_method;
 /// id![struct Bar in <T> [Foo<T>], <S: Debug> [Baz<S>]]
 /// ```
 pub use viri_macros::id;
+
+/// Convenience macro to produce ergonomic boolean-like `enum`s
+///
+/// This exists because it's generally more ergonomic to provide boolean flags with an enum. For
+/// example, compare the following:
+/// ```ignore
+/// // Representing the flag as a boolean:
+/// fn foo(check_external_thing: bool) { ... }
+///
+/// // Calling `foo`: It's not clear what the meaning of the boolean is.
+/// foo(true);
+/// foo(false);
+///
+/// // As an enum:
+/// fn bar(check_external_thing: CheckExternalThing) { ... }
+///
+/// // Calling `bar`: Abundantly clear what the argument means, though
+/// // it's more verbose
+/// bar(CheckExternalThing::Yes);
+/// bar(CheckExternalThing::No);
+/// ```
+///
+/// This macro is vaguely similar to [`id`] in its usage. It typically looks like:
+/// ```ignore
+/// flag![pub enum CheckExternalThing];
+/// ```
+/// to generate the following code:
+/// ```
+/// #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// pub enum CheckExternalThing {
+///     No,
+///     Yes,
+/// }
+///
+/// impl CheckExternalThing {
+///     // -- docs :) --
+///     pub fn as_bool(&self) -> bool {
+///         match self {
+///             Self::Yes => true,
+///             Self::No => false,
+///         }
+///     }
+/// }
+///
+/// impl From<bool> for CheckExternalThing {
+///     fn from(b: bool) -> Self {
+///         true => Self::Yes,
+///         false => Self::No,
+///     }
+/// }
+/// ```
+pub use viri_macros::flag;

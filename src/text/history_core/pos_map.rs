@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::ops::Range;
 
+use crate::macros::flag;
+
 // `Translation` is defined lower down in this module.
 use Translation::{Edited, Shifted};
 
@@ -81,10 +83,9 @@ impl IndexedRangeSlice for Translation {
     }
 }
 
-/// Boolean flag for whether a `PosMap` should store "blame" information
-pub enum TrackBlame {
-    Yes,
-    No,
+flag! {
+    /// Boolean flag for whether a `PosMap` should store "blame" information
+    pub enum TrackBlame
 }
 
 impl<Time: Ord, R: BytesRef> PosMap<Time, R> {
