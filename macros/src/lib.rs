@@ -4,9 +4,14 @@
 //! `viri::macros` is subdivided. In order to comply with the compiler's (perhaps strange rules),
 //! we then have wrapper functions in the crate root for each of those.
 
-#![feature(drain_filter)]
+#![feature(drain_filter, option_expect_none)]
 
+use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
+use quote::ToTokens;
+use syn::parse::ParseStream;
+use syn::Token;
 
 #[cfg(test)]
 macro_rules! test_macro {
@@ -67,6 +72,63 @@ macro_rules! parse_macro_input2 {
     }};
 }
 
+/// A helper trait for the `@<kwd>` syntax
+trait Peek2 {
+    /// Peeks at the second token in the parse stream, using it to determine whether the type can
+    /// be parsed after consuming the first
+    fn peek2(input: ParseStream) -> bool;
+}
+
+macro_rules! keywords {
+    (mod kwd = $($kwds:ident),* $(,)?) => {
+        mod kwd {
+            $(
+            syn::custom_keyword!($kwds);
+
+            impl crate::Peek2 for $kwds {
+                fn peek2(input: syn::parse::ParseStream) -> bool {
+                    input.peek2($kwds)
+                }
+            }
+            )*
+        }
+    };
+}
+
+/// Wrapper type for the `@<kwd>` syntax, parsing as `@ K`
+#[derive(Parse)]
+struct AtKwd<K: Peek2> {
+    at_token: Token![@],
+    kwd: K,
+}
+
+impl<K: Peek2> AtKwd<K> {
+    /// Peeks at the first two tokens of the [`ParseStream`], returning if they start with
+    /// `@ <kwd>`, where `<kwd>` is the keyword specified by `K`.
+    fn peek(input: ParseStream) -> bool {
+        input.peek(Token![@]) && K::peek2(input)
+    }
+}
+
+impl<K: Peek2 + ToTokens> ToTokens for AtKwd<K> {
+    fn to_tokens(&self, ts: &mut TokenStream2) {
+        self.at_token.to_tokens(ts);
+        self.kwd.to_tokens(ts);
+    }
+}
+
+/// Helper macro for peeking with an [`AtKwd`]. Usage tends to look like:
+///
+/// ```ignore
+/// #[derive(Parse)]
+/// enum Foo {
+///     #[peek_with(at_kwd![my_kwd], name = "`@my_kwd`")]
+///     MyKwd(AtKwd<kwd::my_kwd>, BarBaz),
+/// }
+/// ```
+#[rustfmt::skip]
+macro_rules! at_kwd { ($name:ident) => { <AtKwd<kwd::$name>>::peek }; }
+
 mod async_fns;
 mod attr;
 mod config;
@@ -76,6 +138,7 @@ mod history_core_test;
 mod id;
 mod init_expr;
 mod named_fn;
+mod typed;
 
 // A helper macro for bringing in the functions from the submodules
 macro_rules! macros {
@@ -102,6 +165,7 @@ macros! {
     id::id,
     dyn_serde::register_dyn_clone,
     history_core_test::history_core_test,
+    typed::type_sig,
     flag::flag,
 }
 
@@ -118,4 +182,9 @@ pub fn async_method(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(SerdeDynClone)]
 pub fn serde_dyn_clone(item: TokenStream) -> TokenStream {
     dyn_serde::serde_dyn_clone(item)
+}
+
+#[proc_macro_derive(Typed)]
+pub fn derive_typed(item: TokenStream) -> TokenStream {
+    typed::derive_typed(item)
 }

@@ -6,48 +6,12 @@
 use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
-use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 use syn::{parse_macro_input, token, Ident, LitStr, Token};
 
-// A helper trait for the `@<kwd>` syntax
-trait Peek2 {
-    fn peek2(input: ParseStream) -> bool;
-}
+use super::AtKwd;
 
-mod kwd {
-    use syn::custom_keyword;
-
-    macro_rules! keywords {
-        ($($name:ident),+$(,)?) => {
-            $(
-            custom_keyword!($name);
-
-            impl super::Peek2 for $name {
-                fn peek2(input: syn::parse::ParseStream) -> bool {
-                    input.peek2($name)
-                }
-            }
-            )*
-        }
-    }
-
-    keywords! {
-        start, edit, equals, undo, redo, print_graph
-    }
-}
-
-#[derive(Parse)]
-struct AtKwd<K: Peek2> {
-    at_token: Token![@],
-    kwd: K,
-}
-
-impl<K: Peek2> AtKwd<K> {
-    fn peek(input: ParseStream) -> bool {
-        input.peek(Token![@]) && K::peek2(input)
-    }
-}
+keywords! { mod kwd = start, edit, equals, undo, redo, print_graph }
 
 #[derive(Parse)]
 struct TestInput {
@@ -73,9 +37,6 @@ struct StartState {
     kwd: AtKwd<kwd::start>,
     start_str: LitStr,
 }
-
-#[rustfmt::skip]
-macro_rules! at_kwd { ($name:ident) => { <AtKwd<kwd::$name>>::peek }; }
 
 #[derive(Parse)]
 enum TestCmd {
