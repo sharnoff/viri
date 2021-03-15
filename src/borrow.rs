@@ -48,7 +48,7 @@ impl<B: ToOwned<Owned = W>, W> Cow<B, W> {
     }
 }
 
-impl<B, W: Borrow<B>> AsRef<B> for Cow<B, W> {
+impl<'a, B, W: Borrow<B>> AsRef<B> for Cow<&'a B, W> {
     fn as_ref(&self) -> &B {
         match self {
             Borrowed(b) => b,
