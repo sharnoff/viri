@@ -9,6 +9,14 @@ struct Input {
     attrs: Vec<Attribute>,
     vis: Visibility,
     enum_kwd: Token![enum],
+
+    // Allow an optional trailing semicolon, in case this macro is used like:
+    //
+    //   flag! {
+    //      /// Docs! :)
+    //      enum FooFlag;
+    //   }
+    #[postfix(Option<Token![;]>)]
     name: Ident,
 }
 
