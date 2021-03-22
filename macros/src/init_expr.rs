@@ -44,7 +44,11 @@ pub fn init(input: TokenStream) -> TokenStream {
                 #fn_inner
             }
 
-            __INITIALIZED.store(2, std::sync::atomic::Ordering::SeqCst);
+            // Allow unreachable here in case #fn_inner is todo!()
+            #[allow(unreachable_code)]
+            {
+                __INITIALIZED.store(2, std::sync::atomic::Ordering::SeqCst);
+            }
         }
     };
 
