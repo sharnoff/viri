@@ -50,7 +50,9 @@ mod any;
 mod borrow;
 mod config;
 mod container;
+mod dispatch;
 mod event;
+mod extensions;
 mod fs;
 mod init;
 mod keys;
@@ -85,6 +87,8 @@ fn initalize_custom_modules() {
         mod container;
         mod view;
         mod config;
+        mod dispatch;
+        mod extensions;
     };
 }
 

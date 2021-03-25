@@ -7,6 +7,7 @@
 //!  * [Named functions] - [`named`]
 //!  * [Dynamic (de-)serialization] - [`SerdeDynClone`], [`register_DynClone`]
 //!  * Async functions - [`async_method`], [`async_fn`]
+//!  * [Extension interfacing] - [`type_sig`], [`#[derive(Typed)]`](Typed)
 //!  * Miscellaneous pieces - [`id`], [`flag`]
 //!
 //! This module works in conjunction with the `viri-macros` crate, which provides some of the
@@ -18,6 +19,7 @@
 //! [Attributes]: crate::config::attr
 //! [Named functions]: crate::config::named_fn
 //! [Dynamic (de-)serialization]: crate::any::deserialize_dyn_clone
+//! [Extension interfacing]: crate::dispatch
 
 /// Produces a configuration struct with an associated implementation of [`Configurable`]
 ///
@@ -91,7 +93,7 @@
 /// [`Configurable`]: crate::config::Configurable
 pub use viri_macros::config;
 
-/// A marker trait for modules that are initialized at some point
+/// A marker trait for modules that are initialized at some point, used only by macros
 ///
 /// With each `init!` macro expansion, we insert a dummy type that's expected to have `Initialized`
 /// implemented on it. If not, that causes a nice compiler error, using
@@ -457,6 +459,30 @@ pub use viri_macros::async_fn;
 /// }
 /// ```
 pub use viri_macros::async_method;
+
+/// Derive macro for [`Typed`](crate::dispatch::Typed)
+pub use viri_macros::Typed;
+
+/// Convenience macro to write type extension type signatures
+///
+/// Typical usage tends to look something like:
+/// ```
+/// type_sig![{ x: @int, y: Foobar } -> ()]
+/// ```
+/// The type construction here is pretty expressive - the full set of available type constructors
+/// is:
+/// * Structs,
+/// * Enums,
+/// * Arrays,
+/// * Named types (implementing [`Typed`](crate::dispatch::Typed)),
+/// * Strings (as `@string`),
+/// * Integers (as `@int`),
+/// * Unit (as `()`), and
+/// * Unrestricted values (as `@any`)
+///
+/// The signature can consist of up to two parts; it's either a single "type" by itself, or of the
+/// form `<type> -> <type>`.
+pub use viri_macros::type_sig;
 
 /// Convenience macro to produce a newtype'd `usize` for use as a unique identifier
 ///

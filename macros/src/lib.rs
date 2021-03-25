@@ -129,6 +129,16 @@ impl<K: Peek2 + ToTokens> ToTokens for AtKwd<K> {
 #[rustfmt::skip]
 macro_rules! at_kwd { ($name:ident) => { <AtKwd<kwd::$name>>::peek }; }
 
+// Helper function to parse multiple occurences of a type, without any delimeters
+fn parse_repeated<T: syn::parse::Parse>(input: ParseStream) -> syn::Result<Vec<T>> {
+    let mut output = Vec::new();
+    while !input.is_empty() {
+        output.push(input.parse()?);
+    }
+
+    Ok(output)
+}
+
 mod async_fns;
 mod attr;
 mod config;
@@ -165,7 +175,7 @@ macros! {
     id::id,
     dyn_serde::register_dyn_clone,
     history_core_test::history_core_test,
-    typed::type_sig,
+    typed::{type_sig, impl_core},
     flag::flag,
 }
 
