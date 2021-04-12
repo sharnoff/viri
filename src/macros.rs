@@ -463,6 +463,10 @@ pub use viri_macros::async_method;
 /// Derive macro for [`Typed`](crate::dispatch::Typed)
 pub use viri_macros::Typed;
 
+/// Similar to the [derive macro](Typed) for `Typed`, but operates without the need for a
+/// definition. Intended for implementing on `std` types
+pub use viri_macros::manual_derive_typed;
+
 /// Convenience macro to write type extension type signatures
 ///
 /// Typical usage tends to look something like:
@@ -581,3 +585,6 @@ pub use viri_macros::id;
 /// }
 /// ```
 pub use viri_macros::flag;
+
+// TODO-DOC:
+pub use viri_macros::{extension_export, make_extension, register_extensions};

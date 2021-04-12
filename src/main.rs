@@ -26,6 +26,8 @@
     maybe_uninit_extra,
     maybe_uninit_slice,
     maybe_uninit_uninit_array,
+    // Required for derived Typed implementations:
+    trivial_bounds,
 )]
 // Lint flags:
 #![deny(

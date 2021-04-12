@@ -3,9 +3,10 @@
 use crate::borrow::Cow;
 use num_bigint::BigInt;
 use std::collections::HashMap;
-use uuid::Uuid;
+// use std::convert::TryInto;
+// use uuid::Uuid;
 
-use viri_macros::impl_core;
+use crate::macros::manual_derive_typed;
 
 /// The structure of a type used to communicate with extensions
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,8 +30,9 @@ pub enum TypeRepr {
     Array(Box<TypeRepr>),
     /// A tuple, given by the list of types expected
     ///
-    /// The list of types should have length at least one; an empty tuple is represented by the
-    /// `Unit` type.
+    /// The list of types should have length at least two; an empty tuple is represented by the
+    /// `Unit` type and tuples containing a single type are treated as if they were the inner type
+    /// itself.
     ///
     /// This is often also available in the bindings as an array with dynamically-typed elements.
     Tuple(Vec<TypeRepr>),
@@ -41,7 +43,6 @@ pub enum TypeRepr {
 /// This is simply a way of encapsulating a value of unknown type, alongside the actual typing
 /// information
 pub struct Value<'a> {
-    pub repr: TypeRepr,
     pub val: Cow<&'a dyn TypedDeconstruct, Box<dyn TypedDeconstruct>>,
 }
 
@@ -54,9 +55,7 @@ impl<'a> Clone for Value<'a> {
 impl Value<'static> {
     /// Creates a new `Value` from the concrete type representing it
     pub fn new<T: TypedDeconstruct>(val: T) -> Self {
-        let repr = val.get_repr();
         Value {
-            repr,
             val: Cow::Owned(Box::new(val)),
         }
     }
@@ -65,9 +64,7 @@ impl Value<'static> {
 impl<'a> Value<'a> {
     /// Creates a new, borrowed `Value` from a reference to the concrete type representing it
     pub fn from_ref<T: TypedDeconstruct>(val: &'a T) -> Self {
-        let repr = val.get_repr();
         Value {
-            repr,
             val: Cow::Borrowed(val),
         }
     }
@@ -77,227 +74,432 @@ impl<'a> Value<'a> {
         match self.val {
             Cow::Borrowed(b) => b.clone_into_value(),
             Cow::Owned(boxed) => Value {
-                repr: self.repr,
                 val: Cow::Owned(boxed),
             },
         }
     }
 
     /// Converts a `Value` into a type that it could represent
-    pub fn convert<T: Typed>(&self) -> T {
-        match &self.repr {
-            _ => todo!(),
-        }
+    pub fn convert<T: Typed>(&self) -> Result<T, String> {
+        todo!()
     }
 }
 
-macro_rules! no_decon {
-    ($this:expr, $ty:expr) => {{
-        panic!("cannot deconstruct type as {}: {:?}", $ty, $this.get_repr())
-    }};
-}
-
-/// A version of [`Typed`] that provides the utilities for deconstructing a dynamic value
+/// Types that can be converted back and forth within [`Value`]s
 ///
-/// This provides the deconstruction half of the internal implementation for converting from a
-/// [`Value`] to a compatible concrete type. All of the provided methods have default
-/// implementations that panic; when implementing this trait, only the method that must have a
-/// non-panicking implementation is the one corresponding to the top-level type returned by
-/// `self.get_repr()`.
+/// This trait is simply the union of [`TypedConstruct`] and [`TypedDeconstruct`], which appropriately
+/// provide the two halves of these operations: construction and deconstruction. The two halves are
+/// distinct because `Value` relies on being able to create a trait object for `TypedDeconstruct`,
+/// which cannot be done with the functionality of `TypedConstruct`.
+///
+/// A blanket implementation for all types that both implement [`TypedConstruct`] and
+/// [`TypedDeconstruct]` is provided here; this trait really just allows shorthand for requiring
+/// that something implement both.
+///
+/// For more information, see the documentation for [`Value`] and the two respective halves of the
+/// conversion system here. There is also a [derive macro](crate::macros::Typed) for generating
+/// implementations of both of the supertraits.
+pub trait Typed: TypedConstruct + TypedDeconstruct {}
+
+impl<T: TypedConstruct + TypedDeconstruct> Typed for T {}
+
+/// The deconstruction half of the facilities for [`Typed`] values.
+///
+/// This trait is provided separately so that it can be used as a trait object in [`Value`], for
+/// converting an erased type into a concrete value.
+///
+/// ## Usage
+///
+/// The general way that this trait is used is by attempting to read the value as one of the
+/// possible variants. This typically comes from within the implementation of [`TypedConstruct`],
+/// though it *could* be used anywhere.
+///
+/// The default implementation of each method panics; only the method specified by the return value
+/// will be called, so it is the only one for which this should (usually) be overriden.
+///
+/// ## Representations
+///
+/// There are sometimes multiple possible ways that a value can be represented - like enums, for
+/// example. Let's look at a case here:
+/// ```
+/// enum Tricky<T> {
+///     Unit,
+///     Generic(T),
+///     Struct { x: i32 },
+/// }
+/// ```
+/// Using JSON as an indicator of the actual structure (because this format loosely mirrors it), we
+/// could represent a value of type `Tricky` with any of:
+///
+/// ```js
+/// // Tricky::Unit
+/// "Unit"
+/// { "Unit": {} }
+///
+/// // Tricky::Generic<()>
+/// "Generic"
+/// // Tricky::Generic<T>
+/// { "Generic": <value for T> }
+///
+/// // Tricky::Struct
+/// { "Struct": { "x": <integer> } }
+/// ```
+///
+/// So converting to a value of type `Tricky` (and indeed, any other `enum`) might involve
+/// attempting to construct from either a string, `enum`, or `struct` variant. This is somewhat
+/// similar to the representations described in 
 #[rustfmt::skip]
 pub trait TypedDeconstruct: 'static + Send + Sync {
-    fn get_repr(&self) -> TypeRepr;
+    /// Returns the kind of type this object is, as a hint for which one of the other methods to
+    /// call
+    fn type_kind(&self) -> TypeKind;
 
-    /// Clones the underlying object, re-creating a corresponding `Value`
+    /// Clones the underlying object, re-creating a corresponding [`Value`]
+    ///
+    /// This method is required so that we can have a `Clone` implementation on `Value`, as well as
+    /// the [`to_owned`](Value::to_owned) method.
     fn clone_into_value(&self) -> Value<'static>;
 
-    fn as_any(&self) -> Value { no_decon!(self, "<any> (`Value`)") }
-    // TODO-PERF: BigInt is kinda slow. Maybe make our own implementation?
-    fn as_int(&self) -> BigInt { no_decon!(self, "int") }
-    fn as_bool(&self) -> bool { no_decon!(self, "bool") }
-    fn as_string(&self) -> String { no_decon!(self, "string") }
-    fn as_unit(&self) -> () { no_decon!(self, "unit (`()`)") }
-    fn as_struct(&self) -> HashMap<String, Value> { no_decon!(self, "struct") }
-    fn as_enum(&self) -> (&str, Value) { no_decon!(self, "enum variant") }
-    fn as_array(&self) -> Vec<Value> { no_decon!(self, "array") }
-    fn as_tuple(&self) -> Vec<Value> { no_decon!(self, "tuple") }
+    /// Provides access to the value as an integer, under the assumption that it has that type
+    fn as_int(&self) -> BigInt { unimplemented!() }
+    /// Provides access to the value as a boolean, under the assumption that it has that type
+    fn as_bool(&self) -> bool { unimplemented!() }
+    /// Provides access to the value as a string, under the assumption that it has that type
+    fn as_string(&self) -> String { unimplemented!() }
+    /// Provides access to the value as the map of struct fields, under the assumption that the
+    /// value has a struct type
+    fn as_struct(&self) -> HashMap<String, Value> { unimplemented!() }
+    /// Provides access to the value as an array of values. Because there is no way to guarantee
+    /// that these values are all the same type, this method is also used for providing access to
+    /// tuples.
+    fn as_array(&self) -> Vec<Value> { unimplemented!() }
 }
 
-macro_rules! no_cons {
-    ($This:ty, $ty:expr) => {{
-        panic!(
-            "cannot construct with {} for type {:?}",
-            $ty,
-            <$This>::repr()
-        )
-    }};
+/// Helper type for [`TypedConstruct`]: the different types that we might try to construct a value
+/// from
+///
+/// The variants here serve to provide a sort of directive as to how we can parse a value with the
+/// implementation of the associated functions in [`TypedConstruct`]. For more information, please
+/// refer to the documentation of the trait itself.
+pub enum TypeKind {
+    Any,
+    Int,
+    Bool,
+    String,
+    Unit,
+    Struct,
+    Array,
 }
 
-/// Trait for types that can produce a [`TypeRepr`]
-///
-/// This can be derived by importing [`derive_typed`], and implementations are provided for most
-/// primitives. A blanket implementation for all types that dereference into one implementing
-/// [`TypeRepr`] is available as well -- i.e. the the implementation for `Box<T>` is the same as
-/// `T`.
-///
-/// Please note that it is entirely possible to *accidentally* implement this for recursive types;
-/// there is currently no support for them, and so the program will run out of memory trying to
-/// construct the `TypeRepr`.
+// TODO-DOC: all return types are Result<Self, T>,
+// TODO-DOC: mostly exists to provide information to `Value::convert`
 #[rustfmt::skip]
-#[allow(unused_variables)]
-pub trait Typed: Sized {
-    /// Produces the representation of this type
-    fn repr() -> TypeRepr;
+pub trait TypedConstruct: 'static + Sized {
+    /// The priority order for the types that we can attempt to construct from
+    ///
+    /// For most types this will be a single value, e.g. `String` or `Struct`. But for some others,
+    /// particularly `enum`s, this might involve multiple attempts. Not all of the types listed
+    /// here are required to validly construct *something*, but only the methods corresponding to
+    /// the types here will be attempted.
+    ///
+    /// To clarify: if `CONS_ORDER` is defined as `[TypeKind::String]`, the only method attempted
+    /// will be `from_string`.
+    const CONS_ORDER: [TypeKind];
 
-    fn from_any(any: Value) -> Self { no_cons!(Self, "<any> (`Value`)") }
-    fn from_int(int: BigInt) -> Self { no_cons!(Self, "int") }
-    fn from_bool(b: bool) -> Self { no_cons!(Self, "bool") }
-    fn from_string(s: String) -> Self { no_cons!(Self, "string") }
-    fn from_unit(unit: ()) -> Self { no_cons!(Self, "unit (`()`)") }
-    fn from_struct(fields: HashMap<String, Value>) -> Self { no_cons!(Self, "struct") }
-    fn from_variant(varant: &str, value: Value) -> Self { no_cons!(Self, "enum variant") }
-    fn from_array(array: Vec<Value>) -> Self { no_cons!(Self, "array") }
-    fn from_tuple(values: Vec<Value>) -> Self { no_cons!(Self, "tuple") }
+    /// Produces a diagnostic string to indicate that an error has occured. The string should be
+    /// something along the lines of `"expected foobar"`.
+    fn err_string() -> &'static str;
+
+    /// Attempts to construct the type directly from the `Value` itself
+    fn from_any(any: Value<'static>) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to produce the value from an integer
+    fn from_int(int: BigInt) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to produce the value from a boolean
+    fn from_bool(b: bool) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to produce the value from a string
+    fn from_string(s: String) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to produce the value from a unit
+    fn from_unit() -> Result<Self, String> { unimplemented!() }
+    /// Attempts to construct a value from the fields of a struct
+    fn from_struct(fields: HashMap<String, Value>) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to construct a value from a dynamically-typed array (i.e. the elements are not
+    /// guaranteed to have the same type)
+    fn from_array(array: Vec<Value>) -> Result<Self, String> { unimplemented!() }
 }
+
+macro_rules! impl_core {
+    ($(
+        impl$([$($generics:tt)*])? for $ty:ty {
+            @repr = $repr:expr;
+            @cons = $cons_order:expr;
+            @err = $err_string:expr;
+            @cons_fns = { $($cons_tt:tt)* };
+            @decon_fns = { $($decon_tt:tt)* };
+        }
+    )*) => {
+        $(
+        impl$($($generics)*)? TypedConstruct for $ty {
+            const CONS_ORDER: [TypeKind] = $cons_order;
+            fn err_string() -> &'static str { $err_string }
+
+            $($cons_tt)*
+        }
+
+        impl$($($generics)*)? TypedDeconstruct for $ty {
+            fn type_kind(&self) -> TypeKind { $repr }
+
+            $($decon_tt)*
+        }
+        )*
+    };
+}
+
+type ConsRes<T> = Result<T, String>;
 
 impl_core! {
     impl for Value<'static> {
-        @repr = TypeRepr::Any;
-        @clone_with &self: { self.clone() }
-        fn as_any(&self) -> Value { self.clone() }
-        fn from_any(any: Value) -> Self { any.to_owned() }
+        @repr = TypeKind::Any;
+        @cons = [TypeKind::Any];
+        @err = "expected any value";
+        @cons_fns = {
+            fn from_any(any: Value<'static>) -> ConsRes<Self> { Ok(any) }
+        };
+        @decon_fns = {
+            fn clone_into_value(&self) -> Value<'static> { self.clone() }
+        };
     }
 
     impl for BigInt {
-        @repr = TypeRepr::Int;
-        @clone_with &self: { Value::new(self.clone()) }
-        fn as_int(&self) -> BigInt { self.clone() }
-        fn from_int(int: BigInt) -> Self { int }
+        @repr = TypeKind::Int;
+        @cons = [TypeKind::Int];
+        @err = "expected an integer";
+        @cons_fns = {
+            fn from_int(int: BigInt) -> ConsRes<Self> { Ok(int) }
+        };
+        @decon_fns = {
+            fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
+            fn as_int(&self) -> BigInt { self.clone() }
+        };
     }
 
     impl for bool {
-        @repr = TypeRepr::Bool;
-        @clone_with &self: { Value::new(*self) }
-        fn as_bool(&self) -> bool { *self }
-        fn from_bool(b: bool) -> Self { b }
+        @repr = TypeKind::Bool;
+        @cons = [TypeKind::Bool];
+        @err = "expected a boolean";
+        @cons_fns = {
+            fn from_bool(b: bool) -> ConsRes<Self> { Ok(b) }
+        };
+        @decon_fns = {
+            fn clone_into_value(&self) -> Value<'static> { Value::new(*self) }
+            fn as_bool(&self) -> bool { *self }
+        };
     }
 
     impl for String {
-        @repr = TypeRepr::String;
-        @clone_with &self: { Value::new(self.clone()) }
-        fn as_string(&self) -> String { self.clone() }
-        fn from_string(s: String) -> Self { s }
+        @repr = TypeKind::String;
+        @cons = [TypeKind::String];
+        @err = "expected a string";
+        @cons_fns = {
+            fn from_string(s: String) -> ConsRes<Self> { Ok(s) }
+        };
+        @decon_fns = {
+            fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
+            fn as_string(&self) -> String { *self }
+        };
     }
 
     impl for () {
-        @repr = TypeRepr::Unit;
-        @clone_with &self: { Value::new(()) }
-        fn as_unit(&self) -> () {}
-        fn from_unit(_: ()) -> Self {}
+        @repr = TypeKind::Unit;
+        @cons = [TypeKind::Unit, TypeKind::Struct, TypeKind::Array];
+        @err = "expected a unit value, empty struct, or empty array";
+        @cons_fns = {
+            fn from_unit() -> ConsRes<Self> { Ok(()) }
+            fn from_struct(fields: HashMap<String, Value>) -> ConsRes<Self> {
+                match fields.is_empty() {
+                    true => Ok(()),
+                    false => Err("expected a struct with no fields".to_owned()),
+                }
+            }
+            fn from_array(array: Vec<Value>) -> ConsRes<Self> {
+                match array.is_empty() {
+                    true => Ok(()),
+                    false => Err("expected an array with no elements".to_owned()),
+                }
+            }
+        };
+        @decon_fns = {
+            fn clone_into_value(&self) -> Value<'static> { Value::new(()) }
+        };
     }
 
-    impl<T: Typed + TypedDeconstruct + Clone> for Vec<T> {
-        @repr = TypeRepr::Array(Box::new(T::repr()));
-        @clone_with &self: { Value::new(self.clone()) }
-        fn as_array(&self) -> Vec<Value> { self.iter().map(Value::from_ref).collect() }
+    impl[<T: Typed>] for (T,) {
+        @repr = T::type_kind();
+        @cons = T::CONS_ORDER;
+        @err = T::err_string();
+        @cons_fns = {
+            fn from_any(any: Value<'static>) -> ConsRes<Self>
+                { T::from_any(any).map(|t| (t,)) }
+            fn from_int(int: BigInt) -> ConsRes<Self> { T::from_int(int).map(|t| (t,)) }
+            fn from_bool(b: bool) -> ConsRes<Self> { T::from_bool(b).map(|t| (t,)) }
+            fn from_string(s: String) -> ConsRes<Self> { T::from_string(s).map(|t| (t,)) }
+            fn from_unit() -> ConsRes<Self> { T::from_unit().map(|t| (t,)) }
+            fn from_struct(fs: HashMap<String, Value>) -> ConsRes<Self>
+                { T::from_struct(fs).map(|t| (t,)) }
+            fn from_array(a: Vec<Value>) -> ConsRes<Self> { T::from_array(a).map(|t| (t,)) }
+        };
+        @decon_fns = {
+            fn clone_into_value(&self) -> Value<'static> { self.0.clone_into_value() }
 
-        fn from_array(array: Vec<Value>) -> Self {
-            array.iter().map(Value::convert).collect()
+            fn as_int(&self) -> BigInt { self.0.as_int() }
+            fn as_bool(&self) -> bool { self.0.as_bool() }
+            fn as_string(&self) -> String { self.0.as_string() }
+            fn as_struct(&self) -> HashMap<String, Value> { self.0.as_struct() }
+            fn as_array(&self) -> Vec<Value> { self.0.as_array() }
+        };
+    }
+
+    impl[<T: Typed>] for Vec<T> {
+        @repr = TypeKind::Array;
+        @cons = [TypeKind::Array];
+        @err = "expected an array";
+        @cons_fns = {
+            fn from_array(array: Vec<Value>) -> ConsRes<Self> {
+                array.into_iter().map(Value::convert).collect()
+            }
+        };
+        @decon_fns = {
+            fn clone_into_value(&self) -> Value<'static> { todo!() }
+            fn as_array(&self) -> Vec<Value> {
+                self.iter().map(Value::from_ref).collect()
+            }
+        };
+    }
+
+    // impl[<T: Clone + Typed, const N: usize>] for [T; N] {
+    //     @repr = TypeKind::Array;
+    //     @cons = [TypeKind::Array];
+    //     @err = "expected an array of length (TODO)";
+    //     @cons_fns = {
+    //         fn from_array(array: Vec<Value>) -> ConsRes<Self> {
+    //             array.iter()
+    //                 .map(Value::convert)
+    //                 .collect::<Result<Self, _>>()?
+    //                 .try_into()
+    //                 .map_err(|e| e.to_string())
+    //         }
+    //     };
+    //     @decon_fns = {
+    //         fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
+    //         fn as_array(&self) -> Vec<Value> {
+    //             self.iter().map(Value::from_ref).collect()
+    //         }
+    //     };
+    // }
+}
+
+macro_rules! impl_int {
+    ($($int_ty:ty: $convert:ident,)*) => {
+        impl_core! {
+            $(
+            impl for $int_ty {
+                @repr = TypeKind::Int;
+                @cons = [TypeKind::Int];
+                @err = concat!("expected ", stringify!($int_ty));
+                @cons_fns = {
+                    fn from_int(int: BigInt) -> ConsRes<Self> {
+                        use num::cast::ToPrimitive;
+
+                        int.$convert().ok_or_else(|| {
+                            format!("integer {} cannot fit within {}", int, stringify!($int_ty))
+                        })
+                    }
+                };
+                @decon_fns = {
+                    fn clone_into_value(&self) -> Value<'static> { Value::new(*self) }
+                    fn as_int(&self) -> BigInt { self.into() }
+                };
+            }
+            )*
         }
     }
 }
 
+impl_int! {
+    u8: to_u8,
+    u16: to_u16,
+    u32: to_u32,
+    u64: to_u64,
+    u128: to_u128,
+    usize: to_usize,
+    i8: to_i8,
+    i16: to_i16,
+    i32: to_i32,
+    i64: to_i64,
+    i128: to_i128,
+    isize: to_isize,
+}
+
+// Produces implementations for tuples of size >= 2. Tuples of size 1 are treated as equivalent to
+// the inner type, so we ignore them. Tuples of size 0 are the "unit"; we exclude them.
 macro_rules! impl_tuple {
-    // Handle the recursive calls so that we implement for all sizes of tuple
-    ($head:ident $($tail:ident)*) => {
-        impl_tuple!(@do_impl $head $($tail)*);
+    ($head:ident $next:ident $($tail:ident)*) => {
+        impl_tuple!(@do_impl $head $next $($tail)*);
+        impl_tuple!(@do_impl $next $($tail)*);
         impl_tuple!($($tail)*);
     };
-    () => {};
+    // Don't do anything for size 0 or 1
+    ($($ignore:ident)?) => {};
 
-    // Special case for single tuple: it'll be equivalent to the base type
-    (@do_impl $name:ident) => {
-        impl<$name: Typed> Typed for ($name,) {
-            fn repr() -> TypeRepr { $name::repr() }
-
-            fn from_tuple(tup: Vec<Value>) -> Self {
-                match tup.as_slice() {
-                    [v] => (v.convert::<$name>(),),
-                    vs => panic!("unexpected number of tuple elements; expected 1, found {}", vs.len()),
-                }
-            }
-        }
-
-        impl<$name: Typed + TypedDeconstruct + Clone> TypedDeconstruct for ($name,) {
-            fn get_repr(&self) -> TypeRepr { <Self as Typed>::repr() }
-            fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
-            fn as_tuple(&self) -> Vec<Value> { vec![Value::from_ref(&self.0)] }
-        }
-    };
-    // Actually construct the implementation
+    // The actual implementations for tuples of various sizes:
     (@do_impl $($name:ident)*) => {
-        impl<$($name: Typed),*> Typed for ($($name),*) {
-            fn repr() -> TypeRepr {
-                TypeRepr::Tuple(vec![$($name::repr()),*])
-            }
-
-            #[allow(non_snake_case)]
-            fn from_tuple(tup: Vec<Value>) -> Self {
-                match tup.as_slice() {
-                    [$($name,)*] => ($($name.convert::<$name>(),)*),
-                    vs => panic!(
-                        "unexpected number of tuple elements; expected {}, found {}",
-                        impl_tuple!(@count $($name)*),
-                        vs.len()
-                    ),
-                }
-            }
-        }
-
-        impl<$($name: Typed + TypedDeconstruct + Clone),*> TypedDeconstruct for ($($name),*) {
-            fn get_repr(&self) -> TypeRepr { <Self as Typed>::repr() }
-            fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
-            #[allow(non_snake_case)]
-            fn as_tuple(&self) -> Vec<Value> {
-                let ($($name),*) = self;
-                vec![$( Value::from_ref($name) ),*]
+        impl_core! {
+            impl[<$($name: Typed + Clone),*>] for ($($name,)*) {
+                @repr = TypeKind::Array;
+                @cons = [TypeKind::Array];
+                // TODO: This should include the length of the tuple, even though it's in a static
+                // string.
+                @err = "expected tuple (as array)";
+                @cons_fns = {
+                    #[allow(non_snake_case)]
+                    fn from_array(array: Vec<Value>) -> ConsRes<Self> {
+                        match array.as_slice() {
+                            [$($name,)*] => Ok(($($name.convert::<$name>()?,)*)),
+                            vs => Err(format!(
+                                "expected tuple with {} elements, found {}",
+                                impl_tuple!(@count $($name)*),
+                                vs.len(),
+                            )),
+                        }
+                    }
+                };
+                @decon_fns = {
+                    fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
+                    #[allow(non_snake_case)]
+                    fn as_array(&self) -> Vec<Value> {
+                        let ($($name),*) = self;
+                        vec![$( Value::from_ref($name) ),*]
+                    }
+                };
             }
         }
     };
-    // Count the number of names
     (@count) => {{ 0 }};
     (@count $head:ident $($tail:ident)*) => {{ 1 + impl_tuple!(@count $($tail)*) }};
 }
 
+use std::marker::PhantomData;
+
+manual_derive_typed! {
+    struct PhantomData<T>;
+}
+
+// manual_derive_typed! {
+//     enum Result<T, E> {
+//         Ok(T),
+//         Err(E),
+//     }
+// }
+
 impl_tuple! {
-    A B C D E F G H I J K L M N O P
-}
-
-//////////////////////////////////
-// Special-case implementations //
-//////////////////////////////////
-
-// UUIDs are represented as a string -- not every language might treat 128-bit integers nicely.
-impl Typed for Uuid {
-    fn repr() -> TypeRepr {
-        TypeRepr::String
-    }
-
-    fn from_string(s: String) -> Self {
-        Uuid::parse_str(s.as_str()).expect("invalid UUID")
-    }
-}
-
-impl TypedDeconstruct for Uuid {
-    fn get_repr(&self) -> TypeRepr {
-        <Self as Typed>::repr()
-    }
-
-    fn clone_into_value(&self) -> Value<'static> {
-        Value::new(*self)
-    }
-
-    fn as_string(&self) -> String {
-        format!("{:x}", self.to_hyphenated_ref())
-    }
+    A B C D E F G H I J K L M N O
 }

@@ -143,6 +143,7 @@ mod async_fns;
 mod attr;
 mod config;
 mod dyn_serde;
+mod extension;
 mod flag;
 mod history_core_test;
 mod id;
@@ -175,8 +176,9 @@ macros! {
     id::id,
     dyn_serde::register_dyn_clone,
     history_core_test::history_core_test,
-    typed::{type_sig, impl_core},
+    typed::{type_sig, manual_derive_typed},
     flag::flag,
+    extension::{make_extension, register_extensions},
 }
 
 #[proc_macro_attribute]
@@ -196,5 +198,10 @@ pub fn serde_dyn_clone(item: TokenStream) -> TokenStream {
 
 #[proc_macro_derive(Typed)]
 pub fn derive_typed(item: TokenStream) -> TokenStream {
-    typed::derive_typed(item)
+    typed::manual_derive_typed(item)
+}
+
+#[proc_macro_attribute]
+pub fn extension_export(attr: TokenStream, input: TokenStream) -> TokenStream {
+    extension::extension_export(attr, input)
 }

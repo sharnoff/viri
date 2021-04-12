@@ -8,16 +8,21 @@
 
 use std::collections::HashMap;
 
-use crate::dispatch::Value;
+use crate::dispatch::{ExtensionId, Value};
 use crate::init::LazyInit;
-use crate::macros::{async_fn, init};
+use crate::macros::{async_fn, init, register_extensions};
+
+mod file;
+mod text;
 
 // The global registry of all internally-defined extensions. Each extension corresponds to a
 // submodule (or perhaps a sub-submodule of this one)
-static REGISTRY: LazyInit<HashMap<&'static str, &'static Extension>> = LazyInit::new();
+static REGISTRY: LazyInit<HashMap<&'static str, Extension>> = LazyInit::new();
 
 init! {
-    todo!()
+    mod text;
+    mod file;
+    REGISTRY.initialize_with(register_extensions![text, file]);
 }
 
 /// The data representing an internally-defined extension
@@ -27,7 +32,9 @@ init! {
 /// [`load`](Self::load) method here.
 pub struct Extension {
     // A callback that loads the extension, providing the values for `self.methods`
-    loader: async_fn![fn() -> HashMap<&'static str, async_fn![fn(Value) -> Value]>],
+    loader: async_fn![
+        fn(ExtensionId, ExtensionId) -> HashMap<&'static str, async_fn![fn(Value) -> Value]>
+    ],
 
     // The methods provided by the extension. This value is not set until the loading function has
     // been run
@@ -41,8 +48,9 @@ impl Extension {
     }
 
     /// Loads the extension, performing any work that the extension may require as a result of it
-    pub async fn load(&self) {
-        self.methods.initialize_with((self.loader)().await);
+    pub async fn load(&self, builtin: ExtensionId, this: ExtensionId) {
+        self.methods
+            .initialize_with((self.loader)(builtin, this).await);
     }
 }
 
@@ -50,5 +58,5 @@ impl Extension {
 ///
 /// If no extension with the given name exists, this function returns `None`.
 pub fn extension_handle(name: &str) -> Option<&'static Extension> {
-    REGISTRY.get(name).cloned()
+    REGISTRY.get(name)
 }

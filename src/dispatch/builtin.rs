@@ -9,7 +9,7 @@ use crate::macros::type_sig;
 use crate::utils::DiscardResult;
 
 /// The extension name used to refer to the built-in operations
-pub static BUILTIN_NAME: &str = "Builtin";
+pub static BUILTIN_NAME: &str = "builtin";
 
 /// The various intrinsic operation supported to allow the manipulation of bindings and extensions
 #[derive(Copy, Clone)]
@@ -114,7 +114,6 @@ impl BindingNamespace {
 
                 // We need to provide a channel, even though it's never used; dropping the receiver
                 // means that sending will produce an error, but that's fine.
-                let (finish_callback, _) = oneshot::channel();
                 let finish_req = Request {
                     originating_ext: self.builtin_id,
                     kind: RequestKind::GetValue {
@@ -124,20 +123,20 @@ impl BindingNamespace {
                         },
                         arg: Value::new(()),
                     },
-                    callback: finish_callback,
                 };
 
                 // The UUID assigned to this extension
-                let ext_uuid = Uuid::new_v4();
-                self.ids.insert(Internal(ip_string), ExtensionId(ext_uuid));
+                let ext_id = ExtensionId(Uuid::new_v4());
+                self.ids.insert(Internal(ip_string), ext_id);
 
                 // TODO: add this extension to a holding set of extensions that are *currently*
                 // loading, but we're waiting on them to finish. The callback needs to go there in
                 // case we need to send back an error as a result of a cycle.
 
+                let builtin_id = self.builtin_id;
                 crate::runtime::spawn(async move {
                     // Actually do the loading
-                    ext.load().await;
+                    ext.load(builtin_id, ext_id).await;
                     // Once it's loaded, register it as such
                     let _ = finish_req.spawn().await;
                 });

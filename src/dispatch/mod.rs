@@ -17,7 +17,7 @@ mod builtin;
 mod typed;
 
 use builtin::BUILTIN_NAME;
-pub use typed::{TypeRepr, Typed, TypedDeconstruct, Value};
+pub use typed::{TypeKind, TypeRepr, Typed, TypedConstruct, TypedDeconstruct, Value};
 
 init! {
     require_initialized!(crate::runtime);
@@ -102,7 +102,7 @@ struct Signature {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Typed)]
-struct ExtensionId(Uuid);
+pub struct ExtensionId(Uuid);
 
 struct RequestSignature {
     /// The extension that registered this particular binding name
@@ -124,38 +124,32 @@ enum RequiredHandlers {
 
 /// The name of a particular request or handler, with the extension given by its ID
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Typed)]
-struct Name {
-    extension_id: ExtensionId,
-    method: String,
+pub struct Name {
+    pub extension_id: ExtensionId,
+    pub method: String,
 }
 
 pub type Callback = oneshot::Sender<Result<Option<Value<'static>>, String>>;
 
 /// An individual, internal binding request
 pub struct Request {
-    originating_ext: ExtensionId,
+    pub originating_ext: ExtensionId,
 
     /// The type of request signified
-    kind: RequestKind,
-
-    /// The channel over which to send the result of the operation
-    ///
-    /// There's a lot of information encoded in this, so let's go through it.
-    /// * If the return value is `Err(())`, the request was invalid
-    /// * If the return value is `Ok(None)`, the request is asynchronous
-    /// * If the return value is `Ok(Some(_))`, the output of the synchronous request was returned
-    callback: Callback,
+    pub kind: RequestKind,
+    //
+    // /// The channel over which to send the result of the operation
+    // ///
+    // /// There's a lot of information encoded in this, so let's go through it.
+    // /// * If the return value is `Err(())`, the request was invalid
+    // /// * If the return value is `Ok(None)`, the request is asynchronous
+    // /// * If the return value is `Ok(Some(_))`, the output of the synchronous request was returned
+    // callback: Callback,
 }
 
-enum RequestKind {
-    EventNotify {
-        event_name: String,
-        value: Value<'static>,
-    },
-    GetValue {
-        from: Name,
-        arg: Value<'static>,
-    },
+pub enum RequestKind {
+    EventNotify { event: Name, value: Value<'static> },
+    GetValue { from: Name, arg: Value<'static> },
 }
 
 impl Request {
