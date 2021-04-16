@@ -181,6 +181,7 @@ pub trait TypedDeconstruct: 'static + Send + Sync {
 /// The variants here serve to provide a sort of directive as to how we can parse a value with the
 /// implementation of the associated functions in [`TypedConstruct`]. For more information, please
 /// refer to the documentation of the trait itself.
+#[derive(Copy, Clone)]
 pub enum TypeKind {
     Any,
     Int,
@@ -195,16 +196,15 @@ pub enum TypeKind {
 // TODO-DOC: mostly exists to provide information to `Value::convert`
 #[rustfmt::skip]
 pub trait TypedConstruct: 'static + Sized {
-    /// The priority order for the types that we can attempt to construct from
+    /// The set of types that we can attempt to construct a value of this type from
     ///
-    /// For most types this will be a single value, e.g. `String` or `Struct`. But for some others,
-    /// particularly `enum`s, this might involve multiple attempts. Not all of the types listed
-    /// here are required to validly construct *something*, but only the methods corresponding to
-    /// the types here will be attempted.
+    /// For most types, this will be a single value, e.g. `String` or `Struct`. But for *some*
+    /// others (particularly `enum`s), there are multiple possible ways to produce a value. Only
+    /// the methods corresponding to types given here will be attempted.
     ///
-    /// To clarify: if `CONS_ORDER` is defined as `[TypeKind::String]`, the only method attempted
-    /// will be `from_string`.
-    const CONS_ORDER: [TypeKind];
+    /// To clarify: if `cons_order()` only returns `&[TypeKind::String]`, then only `from_string`
+    /// will be called, if anything.
+    fn cons_order() -> &'static [TypeKind];
 
     /// Produces a diagnostic string to indicate that an error has occured. The string should be
     /// something along the lines of `"expected foobar"`.
@@ -239,7 +239,7 @@ macro_rules! impl_core {
     )*) => {
         $(
         impl$($($generics)*)? TypedConstruct for $ty {
-            const CONS_ORDER: [TypeKind] = $cons_order;
+            fn cons_order() -> &'static [TypeKind] { &$cons_order }
             fn err_string() -> &'static str { $err_string }
 
             $($cons_tt)*
@@ -334,7 +334,7 @@ impl_core! {
 
     impl[<T: Typed>] for (T,) {
         @repr = T::type_kind();
-        @cons = T::CONS_ORDER;
+        @cons = T::cons_order();
         @err = T::err_string();
         @cons_fns = {
             fn from_any(any: Value<'static>) -> ConsRes<Self>

@@ -385,7 +385,7 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream2
     let construct = quote! {
         impl #generics #typed_construct for #ident #generic_args
         #cons_where Self: 'static {
-            const CONS_ORDER: [#type_kind] = [#type_kind::Struct, #type_kind::String];
+            fn cons_order() -> &'static #type_kind { &[#type_kind::Struct, #type_kind::String] }
 
             fn err_string() -> &'static #primitive_str {
                 "expected an enum variant; either by name (string) or field-value (struct)"
@@ -536,7 +536,7 @@ fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> Token
     quote! {
         impl #generics #typed_construct for #ident #generic_args
         #cons_where Self: 'static {
-            const CONS_ORDER: [#type_kind] = [#type_kind::Struct];
+            fn cons_order() -> &'static #type_kind { &[#type_kind::Struct] }
 
             fn err_string() -> &'static #primitive_str { "expected a struct" }
 
@@ -609,7 +609,7 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
     quote! {
         impl #generics #typed_construct for #ident #generic_args
         #cons_where Self: 'static {
-            const CONS_ORER: [#type_kind] = #type_kind::Array;
+            fn cons_order() -> &'static #type_kind { &[#type_kind::Array] }
 
             fn err_string() -> &'static #primitive_str { #err_str }
 
@@ -658,7 +658,7 @@ fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &syn::Field
     quote! {
         impl #generics #typed_construct for #ident #generic_args
         #cons_where Self: 'static {
-            const CONS_ORDER: [#type_kind] = <#ty as #typed_construct>::CONS_ORDER;
+            fn cons_order() -> &'static #type_kind { <#ty as #typed_construct>::cons_order() }
 
             fn err_string() -> &'static #primitive_str {
                 <#ty as #typed_construct>::err_string()
@@ -733,7 +733,7 @@ fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream2 {
 
     quote! {
         impl #generics #typed_construct for #ident #generic_args #cons_where Self: 'static {
-            const CONS_ORDER: [#type_kind] = <() as #typed_construct>::CONS_ORDER;
+            fn cons_order() -> &'static #type_kind { <() as #typed_construct>::cons_order() }
 
             fn err_string() -> &'static #primitive_str {
                 <() as #typed_construct>::err_string()
@@ -777,7 +777,7 @@ fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream2 {
 
     quote! {
         impl #generics #typed_construct for #ident #generic_args #cons_where Self: 'static {
-            const CONS_ORDER: [#type_kind] = [#type_kind::Unit, #type_kind::Struct];
+            fn cons_order() -> &'static #type_kind { &[#type_kind::Unit, #type_kind::Struct] }
 
             fn err_string() -> &'static #primitive_str {
                 "expected a unit value or an empty struct"
