@@ -14,9 +14,9 @@ pub use max_vec::MaxVec;
 ///
 /// This is what's used for the bound on the generic parameter for [`Diff`]s. This trait is
 /// implemented on all types that *can* satisfy the bound.
-pub trait BytesRef: Clone + From<Box<[u8]>> + Deref<Target = [u8]> {}
+pub trait BytesRef: Clone + Deref<Target = [u8]> {}
 
-impl<T> BytesRef for T where T: Clone + From<Box<[u8]>> + Deref<Target = [u8]> {}
+impl<T> BytesRef for T where T: Clone + Deref<Target = [u8]> {}
 
 /// A single change to a source set of bytes
 ///

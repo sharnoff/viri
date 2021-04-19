@@ -4,7 +4,7 @@
 //! `viri::macros` is subdivided. In order to comply with the compiler's (perhaps strange rules),
 //! we then have wrapper functions in the crate root for each of those.
 
-#![feature(drain_filter, option_expect_none)]
+#![feature(drain_filter)]
 
 use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
@@ -149,6 +149,7 @@ mod history_core_test;
 mod id;
 mod init_expr;
 mod named_fn;
+mod type_sig;
 mod typed;
 
 // A helper macro for bringing in the functions from the submodules
@@ -176,7 +177,8 @@ macros! {
     id::id,
     dyn_serde::register_dyn_clone,
     history_core_test::history_core_test,
-    typed::{type_sig, manual_derive_typed},
+    typed::{manual_derive_typed},
+    type_sig::type_sig,
     flag::flag,
     extension::{make_extension, register_extensions},
 }

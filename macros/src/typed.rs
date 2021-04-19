@@ -1,248 +1,70 @@
-//! Handling of extension handler type signatures
-
-use derive_syn_parse::Parse;
-use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote, quote_spanned, ToTokens, TokenStreamExt};
-use syn::punctuated::Punctuated;
+use proc_macro2::{Literal, Span, TokenStream};
+use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::spanned::Spanned;
 use syn::{
-    parse_macro_input, token, Data, DataEnum, DeriveInput, FieldsNamed, FieldsUnnamed, Generics,
-    Ident, LitStr, Path, Token, WhereClause,
+    Data, DataEnum, DeriveInput, Field, Fields, FieldsNamed, FieldsUnnamed, Generics, Ident, Index,
+    LitStr, Type, Variant, WhereClause,
 };
 
-use super::AtKwd;
-
-keywords! { mod kwd = any, int, string, repr, clone_with }
-
-/// A custom rust-like type signature, essentially identical in structure to
-/// `viri::dispatch::TypeRepr`
-#[derive(Parse)]
-enum Type {
-    #[peek_with(at_kwd![any], name = "`@any`")]
-    Any(AtKwd<kwd::any>),
-
-    #[peek(token::Paren, name = "unit (`()`)")]
-    Unit(#[paren] token::Paren),
-
-    #[peek_with(at_kwd![any], name = "`@int`")]
-    Int(AtKwd<kwd::int>),
-
-    #[peek_with(at_kwd![string], name = "`@string`")]
-    String(AtKwd<kwd::string>),
-
-    #[peek(Token![enum], name = "`enum`")]
-    Enum(Token![enum], Variants),
-
-    #[peek(token::Brace, name = "struct (`{` .. `}`)")]
-    Struct(Fields),
-
-    #[peek(token::Bracket, name = "array (`[` <type> `]`)")]
-    Array(ArrayType),
-
-    #[peek(token::Paren, name = "tuple (`(` .. `)`)")]
-    Tuple(TupleType),
-
-    // Peeking for a path is a little tricky; we'll just not do it
-    #[peek_with(|_| true, name = "ident")]
-    Named(Path),
+// Derive macro for `crate::dispatch::Typed`, including `TypeConstruct` and `TypeDeconstruct` as
+// well
+pub fn manual_derive_typed(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    derive_typed_impl(item.into()).into()
 }
 
-#[derive(Parse)]
-struct ArrayType {
-    #[bracket]
-    bracket: token::Bracket,
-    #[inside(bracket)]
-    ty: Box<Type>,
-}
-
-#[derive(Parse)]
-struct TupleType {
-    #[paren]
-    paren: token::Paren,
-    #[inside(paren)]
-    #[parse_terminated(Type::parse)]
-    tys: Punctuated<Type, Token![,]>,
-}
-
-/// Enum variants
-#[derive(Parse)]
-struct Variants {
-    #[brace]
-    brace: token::Brace,
-
-    #[inside(brace)]
-    #[parse_terminated(Variant::parse)]
-    vs: Punctuated<Variant, Token![,]>,
-}
-
-/// An individual variant of an enum
-#[derive(Parse)]
-struct Variant {
-    name: Ident,
-    #[prefix(Option<Token![:]> as colon)]
-    #[parse_if(colon.is_some())]
-    ty: Option<Type>,
-}
-
-#[derive(Parse)]
-struct Fields {
-    #[brace]
-    brace: token::Brace,
-
-    #[inside(brace)]
-    #[parse_terminated(Field::parse)]
-    fs: Punctuated<Field, Token![,]>,
-}
-
-#[derive(Parse)]
-struct Field {
-    name: Ident,
-    #[prefix(Token![:])]
-    ty: Type,
-}
-
-impl ToTokens for Type {
-    fn to_tokens(&self, ts: &mut TokenStream2) {
-        let additional_ts = match self {
-            Type::Any(t) => quote_spanned!(t.span()=> crate::dispatch::TypeRepr::Any),
-            Type::Unit(t) => quote_spanned!(t.span=> crate::dispatch::TypeRepr::Unit),
-            Type::Int(t) => quote_spanned!(t.span()=> crate::dispatch::TypeRepr::Int),
-            Type::String(t) => quote_spanned!(t.span()=> crate::dispatch::TypeRepr::String),
-            Type::Named(path) => {
-                quote_spanned!(path.span()=> <#path as crate::dispatch::Typed>::repr())
-            }
-            Type::Array(ArrayType { ty, .. }) => quote! {
-                crate::dispatch::TypeRepr::Array(::std::boxed::Box::new(#ty))
-            },
-            Type::Enum(_, vars) => {
-                let vars: Vec<_> = vars.vs.iter().map(|v| {
-                    let name = v.name.to_string();
-                    match &v.ty {
-                        Some(t) => {
-                            quote!(::std::borrow::ToOwned::to_owned(#name) => ::std::option::Option::Some(#t))
-                        }
-                        None => quote!(::std::borrow::ToOwned::to_owned(#name) => ::std::option::Option::None),
-                    }
-                }).collect();
-
-                quote! {
-                    crate::dispatch::TypeRepr::Enum(::maplit::hashmap!(
-                        #( #vars, )*
-                    ))
-                }
-            }
-            Type::Struct(fields) => {
-                let fs: Vec<_> = (fields.fs)
-                    .iter()
-                    .map(|f| {
-                        let name = f.name.to_string();
-                        let ty = &f.ty;
-                        quote!(::std::borrow::ToOwned::to_owned(#name) => #ty)
-                    })
-                    .collect();
-
-                quote! {
-                    crate::dispatch::TypeRepr::Struct(::maplit::hashmap!(
-                        #( #fs, )*
-                    ))
-                }
-            }
-            Type::Tuple(TupleType { tys, .. }) => {
-                let tys = tys.into_iter().collect::<Vec<_>>();
-                quote! {
-                    crate::dispatch::TypeRepr::Tuple(
-                        ::std::vec![ #( #tys, )* ]
-                    )
-                }
-            }
-        };
-
-        ts.append_all(additional_ts);
-    }
-}
-
-pub fn type_sig(input: TokenStream) -> TokenStream {
-    #[derive(Parse)]
-    struct Signature {
-        input: Type,
-        #[prefix(Option<Token![->]> as r_arrow)]
-        #[parse_if(r_arrow.is_some())]
-        output: Option<Type>,
-    }
-
-    let sig = parse_macro_input!(input as Signature);
-    let input_type = sig.input;
-
-    let output_tokens = match sig.output {
-        Some(t) => quote! {
-            crate::dispatch::Signature {
-                input: #input_type,
-                output: ::std::option::Option::Some(#t),
-            }
-        },
-        None => quote! {
-            crate::dispatch::Signature {
-                input: #input_type,
-                output: ::std::option::Option::None,
-            }
-        },
-    };
-
-    output_tokens.into()
-}
-
-// Derive macro for `crate::dispatch::Typed`: both `TypeConstruct` and `TypeDeconstruct`
-pub fn manual_derive_typed(item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as DeriveInput);
+fn derive_typed_impl(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input2!(item as DeriveInput);
     let input_span = input.span();
 
-    let output = match input.data {
+    match input.data {
         Data::Union(_) => syn::Error::new(input_span, "#[derive(Typed)] cannot be used on unions")
             .into_compile_error(),
         Data::Enum(e) => derive_enum(input.ident, input.generics, e),
         Data::Struct(s) => match s.fields {
-            syn::Fields::Unnamed(f) => derive_tuple(input.ident, input.generics, f),
-            syn::Fields::Named(f) => derive_struct(input.ident, input.generics, f),
-            syn::Fields::Unit => derive_unit_struct(input.ident, input.generics),
+            Fields::Unnamed(f) => derive_tuple(input.ident, input.generics, f),
+            Fields::Named(f) => derive_struct(input.ident, input.generics, f),
+            Fields::Unit => derive_unit_struct(input.ident, input.generics),
         },
-    };
-
-    output.into()
+    }
 }
 
-// A bit of context to make things a little easier to read
-struct DeriveContext<S> {
-    typed_construct: S,
-    typed_deconstruct: S,
-    type_kind: S,
-    value: S,
-    result: S,
-    ok: S,
-    err: S,
-    some: S,
-    string: S,
-    primitive_str: S,
-    hashmap: S,
-    into_iter: S,
-    next: S,
-    is_some: S,
-    ok_or_else: S,
-    as_str: S,
-    clone: S,
-    from: S,
-    slice: S,
-    bool: S,
-    vec: S,
-    send: S,
-    sync: S,
+// A bit of context to make things a little easier to read here. Formatting is intentionally
+// skipped so that fields are a bit easier to read.
+#[rustfmt::skip]
+struct DeriveContext {
+    typed:             TokenStream,
+    typed_construct:   TokenStream,
+    typed_deconstruct: TokenStream,
+    type_kind:         TokenStream,
+    type_repr:         TokenStream,
+    value:             TokenStream,
+    result:            TokenStream,
+    ok:                TokenStream,
+    err:               TokenStream,
+    some:              TokenStream,
+    string:            TokenStream,
+    primitive_str:     TokenStream,
+    hashmap:           TokenStream,
+    into_iter:         TokenStream,
+    next:              TokenStream,
+    is_some:           TokenStream,
+    ok_or_else:        TokenStream,
+    clone:             TokenStream,
+    string_from:       TokenStream,
+    slice:             TokenStream,
+    bool:              TokenStream,
+    vec:               TokenStream,
+    send:              TokenStream,
+    sync:              TokenStream,
 }
 
-fn derive_context() -> DeriveContext<TokenStream2> {
+fn derive_context() -> DeriveContext {
     DeriveContext {
+        typed: quote!(crate::dispatch::Typed),
         typed_construct: quote!(crate::dispatch::TypedConstruct),
         typed_deconstruct: quote!(crate::dispatch::TypedDeconstruct),
         type_kind: quote!(crate::dispatch::TypeKind),
+        type_repr: quote!(crate::dispatch::TypeRepr),
         value: quote!(crate::dispatch::Value),
         result: quote!(::std::result::Result),
         ok: quote!(::std::result::Result::Ok),
@@ -255,9 +77,11 @@ fn derive_context() -> DeriveContext<TokenStream2> {
         next: quote!(::std::iter::Iterator::next),
         is_some: quote!(::std::option::Option::is_some),
         ok_or_else: quote!(::std::option::Option::ok_or_else),
-        as_str: quote!(::std::string::String::as_str),
         clone: quote!(::std::clone::Clone),
-        from: quote!(::std::convert::From),
+        string_from: quote!(<::std::string::String as ::std::convert::From<_>>::from),
+        // There really isn't a good way to refer to the slice primitive. It isn't in
+        // `std::primitive`, so we need to just use the special syntax as it's given. We wrap it in
+        // angle brackets to that #slice::foo works as expected.
         slice: quote!(<[_]>),
         bool: quote!(::std::primitive::bool),
         vec: quote!(::std::vec::Vec),
@@ -266,186 +90,359 @@ fn derive_context() -> DeriveContext<TokenStream2> {
     }
 }
 
-fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream2 {
-    #[rustfmt::skip]
-    let DeriveContext {
-        typed_construct, typed_deconstruct, type_kind, value, result, ok, err, string,
-        primitive_str, hashmap, into_iter, next, is_some, ok_or_else, as_str, clone, from, slice,
-        send, sync, ..
-    } = derive_context();
+// This struct is only used once, in `derive_enum(..)`. The description of each of the fields is
+// primarily given there.
+#[derive(Default)]
+struct EnumCtx<'a> {
+    unit_variants: Vec<&'a Ident>,
+    unit_variants_strs: Vec<LitStr>,
+    empty_tuple_variants: Vec<&'a Ident>,
+    empty_tuple_variants_strs: Vec<LitStr>,
+    nonempty_variants_no_ambiguous: Vec<&'a Ident>,
+    nonempty_variants_no_ambiguous_strs: Vec<LitStr>,
 
-    let mut unit_variants = Vec::new();
-    let mut unit_variants_strs = Vec::new();
-    let mut ambiguous_variants = Vec::new();
-    let mut ambiguous_variants_strs = Vec::new();
-    let mut empty_tuple_variants = Vec::new();
-    let mut empty_tuple_variants_strs = Vec::new();
-    let mut nonempty_variants = Vec::new();
-    let mut nonempty_variants_strs = Vec::new();
-    let mut nonempty_variants_no_ambiguous = Vec::new();
-    let mut nonempty_variants_no_ambiguous_strs = Vec::new();
+    non_unit_variants: Vec<&'a Ident>,
+    non_unit_variants_strs: Vec<LitStr>,
+    non_unit_variants_no_ambiguous: Vec<&'a Ident>,
 
-    // The inner types of tuple variants that could be represented as units
-    let mut ambiguous_tys = Vec::new();
+    single_elem_tuple_variants: Vec<&'a Ident>,
+    single_elem_tuple_variants_strs: Vec<LitStr>,
+    nonempty_tuple_variants: Vec<&'a Ident>,
+    nonempty_tuple_variants_strs: Vec<LitStr>,
+    nonempty_tuple_indexes: Vec<Vec<Index>>,
+    nonempty_tuple_tys: Vec<Vec<&'a Type>>,
+    nonempty_tuple_unique_names: Vec<Vec<Ident>>,
+    nonempty_tuple_variants_len: Vec<Literal>,
 
-    // We can use a single set of fields for all nonempty variants; tuple fields can be pattern
-    // matched as { 0: _, 1: _, .. }, just like structs.
-    let mut variant_fields = <Vec<Vec<TokenStream2>>>::new();
-    // Unique helper names for each field in the above
-    let mut unique_field_names = <Vec<Vec<Ident>>>::new();
-    // But those varants need to have separate types constructed for them in order for conversion
-    // to be made easier.
-    let mut variant_type_dfns = <Vec<TokenStream2>>::new();
+    struct_variants: Vec<&'a Ident>,
+    struct_variants_strs: Vec<LitStr>,
+    struct_variants_fields: Vec<Vec<&'a Ident>>,
+    struct_variants_fields_strs: Vec<Vec<LitStr>>,
+    struct_variants_tys: Vec<Vec<&'a Type>>,
 
-    for variant in &data.variants {
-        let ident = &variant.ident;
-        let lit_str = LitStr::new(&ident.to_string(), ident.span());
+    ambiguous_tys: Vec<&'a Type>,
+}
 
-        match &variant.fields {
-            syn::Fields::Unnamed(FieldsUnnamed { unnamed: fs, .. }) => {
-                // Depending on the length of the tuple, it may be that this is:
-                //  a. Actually a "unit",
-                //  b. Ambiguous, because the contained type could be a "unit",
-                //  c. Unambiguous
-                // So we need to handle these cases separately.
-                if fs.len() == 0 {
-                    empty_tuple_variants.push(ident);
-                    empty_tuple_variants_strs.push(lit_str);
-                    continue;
-                } else if fs.len() == 1 {
-                    ambiguous_variants.push(ident);
-                    ambiguous_variants_strs.push(lit_str.clone());
-                    ambiguous_tys.push(&fs[0].ty);
-                } else {
-                    nonempty_variants_no_ambiguous.push(ident);
-                    nonempty_variants_no_ambiguous_strs.push(lit_str.clone());
+impl<'a> EnumCtx<'a> {
+    fn new(variants: impl Iterator<Item = &'a Variant>) -> Self {
+        let mut this = EnumCtx::default();
+
+        for variant in variants {
+            let ident = &variant.ident;
+            let lit_str = LitStr::new(&ident.to_string(), ident.span());
+
+            // There's a couple things that we need to do here. Mostly you'll just have to trust
+            // that this is correct, because there's just *so* many fields that need to be properly
+            // initialized.
+            //
+            // We'll start off by dealing with the "unit / non-unit" field options.
+            match &variant.fields {
+                Fields::Unnamed(_) | Fields::Named(_) => {
+                    this.non_unit_variants.push(ident);
+                    this.non_unit_variants_strs.push(lit_str.clone());
+                }
+                Fields::Unit => {
+                    this.unit_variants.push(ident);
+                    this.unit_variants_strs.push(lit_str.clone());
+                }
+            }
+
+            // And then we'll do all of the other, more complicated stuff
+            match &variant.fields {
+                // Nothing left to do for unit variants
+                Fields::Unit => (),
+
+                // Tuple variants are a bit tricky. There's different cases for size 0, 1, and 2+.
+                Fields::Unnamed(u) if u.unnamed.len() == 0 => {
+                    this.empty_tuple_variants.push(ident);
+                    this.empty_tuple_variants_strs.push(lit_str.clone());
+                }
+                Fields::Unnamed(u) if u.unnamed.len() == 1 => {
+                    this.single_elem_tuple_variants.push(ident);
+                    this.single_elem_tuple_variants_strs.push(lit_str.clone());
+                    this.ambiguous_tys.push(&u.unnamed[0].ty);
+                }
+                Fields::Unnamed(FieldsUnnamed { unnamed: fs, .. }) => {
+                    this.nonempty_tuple_variants.push(ident);
+                    this.nonempty_tuple_variants_strs.push(lit_str.clone());
+                    this.nonempty_variants_no_ambiguous.push(ident);
+                    this.nonempty_variants_no_ambiguous_strs
+                        .push(lit_str.clone());
+
+                    // Write to `nonempty_tuple_{indexes,unique_names}`:
+                    let call_site = Span::call_site();
+                    let indexes = (0..fs.len() as u32)
+                        .map(|i| Index {
+                            index: i,
+                            span: call_site.clone(),
+                        })
+                        .collect();
+
+                    let names = (0..fs.len())
+                        .map(|i| format_ident!("_field_{}", i))
+                        .collect();
+
+                    let tys = fs.iter().map(|f| &f.ty).collect();
+
+                    this.nonempty_tuple_indexes.push(indexes);
+                    this.nonempty_tuple_unique_names.push(names);
+                    this.nonempty_tuple_variants_len
+                        .push(Literal::usize_unsuffixed(fs.len()));
+                    this.nonempty_tuple_tys.push(tys);
                 }
 
-                // Note: reaching this point implies `fs.len() > 1`
-                nonempty_variants.push(ident);
-                nonempty_variants_strs.push(lit_str);
+                // Struct variants are thankfully fairly straightforward - there aren't any special
+                // cases for handling units
+                Fields::Named(FieldsNamed { named: fs, .. }) => {
+                    this.struct_variants.push(ident);
+                    this.struct_variants_strs.push(lit_str.clone());
+                    this.nonempty_variants_no_ambiguous.push(ident);
+                    this.nonempty_variants_no_ambiguous_strs
+                        .push(lit_str.clone());
+                    this.non_unit_variants_no_ambiguous.push(ident);
 
-                let fields = (0..fs.len())
-                    .map(|i| {
-                        use proc_macro2::{Literal, TokenTree};
+                    // Write to `struct_variants_fields{,strs}`:
+                    let idents: Vec<_> = fs
+                        .iter()
+                        .map(|field| field.ident.as_ref().unwrap())
+                        .collect();
 
-                        // We can't just `quote!(#i)`, because that'll generate `<#i>_usize`, which
-                        // isn't valid for tuple fields. It's easiest for us to make the token
-                        // stream manually here.
-                        TokenTree::Literal(Literal::usize_unsuffixed(i)).into()
-                    })
-                    .collect();
+                    let strs = idents
+                        .iter()
+                        .map(|id| LitStr::new(&id.to_string(), id.span()))
+                        .collect();
 
-                variant_fields.push(fields);
-                unique_field_names.push(
-                    (0..fs.len())
-                        .map(|i| format_ident!("_field_{}", i))
-                        .collect(),
-                );
+                    let tys = fs.iter().map(|f| &f.ty).collect();
 
-                // Because this is a tuple, the type definition needs a trailing semicolon
-                let fields = &variant.fields;
-                variant_type_dfns.push(quote!( #fields; ));
-            }
-            syn::Fields::Named(FieldsNamed { named: fs, .. }) => {
-                nonempty_variants.push(ident);
-                nonempty_variants_strs.push(lit_str.clone());
-                nonempty_variants_no_ambiguous.push(ident);
-                nonempty_variants_no_ambiguous_strs.push(lit_str);
-
-                variant_fields.push(
-                    fs.iter()
-                        .map(|f| f.ident.as_ref().unwrap().to_token_stream())
-                        .collect(),
-                );
-                unique_field_names.push(
-                    (0..fs.len())
-                        .map(|i| format_ident!("_field_{}", i))
-                        .collect(),
-                );
-
-                // Because this is a struct, the type definition doesn't need a trailing semicolon
-                variant_type_dfns.push(variant.fields.to_token_stream());
-            }
-            syn::Fields::Unit => {
-                unit_variants.push(ident);
-                unit_variants_strs.push(lit_str);
-                continue;
+                    this.struct_variants_fields.push(idents);
+                    this.struct_variants_fields_strs.push(strs);
+                    this.struct_variants_tys.push(tys);
+                }
             }
         }
+
+        this
     }
+}
 
-    // This is used in exactly one spot; the reason why is explained there.
-    let variant_fields_cloned = variant_fields.clone();
+fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream {
+    #[rustfmt::skip]
+    let DeriveContext {
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, err,
+        string, primitive_str, hashmap, into_iter, next, is_some, ok_or_else, clone, slice,
+        send, sync, vec, some, string_from, ..
+    } = derive_context();
 
-    let (cons_where, decon_where) =
-        where_clauses(generics.where_clause.as_ref(), &enum_types(&data));
+    let ctx = EnumCtx::new(data.variants.iter());
+    #[rustfmt::skip]
+    let EnumCtx {
+        // Unit variants are variants that use Fields::Unit -- i.e. stuff like
+        //   enum Foo {
+        //       Bar,
+        //   }
+        unit_variants, unit_variants_strs,
+        // Empty tuples are like: Foo()
+        empty_tuple_variants, empty_tuple_variants_strs,
+
+        // Any struct varant, or any tuple variant with >= 2 elements
+        nonempty_variants_no_ambiguous, nonempty_variants_no_ambiguous_strs,
+
+        // "non-unit" variants are pretty much what it says on the label. Anything that's not a
+        // unit. Edge-case examples of "non-unit" variants are:
+        //   enum Foo {
+        //       Bar(),
+        //       Baz(()),
+        //       Qux {},
+        //   }
+        non_unit_variants, non_unit_variants_strs,
+        // "no_ambiguous" here removes the single-element tuples from the above set
+        non_unit_variants_no_ambiguous,
+
+        // These are fairly self explanatory
+        single_elem_tuple_variants, single_elem_tuple_variants_strs,
+        // Despite its name, "nonempty tuple variants" excludes tuple variants with only a single
+        // element
+        nonempty_tuple_variants, nonempty_tuple_variants_strs,
+        // "nonempty tuple indexes/unique names" provide sets of indexes and names for each tuple
+        // variant in the above set. "len" is just the number of elements in each "nonempty" tuple
+        // variant.
+        nonempty_tuple_indexes, nonempty_tuple_unique_names, nonempty_tuple_tys,
+        nonempty_tuple_variants_len,
+
+        // "struct variants" is what it says on the label
+        struct_variants, struct_variants_strs,
+        // "...fields" gives the list of field names *for each* variant in the above set
+        struct_variants_fields, struct_variants_fields_strs, struct_variants_tys,
+
+        // The inner type of single-element tuple variants
+        ambiguous_tys,
+    } = ctx;
+
+    let ambiguous_tys_cloned = ambiguous_tys.clone();
+    let nonempty_tuple_variants_cloned = nonempty_tuple_variants.clone();
+    let struct_variants_cloned = struct_variants.clone();
+
+    let original_where_clause = generics.where_clause.as_ref();
+
+    let (cons_where, decon_where, typed_where) =
+        where_clauses(original_where_clause, &enum_types(&data));
     let generic_args = generic_args(&generics);
+
+    let typed = quote! {
+        impl #generics #typed for #ident #generic_args
+            #typed_where Self: #typed_deconstruct + #typed_construct
+        {
+            fn repr() -> #type_repr {
+                #type_repr::Enum(::maplit::hashmap! {
+                    // Unit
+                    #( #string_from(#unit_variants_strs) => #type_repr::Unit, )*
+                    #( #string_from(#empty_tuple_variants_strs) => #type_repr::Unit, )*
+
+                    // Single-element tuples are simple. This also cleanly handles the ambiguous
+                    // case.
+                    #( #string_from(#single_elem_tuple_variants_strs) =>
+                        <#ambiguous_tys as #typed>::repr(),
+                    )*
+
+                    // Multi-element tuples are fairly simple as well
+                    #( #string_from(#nonempty_tuple_variants_strs) => {
+                        #type_repr::Tuple(::std::vec![
+                            #( <#nonempty_tuple_tys as #typed>::repr(), )*
+                        ])
+                    }, )*
+
+                    // And structs, too!
+                    #( #string_from(#struct_variants_strs) => {
+                        #type_repr::Struct(::maplit::hashmap! {
+                            #( #string_from(#struct_variants_fields_strs) =>
+                                <#struct_variants_tys as #typed>::repr(),
+                            )*
+                        })
+                    }, )*
+                })
+            }
+        }
+    };
+
+    // We'd like our inner structs to be `struct _V`, but - on the offchance that the base struct
+    // has that name (just to mess with us), we'll choose something different.
+    let inner_struct_name = match ident.to_string().as_str() {
+        "_V" => Ident::new("__V", Span::call_site()),
+        _ => Ident::new("_V", Span::call_site()),
+    };
 
     let construct = quote! {
         impl #generics #typed_construct for #ident #generic_args
-        #cons_where Self: 'static {
-            fn cons_order() -> &'static #type_kind { &[#type_kind::Struct, #type_kind::String] }
+            #cons_where Self: 'static + #send + #sync + #clone // TODO: do we need the clone bound?
+        {
+            fn cons_order() -> &'static [#type_kind] { &[#type_kind::Struct, #type_kind::String] }
 
             fn err_string() -> &'static #primitive_str {
                 "expected an enum variant; either by name (string) or field-value (struct)"
             }
 
             fn from_string(s: #string) -> #result<Self, #string> {
-                match s.as_str() {
+                match #string::as_str(&s) {
                     #( #unit_variants_strs => #ok(Self::#unit_variants), )*
-                    #( #empty_tuple_variants_strs => #ok(Self::#empty_tuple_variants(())), )*
-                    #( v @ #ambiguous_variants_strs => {
+                    // Ambiguous variants *could* be a unit -- e.g. the `Err` variant of
+                    // `Result<T, ()>`. If that's the case, we want this to be represented nicely,
+                    // so that people could write the appropriate JSON as something like:
+                    //   { result: "Err" }
+                    // instead of:
+                    //   { result: { "Err": [] } }
+                    #( v @ #single_elem_tuple_variants_strs => {
                         let does_contain = #slice::contains(
-                            &<#ambiguous_tys as #typed_construct>::CONS_ORDER,
-                            #type_kind::Unit
+                            <#ambiguous_tys as #typed_construct>::cons_order(),
+                            &#type_kind::Unit,
                         );
+
                         if does_contain {
-                            #ok(Self::#ambiguous_variants(
-                                <#ambiguous_tys as #typed_construct>::from_unit()?
+                            #ok(Self::#single_elem_tuple_variants(
+                                <#ambiguous_tys_cloned as #typed_construct>::from_unit()?
                             ))
                         } else {
                             #err(::std::format!("enum variant `{}` missing data", v))
                         }
                     },)*
-                    #( v @ #nonempty_variants_no_ambiguous_strs )|* => {
+                    #( v @ #nonempty_variants_no_ambiguous_strs => {
                         #err(::std::format!("enum variant `{}` missing data", v))
-                    },
-                    v => #err("unexpected enum variant {:?}", v),
+                    },)*
+                    v => #err(::std::format!("unexpected enum variant {:?}", v)),
                 }
             }
 
             fn from_struct(fields: #hashmap<#string, #value>) -> #result<Self, #string> {
                 let mut iter = #into_iter(fields);
-                let (field, value) = #ok_or_else(#next(&mut iter), || "expected a field")?;
 
-                if #is_some(#next(&mut iter)) {
-                    return #err("expected only one field to singify the enum variant");
+                let (field, value) = #ok_or_else(#next(&mut iter), || "expected a single field")?;
+
+                if #is_some(&#next(&mut iter)) {
+                    return #err(#string_from(
+                        "expected only one field to signify the enum variant"
+                    ));
                 }
 
-                match #as_str(&field) {
+                match #string::as_str(&field) {
                     #( #unit_variants_strs => {
-                        let _: () = #value::convert(value)?;
+                        let _: () = #value::convert(&value)?;
                         #ok(Self::#unit_variants)
                     },)*
                     #( #empty_tuple_variants_strs => {
-                        let _: () = #value::convert(value)?;
+                        let _: () = #value::convert(&value)?;
                         #ok(Self::#empty_tuple_variants(()))
                     },)*
-                    #( #nonempty_variants_strs => {
-                        #[derive(crate::macros::Typed)]
-                        struct __TypedType #variant_type_dfns
-
-                        let base: __TypedType = #value::convert(value);
-
-                        #ok(Self {
-                            // Due to a limitation in `quote`, the same repeated item can't be
-                            // present more than once inside a repetition. So we hvae
-                            // `variant_fields_cloned` to deal with that.
-                            #( #variant_fields: base.#variant_fields_cloned, )*
-                        })
+                    #( #single_elem_tuple_variants_strs => {
+                        // Single-element tuples are equivalent to the values they contain
+                        #ok(Self::#single_elem_tuple_variants(#value::convert(&value)?))
                     },)*
-                    s => #err(::std::format!("unexpected enum variant {:?}", s)),
+                    #( #nonempty_tuple_variants_strs => {
+                        // Tuples with >1 elements are represented as arrays and only arrays.
+                        let inner = #value::inner(&value);
+                        let array = match #typed_deconstruct::type_kind(inner) {
+                            #type_kind::Array => #typed_deconstruct::as_array(inner),
+                            t => return #err(::std::format!(
+                                "expected an array type, found `{:?}`",
+                                t,
+                            )),
+                        };
+
+                        match #vec::as_slice(&array) {
+                            [ #( #nonempty_tuple_unique_names )* ] => todo!(),
+                            vs => #err(::std::format!(
+                                "expected an array with {} elements, found {}",
+                                #nonempty_tuple_variants_len,
+                                #slice::len(vs),
+                            )),
+                        }
+                    }, )*
+                    #( #struct_variants_strs => {
+                        // All structs are required to be represented as such
+                        let inner = #value::inner(&value);
+                        let fields = match #typed_deconstruct::type_kind(inner) {
+                            #type_kind::Struct => #typed_deconstruct::as_struct(inner),
+                            t => return #err(::std::format!(
+                                "expected a struct type, found `{:?}`",
+                                t,
+                            )),
+                        };
+
+                        let this = Self::#struct_variants {
+                            #( #struct_variants_fields: {
+                                let s = #struct_variants_fields_strs;
+                                let val = #ok_or_else(
+                                    #hashmap::remove(&mut fields, s),
+                                    || ::std::format!("missing field `{}`", s),
+                                )?;
+                            },)*
+                        };
+
+                        if let #some((f, _)) = #next(&mut #hashmap::iter(&fields)) {
+                            return #err(::std::format!("unexpected field {:?}", f));
+                        }
+
+                        #ok(this)
+                    },)*
+                    unk => #err(::std::format!("unknown enum variant {:?}", unk)),
                 }
             }
         }
@@ -453,19 +450,17 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream2
 
     let deconstruct = quote! {
         impl #generics #typed_deconstruct for #ident #generic_args
-        #decon_where Self: 'static + #send + #sync + #clone {
+            #decon_where Self: 'static + #send + #sync + #clone
+        {
             fn type_kind(&self) -> #type_kind {
                 match self {
-                    #( Self::#unit_variants )|* => #type_kind::String,
-
-                    // Represent something like Result<T, ()>::Err as a unit variant, to account
-                    // for generics
-                    #( Self::#ambiguous_variants(a) => match #typed_deconstruct::type_kind(a) {
+                    #( Self::#unit_variants => #type_kind::String, )*
+                    // Single-element tuple variants are ambiguous
+                    #( Self::#single_elem_tuple_variants(a) => match #typed_deconstruct::type_kind(a) {
                         #type_kind::Unit => #type_kind::String,
                         _ => #type_kind::Struct,
-                    })*
-
-                    #( Self::#nonempty_variants_no_ambiguous { .. } => #type_kind::Struct, )*
+                    }, )*
+                    #( Self::#non_unit_variants_no_ambiguous { .. } => #type_kind::Struct, )*
                 }
             }
 
@@ -475,28 +470,110 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream2
 
             fn as_string(&self) -> #string {
                 match self {
-                    #( Self::#unit_variants => <#string as #from>::from(#unit_variants_strs),)*
-                    #( Self::#nonempty_variants { .. } => {
-                        <#string as #from>::from(#nonempty_variants_strs)
-                    })*
+                    #( Self::#unit_variants => #string_from(#unit_variants_strs), )*
+                    #( Self::#non_unit_variants { .. } => {
+                        #string_from(#non_unit_variants_strs)
+                    },)*
                 }
             }
 
             fn as_struct(&self) -> #hashmap<#string, #value> {
                 match self {
                     #( Self::#unit_variants => ::maplit::hashmap! {
-                        <#string as #from>::from(#unit_variants_strs) => #value::new(()),
+                        #string_from(#unit_variants_strs) => #value::new(()),
                     },)*
-                    #( Self::#nonempty_variants { #( #variant_fields: #unique_field_names, )* } => {
-                        #[derive(crate::macros::Typed)]
-                        struct __TypedType #variant_type_dfns
+                    #( Self::#empty_tuple_variants(()) => ::maplit::hashmap! {
+                        #string_from(#empty_tuple_variants_strs) => #value::new(()),
+                    },)*
+                    #( Self::#single_elem_tuple_variants(v) => ::maplit::hashmap! {
+                        #string_from(#single_elem_tuple_variants_strs) => #value::from_ref(v),
+                    },)*
+                    #( this @ Self::#nonempty_tuple_variants { .. } => {
+                        #[repr(transparent)]
+                        struct #inner_struct_name #generics #original_where_clause ( #ident #generics );
+
+                        impl #generics #typed_deconstruct for #inner_struct_name #generic_args
+                            #decon_where Self: 'static, #ident #generic_args: Clone
+                        {
+                            fn type_kind(&self) -> #type_kind { #type_kind::Array }
+
+                            fn clone_into_value(&self) -> #value<'static> {
+                                #value::new(Self( #clone::clone(&self.0) ))
+                            }
+
+                            fn as_array(&self) -> #vec<#value> {
+                                match &self.0 {
+                                    #ident::#nonempty_tuple_variants_cloned(
+                                        #( #nonempty_tuple_unique_names, )*
+                                    ) => {
+                                        ::std::vec![
+                                            #( #nonempty_tuple_unique_names, )*
+                                        ]
+                                    }
+                                    _ => unreachable!(),
+                                }
+
+
+                                ::std::vec![
+                                    #( #value::from_ref(&self.0.#nonempty_tuple_indexes), )*
+                                ]
+                            }
+                        }
+
+                        // SAFETY: We know this is safe because the wrapper tuple is
+                        // #[repr(transparent)]; it's really the only way we can produce a
+                        // distinct, 'static type to the inner values.
+                        let val: &#inner_struct_name #generic_args = unsafe {
+                            ::std::mem::transmute(this)
+                        };
 
                         ::maplit::hashmap! {
-                            <#string as #from>::from(#nonempty_variants_strs) => {
-                                #value::new(__TypedType {
-                                    #( #variant_fields: #unique_field_names, )*
-                                })
+                            #string_from(#nonempty_tuple_variants_strs) => {
+                                #value::from_ref(val)
+                            },
+                        }
+                    },)*
+                    #( this @ Self::#struct_variants { .. } => {
+                        #[repr(transparent)]
+                        struct #inner_struct_name #generics #original_where_clause ( #ident #generics );
+
+                        impl #generics #typed_deconstruct for #inner_struct_name #generic_args
+                            #decon_where Self: 'static, #ident #generic_args: Clone
+                        {
+                            fn type_kind(&self) -> #type_kind { #type_kind::Struct }
+
+                            fn clone_into_value(&self) -> #value<'static> {
+                                #value::new(Self( #clone::clone(&self.0) ))
                             }
+
+                            fn as_struct(&self) -> #hashmap<#string, #value> {
+                                match &self.0 {
+                                    #ident::#struct_variants_cloned {
+                                        #( #struct_variants_fields, )*
+                                    } => {
+                                        ::maplit::hashmap! {
+                                            #(
+                                                #string_from(
+                                                    #struct_variants_fields_strs
+                                                ) => {
+                                                    #struct_variants_fields
+                                                }
+                                            )*
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // SAFETY: Same reasons as above
+                        let val: &#inner_struct_name #generic_args = unsafe {
+                            ::std::mem::transmute(this)
+                        };
+
+                        ::maplit::hashmap! {
+                            #string_from(#struct_variants_strs) => {
+                                #value::from_ref(val)
+                            },
                         }
                     },)*
                 }
@@ -505,20 +582,22 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream2
     };
 
     quote! {
+        #typed
         #construct
         #deconstruct
     }
 }
 
-fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> TokenStream2 {
+fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed_construct, typed_deconstruct, type_kind, value, result, ok, err, string,
-        primitive_str, hashmap, clone, from, ok_or_else, some, next, send, sync, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, err,
+        string, primitive_str, hashmap, clone, ok_or_else, some, next, send, sync, string_from, ..
     } = derive_context();
 
-    let types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
-    let (cons_where, decon_where) = where_clauses(generics.where_clause.as_ref(), &types);
+    let field_types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
+    let (cons_where, decon_where, typed_where) =
+        where_clauses(generics.where_clause.as_ref(), &field_types);
 
     let generic_args = generic_args(&generics);
 
@@ -531,22 +610,37 @@ fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> Token
         field_names.push(ident);
     }
 
-    let field_names_cloned = field_names.clone();
+    let field_strs_cloned = field_strs.clone();
 
     quote! {
+        impl #generics #typed for #ident #generic_args
+            #typed_where Self: #typed_deconstruct + #typed_deconstruct
+        {
+            fn repr() -> #type_repr {
+                #type_repr::Struct(::maplit::hashmap! {
+                    #( #string_from(#field_strs) => <#field_types as #typed>::repr(), )*
+                })
+            }
+        }
+
         impl #generics #typed_construct for #ident #generic_args
-        #cons_where Self: 'static {
-            fn cons_order() -> &'static #type_kind { &[#type_kind::Struct] }
+            #cons_where Self: 'static
+        {
+            fn cons_order() -> &'static [#type_kind] { &[#type_kind::Struct] }
 
             fn err_string() -> &'static #primitive_str { "expected a struct" }
 
             fn from_struct(mut fields: #hashmap<#string, #value>) -> #result<Self, #string> {
                 let this = Self {
                     #(
-                    #field_names: #ok_or_else(
-                            #hashmap::remove(&mut fields),
-                            ::std::format!("missing field `{}`", #field_names_cloned),
-                        )?,
+                    #field_names: {
+                        let val = #ok_or_else(
+                            #hashmap::remove(&mut fields, #field_strs),
+                            || ::std::format!("missing field `{}`", #field_strs_cloned),
+                        )?;
+
+                        #value::convert(&val)?
+                    },
                     )*
                 };
 
@@ -567,14 +661,14 @@ fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> Token
 
             fn as_struct(&self) -> #hashmap<#string, #value> {
                 ::maplit::hashmap! {
-                    #( <#string as #from>::from(#field_strs) => #value::from_ref(&self.#field_names), )*
+                    #( #string_from(#field_strs) => #value::from_ref(&self.#field_names), )*
                 }
             }
         }
     }
 }
 
-fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> TokenStream2 {
+fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> TokenStream {
     let fields: Vec<_> = fields.unnamed.into_iter().collect();
 
     // We'll special case length 0 and 1. The rest of this function assumes that we're dealing with
@@ -587,14 +681,15 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
 
     #[rustfmt::skip]
     let DeriveContext {
-        typed_construct, typed_deconstruct, type_kind, value, result, ok, err, string,
-        primitive_str, vec, clone, slice, send, sync, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, err,
+        string, primitive_str, vec, clone, slice, send, sync, ..
     } = derive_context();
 
     let fields_len = fields.len();
 
     let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
-    let (cons_where, decon_where) = where_clauses(generics.where_clause.as_ref(), &types);
+    let (cons_where, decon_where, typed_where) =
+        where_clauses(generics.where_clause.as_ref(), &types);
     let generic_args = generic_args(&generics);
 
     let err_str = format!("expected tuple (array) of length {}", fields_len);
@@ -607,9 +702,20 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
     let indexes = (0..fields_len).map(|i| proc_macro2::Literal::usize_unsuffixed(i));
 
     quote! {
+        impl #generics #typed for #ident #generic_args
+            #typed_where Self: #typed_deconstruct + #typed_construct
+        {
+            fn repr() -> #type_repr {
+                #type_repr::Tuple(::std::vec![
+                    #( <#types as #typed>::repr(), )*
+                ])
+            }
+        }
+
         impl #generics #typed_construct for #ident #generic_args
-        #cons_where Self: 'static {
-            fn cons_order() -> &'static #type_kind { &[#type_kind::Array] }
+            #cons_where Self: 'static
+        {
+            fn cons_order() -> &'static [#type_kind] { &[#type_kind::Array] }
 
             fn err_string() -> &'static #primitive_str { #err_str }
 
@@ -626,7 +732,8 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
         }
 
         impl #generics #typed_deconstruct for #ident #generic_args
-        #decon_where Self: 'static + #send + #sync + #clone {
+            #decon_where Self: 'static + #send + #sync + #clone
+        {
             fn type_kind(&self) -> #type_kind { #type_kind::Array }
 
             fn clone_into_value(&self) -> #value<'static> {
@@ -643,22 +750,32 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
 }
 
 // Single-element tuples are treated identically to the inner types they represent
-fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &syn::Field) -> TokenStream2 {
+fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &Field) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed_construct, typed_deconstruct, type_kind, value, result, ok, string,
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, string,
         primitive_str, hashmap, bool, vec, send, sync, clone, ..
     } = derive_context();
 
     let ty = &field.ty;
 
-    let (cons_where, decon_where) = where_clauses(generics.where_clause.as_ref(), &[ty]);
+    let (cons_where, decon_where, typed_where) =
+        where_clauses(generics.where_clause.as_ref(), &[ty]);
     let generic_args = generic_args(&generics);
 
     quote! {
+        impl #generics #typed for #ident #generic_args
+            #typed_where Self: #typed_construct + #typed_deconstruct
+        {
+            fn repr() -> #type_repr {
+                <#ty as #typed>::repr()
+            }
+        }
+
         impl #generics #typed_construct for #ident #generic_args
-        #cons_where Self: 'static {
-            fn cons_order() -> &'static #type_kind { <#ty as #typed_construct>::cons_order() }
+            #cons_where Self: 'static
+        {
+            fn cons_order() -> &'static [#type_kind] { <#ty as #typed_construct>::cons_order() }
 
             fn err_string() -> &'static #primitive_str {
                 <#ty as #typed_construct>::err_string()
@@ -690,7 +807,8 @@ fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &syn::Field
         }
 
         impl #generics #typed_deconstruct for #ident
-        #decon_where Self: 'static + #send + #sync + #clone {
+            #decon_where Self: 'static + #send + #sync + #clone
+        {
             fn type_kind(&self) -> #type_kind { <#ty as #typed_deconstruct>::type_kind(&self.0) }
             fn clone_into_value(&self) -> #value<'static> {
                 <#ty as #typed_deconstruct>::clone_into_value(&self.0)
@@ -719,21 +837,27 @@ fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &syn::Field
     }
 }
 
-fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream2 {
+fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed_construct, typed_deconstruct, type_kind, value, result, string, primitive_str,
-        hashmap, ok, err, slice, from, send, sync, clone, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, string,
+        primitive_str, hashmap, ok, err, slice, send, sync, clone, string_from, vec, ..
     } = derive_context();
 
-    let vec = quote!(::std::vec::Vec);
-
-    let (cons_where, decon_where) = where_clauses(generics.where_clause.as_ref(), &[]);
+    let (cons_where, decon_where, typed_where) = where_clauses(generics.where_clause.as_ref(), &[]);
     let generic_args = generic_args(&generics);
 
     quote! {
-        impl #generics #typed_construct for #ident #generic_args #cons_where Self: 'static {
-            fn cons_order() -> &'static #type_kind { <() as #typed_construct>::cons_order() }
+        impl #generics #typed for #ident #generic_args
+            #typed_where Self: #typed_construct + #typed_deconstruct
+        {
+            fn repr() -> #type_repr { #type_repr::Unit }
+        }
+
+        impl #generics #typed_construct for #ident #generic_args
+            #cons_where Self: 'static
+        {
+            fn cons_order() -> &'static [#type_kind] { <() as #typed_construct>::cons_order() }
 
             fn err_string() -> &'static #primitive_str {
                 <() as #typed_construct>::err_string()
@@ -743,20 +867,21 @@ fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream2 {
             fn from_struct(fields: #hashmap<#string, #value>) -> #result<Self, #string> {
                 match #hashmap::is_empty(&fields) {
                     true => #ok(Self()),
-                    false => #err(<#string as #from>::from("expected an empty struct")),
+                    false => #err(#string_from("expected an empty struct")),
                 }
             }
 
             fn from_array(array: #vec<#value>) -> #result<Self, #string> {
                 match #slice::is_empty(&array) {
                     true => #ok(Self()),
-                    false => #err(<#string as #from>::from("expected an empty array")),
+                    false => #err(#string_from("expected an empty array")),
                 }
             }
         }
 
         impl #generics #typed_deconstruct for #ident #generic_args
-        #decon_where Self: 'static + #send + #sync + #clone {
+            #decon_where Self: 'static + #send + #sync + #clone
+        {
             fn type_kind(&self) -> #type_kind { #type_kind::Unit }
             fn clone_into_value(&self) -> #value<'static> {
                 #value::new(Self())
@@ -765,19 +890,27 @@ fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream2 {
     }
 }
 
-fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream2 {
+fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed_construct, typed_deconstruct, type_kind, value, result, ok, err, string,
-        primitive_str, hashmap, from, send, sync, clone, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, err,
+        string, primitive_str, hashmap, send, sync, clone, string_from, ..
     } = derive_context();
 
-    let (cons_where, decon_where) = where_clauses(generics.where_clause.as_ref(), &[]);
+    let (cons_where, decon_where, typed_where) = where_clauses(generics.where_clause.as_ref(), &[]);
     let generic_args = generic_args(&generics);
 
     quote! {
-        impl #generics #typed_construct for #ident #generic_args #cons_where Self: 'static {
-            fn cons_order() -> &'static #type_kind { &[#type_kind::Unit, #type_kind::Struct] }
+        impl #generics #typed for #ident #generic_args
+            #typed_where Self: #typed_construct + #typed_deconstruct
+        {
+            fn repr() -> #type_repr { #type_repr::Unit }
+        }
+
+        impl #generics #typed_construct for #ident #generic_args
+            #cons_where Self: 'static
+        {
+            fn cons_order() -> &'static [#type_kind] { &[#type_kind::Unit, #type_kind::Struct] }
 
             fn err_string() -> &'static #primitive_str {
                 "expected a unit value or an empty struct"
@@ -789,7 +922,7 @@ fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream2 {
 
             fn from_struct(fields: #hashmap<#string, #value>) -> #result<Self, #string> {
                 if !#hashmap::is_empty(&fields) {
-                    #err(<#string as #from>::from("expected an empty struct, found one with fields"))
+                    #err(#string_from("expected an empty struct, found one with fields"))
                 } else {
                     #ok(Self)
                 }
@@ -797,7 +930,8 @@ fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream2 {
         }
 
         impl #generics #typed_deconstruct for #ident #generic_args
-        #decon_where Self: 'static + #send + #sync + #clone {
+            #decon_where Self: 'static + #send + #sync + #clone
+        {
             fn type_kind(&self) -> #type_kind { #type_kind::Unit }
             fn clone_into_value(&self) -> #value<'static> {
                 #value::new(Self)
@@ -806,8 +940,12 @@ fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream2 {
     }
 }
 
-fn generic_args(generics: &Generics) -> TokenStream2 {
+fn generic_args(generics: &Generics) -> TokenStream {
     use syn::GenericParam::{Const, Lifetime, Type};
+
+    if generics.params.is_empty() {
+        return TokenStream::new();
+    }
 
     let args: Vec<_> = generics
         .params
@@ -819,61 +957,390 @@ fn generic_args(generics: &Generics) -> TokenStream2 {
         })
         .collect();
 
-    quote!( <#( #args, )*> )
+    quote!( <#( #args ),*> )
 }
 
-// Produces the 'where' clauses required for TypeConstruct and TypeDeconstruct
+// Produces the 'where' clauses required for TypeConstruct, TypeDeconstruct, and Typed
 fn where_clauses<'a>(
     given: Option<&WhereClause>,
-    types: &[&'a syn::Type],
-) -> (TokenStream2, TokenStream2) {
-    let cons_type_bounds: TokenStream2 = types
+    types: &[&'a Type],
+) -> (TokenStream, TokenStream, TokenStream) {
+    let cons_type_bounds: TokenStream = types
         .iter()
-        .cloned()
         .map(|t| quote_spanned!(t.span()=> #t: crate::dispatch::TypedConstruct,))
         .flatten()
         .collect();
 
-    let decon_type_bounds: TokenStream2 = types
+    let decon_type_bounds: TokenStream = types
         .iter()
-        .cloned()
         .map(|t| quote_spanned!(t.span()=> #t: crate::dispatch::TypedDeconstruct,))
         .flatten()
         .collect();
 
+    let typed_type_bounds: TokenStream = types
+        .iter()
+        .cloned()
+        .map(|t| quote_spanned!(t.span()=> #t: crate::dispatch::Typed,))
+        .flatten()
+        .collect();
+
+    // Handle possible missing/trailing commas or mising where clause altogether
     if let Some(where_clause) = given {
         if where_clause.predicates.is_empty() || where_clause.predicates.trailing_punct() {
             (
                 quote!(#where_clause #cons_type_bounds),
                 quote!(#where_clause #decon_type_bounds),
+                quote!(#where_clause #typed_type_bounds),
             )
         } else {
             (
                 quote!(#where_clause, #cons_type_bounds),
                 quote!(#where_clause, #decon_type_bounds),
+                quote!(#where_clause, #typed_type_bounds),
             )
         }
     } else {
         (
             quote!(where #cons_type_bounds),
             quote!(where #decon_type_bounds),
+            quote!(where #typed_type_bounds),
         )
     }
 }
 
 // Produces all of the types individually represented within an enum
-fn enum_types(data: &DataEnum) -> Vec<&syn::Type> {
+fn enum_types(data: &DataEnum) -> Vec<&Type> {
     let mut types = Vec::new();
 
     for v in data.variants.iter() {
         let fs = match &v.fields {
-            syn::Fields::Unit => continue,
-            syn::Fields::Named(FieldsNamed { named: fs, .. })
-            | syn::Fields::Unnamed(FieldsUnnamed { unnamed: fs, .. }) => fs,
+            Fields::Unit => continue,
+            Fields::Named(FieldsNamed { named: fs, .. })
+            | Fields::Unnamed(FieldsUnnamed { unnamed: fs, .. }) => fs,
         };
 
         fs.iter().for_each(|f| types.push(&f.ty));
     }
 
     types
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_typed_impl;
+
+    test_macro! {
+        @name: std_result,
+        derive_typed_impl! {
+            enum Result<T, E> {
+                Ok(T),
+                Err(E),
+            }
+        } => {
+            impl<T, E> crate::dispatch::Typed for Result<T, E>
+            where
+                T: crate::dispatch::Typed,
+                E: crate::dispatch::Typed,
+                Self: crate::dispatch::TypedDeconstruct + crate::dispatch::TypedConstruct
+            {
+                fn repr() -> crate::dispatch::TypeRepr {
+                    crate::dispatch::TypeRepr::Enum(::maplit::hashmap! {
+                        <::std::string::String as ::std::convert::From<_>>::from("Ok") =>
+                            <T as crate::dispatch::Typed>::repr(),
+                        <::std::string::String as ::std::convert::From<_>>::from("Err") =>
+                            <E as crate::dispatch::Typed>::repr(),
+                    })
+                }
+            }
+
+            impl<T, E> crate::dispatch::TypedConstruct for Result<T, E>
+            where
+                T: crate::dispatch::TypedConstruct,
+                E: crate::dispatch::TypedConstruct,
+                Self: 'static + ::std::marker::Send + ::std::marker::Sync + ::std::clone::Clone
+            {
+                fn cons_order() -> &'static [crate::dispatch::TypeKind] {
+                    &[crate::dispatch::TypeKind::Struct, crate::dispatch::TypeKind::String]
+                }
+
+                fn err_string() -> &'static ::std::primitive::str {
+                    "expected an enum variant; either by name (string) or field-value (struct)"
+                }
+
+                fn from_string(
+                    s: ::std::string::String
+                ) -> ::std::result::Result<Self, ::std::string::String> {
+                    match ::std::string::String::as_str(&s) {
+                        v @ "Ok" => {
+                            let does_contain = <[_]>::contains(
+                                <T as crate::dispatch::TypedConstruct>::cons_order(),
+                                &crate::dispatch::TypeKind::Unit,
+                            );
+
+                            if does_contain {
+                                ::std::result::Result::Ok(Self::Ok(
+                                    <T as crate::dispatch::TypedConstruct>::from_unit()?
+                                ))
+                            } else {
+                                ::std::result::Result::Err(::std::format!(
+                                    "enum variant `{}` missing data",
+                                    v
+                                ))
+                            }
+                        },
+                        v @ "Err" => {
+                            let does_contain = <[_]>::contains(
+                                <E as crate::dispatch::TypedConstruct>::cons_order(),
+                                &crate::dispatch::TypeKind::Unit,
+                            );
+
+                            if does_contain {
+                                ::std::result::Result::Ok(Self::Err(
+                                    <E as crate::dispatch::TypedConstruct>::from_unit()?
+                                ))
+                            } else {
+                                ::std::result::Result::Err(::std::format!(
+                                    "enum variant `{}` missing data",
+                                    v
+                                ))
+                            }
+                        },
+                        v => ::std::result::Result::Err(::std::format!(
+                            "unexpected enum variant {:?}",
+                            v
+                        )),
+                    }
+                }
+
+                fn from_struct(
+                    fields: ::std::collections::HashMap<::std::string::String, crate::dispatch::Value>
+                ) -> ::std::result::Result<Self, ::std::string::String> {
+                    let mut iter = ::std::iter::IntoIterator::into_iter(fields);
+
+                    let (field, value) = ::std::option::Option::ok_or_else(
+                        ::std::iter::Iterator::next(&mut iter), || "expected a single field"
+                    )?;
+
+                    if ::std::option::Option::is_some(&::std::iter::Iterator::next(&mut iter)) {
+                        return ::std::result::Result::Err(
+                            <::std::string::String as ::std::convert::From<_>>::from(
+                                "expected only one field to signify the enum variant"
+                            )
+                        );
+                    }
+
+                    match ::std::string::String::as_str(&field) {
+                        "Ok" => {
+                            ::std::result::Result::Ok(Self::Ok(crate::dispatch::Value::convert(&value)?))
+                        },
+                        "Err" => {
+                            ::std::result::Result::Ok(Self::Err(crate::dispatch::Value::convert(&value)?))
+                        },
+                        unk => ::std::result::Result::Err(::std::format!(
+                            "unknown enum variant {:?}",
+                            unk
+                        )),
+                    }
+                }
+            }
+
+            impl<T, E> crate::dispatch::TypedDeconstruct for Result<T, E>
+            where
+                T: crate::dispatch::TypedDeconstruct,
+                E: crate::dispatch::TypedDeconstruct,
+                Self: 'static + ::std::marker::Send + ::std::marker::Sync + ::std::clone::Clone
+            {
+                fn type_kind(&self) -> crate::dispatch::TypeKind {
+                    match self {
+                        Self::Ok(a) => match crate::dispatch::TypedDeconstruct::type_kind(a) {
+                            crate::dispatch::TypeKind::Unit => crate::dispatch::TypeKind::String,
+                            _ => crate::dispatch::TypeKind::Struct,
+                        },
+                        Self::Err(a) => match crate::dispatch::TypedDeconstruct::type_kind(a) {
+                            crate::dispatch::TypeKind::Unit => crate::dispatch::TypeKind::String,
+                            _ => crate::dispatch::TypeKind::Struct,
+                        },
+                    }
+                }
+
+                fn clone_into_value(&self) -> crate::dispatch::Value<'static> {
+                    crate::dispatch::Value::new(::std::clone::Clone::clone(self))
+                }
+
+                fn as_string(&self) -> ::std::string::String {
+                    match self {
+                        Self::Ok { .. } => {
+                            <::std::string::String as ::std::convert::From<_>>::from("Ok")
+                        },
+                        Self::Err { .. } => {
+                            <::std::string::String as ::std::convert::From<_>>::from("Err")
+                        },
+                    }
+                }
+
+                fn as_struct(
+                    &self
+                ) -> ::std::collections::HashMap<::std::string::String, crate::dispatch::Value> {
+                    match self {
+                        Self::Ok(v) => ::maplit::hashmap! {
+                            <::std::string::String as ::std::convert::From<_>>::from("Ok") =>
+                                crate::dispatch::Value::from_ref(v),
+                        },
+                        Self::Err(v) => ::maplit::hashmap! {
+                            <::std::string::String as ::std::convert::From<_>>::from("Err") =>
+                                crate::dispatch::Value::from_ref(v),
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    test_macro! {
+        @name: std_option,
+        derive_typed_impl! {
+            enum Option<T> {
+                Some(T),
+                None,
+            }
+        } => {
+            impl<T> crate::dispatch::Typed for Option<T>
+            where
+                T: crate::dispatch::Typed,
+                Self: crate::dispatch::TypedDeconstruct + crate::dispatch::TypedConstruct
+            {
+                fn repr() -> crate::dispatch::TypeRepr {
+                    crate::dispatch::TypeRepr::Enum(::maplit::hashmap! {
+                        <::std::string::String as ::std::convert::From<_>>::from("None") =>
+                            crate::dispatch::TypeRepr::Unit,
+                        <::std::string::String as ::std::convert::From<_>>::from("Some") =>
+                            <T as crate::dispatch::Typed>::repr(),
+                    })
+                }
+            }
+
+            impl<T> crate::dispatch::TypedConstruct for Option<T>
+            where
+                T: crate::dispatch::TypedConstruct,
+                Self: 'static + ::std::marker::Send + ::std::marker::Sync + ::std::clone::Clone
+            {
+                fn cons_order() -> &'static [crate::dispatch::TypeKind] {
+                    &[crate::dispatch::TypeKind::Struct, crate::dispatch::TypeKind::String]
+                }
+
+                fn err_string() -> &'static ::std::primitive::str {
+                    "expected an enum variant; either by name (string) or field-value (struct)"
+                }
+
+                fn from_string(
+                    s: ::std::string::String
+                ) -> ::std::result::Result<Self, ::std::string::String> {
+                    match ::std::string::String::as_str(&s) {
+                        "None" => ::std::result::Result::Ok(Self::None),
+                        v @ "Some" => {
+                            let does_contain = <[_]>::contains(
+                                <T as crate::dispatch::TypedConstruct>::cons_order(),
+                                &crate::dispatch::TypeKind::Unit,
+                            );
+
+                            if does_contain {
+                                ::std::result::Result::Ok(Self::Some(
+                                    <T as crate::dispatch::TypedConstruct>::from_unit()?
+                                ))
+                            } else {
+                                ::std::result::Result::Err(::std::format!(
+                                    "enum variant `{}` missing data",
+                                    v
+                                ))
+                            }
+                        },
+                        v => ::std::result::Result::Err(::std::format!(
+                            "unexpected enum variant {:?}",
+                            v
+                        )),
+                    }
+                }
+
+                fn from_struct(
+                    fields: ::std::collections::HashMap<::std::string::String, crate::dispatch::Value>
+                ) -> ::std::result::Result<Self, ::std::string::String> {
+                    let mut iter = ::std::iter::IntoIterator::into_iter(fields);
+
+                    let (field, value) = ::std::option::Option::ok_or_else(
+                        ::std::iter::Iterator::next(&mut iter),
+                        || "expected a single field"
+                    )?;
+
+                    if ::std::option::Option::is_some(&::std::iter::Iterator::next(&mut iter)) {
+                        return ::std::result::Result::Err(
+                            <::std::string::String as ::std::convert::From<_>>::from(
+                                "expected only one field to signify the enum variant"
+                            )
+                        );
+                    }
+
+                    match ::std::string::String::as_str(&field) {
+                        "None" => {
+                            let _: () = crate::dispatch::Value::convert(&value)?;
+                            ::std::result::Result::Ok(Self::None)
+                        },
+                        "Some" => {
+                            ::std::result::Result::Ok(Self::Some(
+                                crate::dispatch::Value::convert(&value)?
+                            ))
+                        },
+                        unk => ::std::result::Result::Err(::std::format!(
+                            "unknown enum variant {:?}",
+                            unk
+                        )),
+                    }
+                }
+            }
+
+            impl<T> crate::dispatch::TypedDeconstruct for Option<T>
+            where
+                T: crate::dispatch::TypedDeconstruct,
+                Self: 'static + ::std::marker::Send + ::std::marker::Sync + ::std::clone::Clone
+            {
+                fn type_kind(&self) -> crate::dispatch::TypeKind {
+                    match self {
+                        Self::None => crate::dispatch::TypeKind::String,
+                        Self::Some(a) => match crate::dispatch::TypedDeconstruct::type_kind(a) {
+                            crate::dispatch::TypeKind::Unit => crate::dispatch::TypeKind::String,
+                            _ => crate::dispatch::TypeKind::Struct,
+                        },
+                    }
+                }
+
+                fn clone_into_value(&self) -> crate::dispatch::Value<'static> {
+                    crate::dispatch::Value::new(::std::clone::Clone::clone(self))
+                }
+
+                fn as_string(&self) -> ::std::string::String {
+                    match self {
+                        Self::None =>
+                            <::std::string::String as ::std::convert::From<_>>::from("None"),
+                        Self::Some { .. } => {
+                            <::std::string::String as ::std::convert::From<_>>::from("Some")
+                        },
+                    }
+                }
+
+                fn as_struct(
+                    &self
+                ) -> ::std::collections::HashMap<::std::string::String, crate::dispatch::Value> {
+                    match self {
+                        Self::None => ::maplit::hashmap! {
+                            <::std::string::String as ::std::convert::From<_>>::from("None") =>
+                                crate::dispatch::Value::new(()),
+                        },
+                        Self::Some(v) => ::maplit::hashmap! {
+                            <::std::string::String as ::std::convert::From<_>>::from("Some") =>
+                                crate::dispatch::Value::from_ref(v),
+                        },
+                    }
+                }
+            }
+        }
+    }
 }

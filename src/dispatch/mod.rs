@@ -179,7 +179,7 @@ enum ExtensionAccess {
 // TODO-FEATURE: This variant will need more variants added whenever internal/HTTP bindings are
 // added
 /// The way to "contact" a particular extension - both to start it and to interact with it later
-#[derive(Clone, Debug, Hash, PartialEq, Eq, Typed)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq /* , Typed */)]
 enum ExtensionPath {
     /// The "builtin" extension
     Builtin,

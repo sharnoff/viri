@@ -10,7 +10,7 @@ pub mod history;
 mod history_core;
 
 pub use cursor::{Cursor, Pos};
-pub use diff::Diff;
+pub use diff::{Diff, MaxVec};
 
 // TODO-FEATURE
 pub trait Text {}
