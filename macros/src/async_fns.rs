@@ -264,7 +264,7 @@ impl HasRef for syn::Type {
             // type. Essentially, the #[cfg(test)] allows the addition of new types to fail tests,
             // without breaking normal builds.
             #[cfg(test)]
-            __TestExhaustive => false,
+            __TestExhaustive(_) => false,
             #[cfg(not(test))]
             _ => false,
         }
