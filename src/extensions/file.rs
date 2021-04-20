@@ -2,9 +2,11 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::time::SystemTime;
 use tokio::fs;
 use tokio::sync::Mutex;
 
+// use crate::text::
 use crate::init::LazyInit;
 use crate::macros::{extension_export, id, make_extension, Typed};
 
@@ -34,7 +36,7 @@ id! {
 }
 
 /// The result of a successfully opened file
-#[derive(Typed)]
+#[derive(Clone, Typed)]
 pub struct Open {
     id: FileId,
     /// Whether the file
@@ -92,7 +94,7 @@ pub async fn open(path: String, allow_create: bool) -> Result<Open, String> {
         Entry::Occupied(e) => {
             // If the file doesn't exist on disk, but we already have an entry open for it, we
             // shouldn't return that we created a new file. So we can keep `created = false`.
-            e.get()
+            *e.get()
         }
     };
 
@@ -113,3 +115,9 @@ struct FileInfo {
 
 struct TextSegment;
 struct TextSlice;
+
+impl FileInfo {
+    fn new(content: Vec<u8>) -> FileInfo {
+        todo!()
+    }
+}

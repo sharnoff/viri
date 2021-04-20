@@ -39,7 +39,7 @@ impl TextSlice {
 
     /// Allocates a new `TextSlice`, based on the
     pub async fn alloc_new(bytes: Box<[u8]>) -> TextSlice {
-        let mut guard = SLICES.read().await;
+        let guard = SLICES.read().await;
         todo!()
     }
 

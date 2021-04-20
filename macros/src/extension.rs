@@ -58,11 +58,24 @@ pub fn make_extension(input: TokenStream) -> TokenStream {
     let block_span = init_block.span();
     let init = init_block.stmts;
 
+    // The signature of the functions stored in the hashmap.
+    //
+    // The reason we can't simply write something like `fn(_) -> _` is because the function
+    // signature *is* actually generic over the lifetime; it's sufficiently non-trivial that we
+    // need this extra explicitness.
+    let fn_sig = quote! {
+        for<'a> fn(Value<'a>) -> Pin<Box<(dyn 'a + Send + Sync + Future<Output=Value<'static>>)>>
+    };
+
     // An iterator over (export name => wrapper function path)
     let exports = exports.into_iter().map(|Export { ident, name }| {
         let wrapper_path = format_ident!("__{}__export_wrapper", ident);
         let export_name = name.unwrap_or_else(|| LitStr::new(&ident.to_string(), ident.span()));
-        quote!( #export_name => #wrapper_path )
+        quote!( #export_name => super::#wrapper_path as #fn_sig)
+        //                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        // The reason we need to cast here is because the hashmap is otherwise inferred to have a
+        // value type specific to the first function -- i.e. instead of a general `fn(_) -> _`, it
+        // becomes `fn(_) -> _ { __foo__export_wrapper }`
     });
 
     let num_aliases = aliases.len();
@@ -82,17 +95,28 @@ pub fn make_extension(input: TokenStream) -> TokenStream {
         pub use __ext_loader_module::SELF_PATH as __EXT_SELF_PATH;
         pub use __ext_loader_module::load as __ext_load;
 
+        // We put everything into a module so that we don't have to worry about names being in
+        // scope as much -- all of the necessary types are imported here, in such a way that they
+        // override any other names that might interfere.
         mod __ext_loader_module {
-            use crate::dispatch::{ExtensionId, Value, Request, RequestKind, Name};
-            use crate::macros::{async_fn, async_method};
-            use ::std::collections::HashMap;
-            use ::std::vec::Vec;
-            use ::std::string::String;
+            use crate::dispatch::{ExtensionId, Name, Request, RequestKind, Value};
+            use ::std::{
+                boxed::Box,
+                collections::HashMap,
+                future::Future,
+                marker::{Send, Sync},
+                pin::Pin,
+                primitive::str,
+                string::String,
+                vec::Vec,
+            };
 
-            pub static SELF_PATH: &'static ::std::primitive::str = ::std::stringify!(#path);
+            pub static SELF_PATH: &'static str = ::std::stringify!(#path);
 
-            #[async_method]
-            pub async fn load(builtin: ExtensionId, this: ExtensionId) -> HashMap<&'static str, async_fn![fn(Value) -> Value]> {
+            #[crate::macros::async_method]
+            pub async fn load(
+                builtin: ExtensionId, this: ExtensionId
+            ) -> HashMap<&'static str, crate::macros::async_fn![fn(Value<'_>) -> Value<'static>]> {
                 let mut alias_futures: Vec<_> = Vec::with_capacity(#num_aliases);
                 #( alias_futures.push(#alias_elems); )*
                 for (name, f) in alias_futures {
@@ -170,7 +194,7 @@ pub fn extension_export(attr: TokenStream, item: TokenStream) -> TokenStream {
     #[rustfmt::skip]
     let ItemFn { attrs, vis, sig, block } = func;
 
-    let wrapper_name = format_ident!("__{}_export_wrapper", sig.ident);
+    let wrapper_name = format_ident!("__{}__export_wrapper", sig.ident);
     let func_name = &sig.ident;
 
     let (arg_fields, input_types) = match get_fields(&sig) {
@@ -190,7 +214,7 @@ pub fn extension_export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Wrapper
         #[crate::macros::async_method]
-        #vis async fn #wrapper_name(arg: crate::dispatch::Value) -> crate::dispatch::Value<'static> {
+        #vis async fn #wrapper_name(arg: crate::dispatch::Value<'_>) -> crate::dispatch::Value<'static> {
             use crate::macros::Typed;
 
             #[derive(Typed)]
@@ -198,7 +222,9 @@ pub fn extension_export(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #( #arg_fields: #input_types, )*
             }
 
-            let __Input { #( #arg_fields, )* } = arg.convert();
+            // TODO-ERROR: This should probably be better than just unwrapping - we need additional
+            // validation to ensure that the value is ok
+            let __Input { #( #arg_fields, )* } = arg.convert().unwrap();
             crate::dispatch::Value::new( #func_name(#( #arg_fields, )*) #maybe_await )
         }
     )

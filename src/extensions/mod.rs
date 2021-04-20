@@ -33,17 +33,20 @@ init! {
 pub struct Extension {
     // A callback that loads the extension, providing the values for `self.methods`
     loader: async_fn![
-        fn(ExtensionId, ExtensionId) -> HashMap<&'static str, async_fn![fn(Value) -> Value]>
+        fn(
+            ExtensionId,
+            ExtensionId,
+        ) -> HashMap<&'static str, async_fn![fn(Value<'_>) -> Value<'static>]>
     ],
 
     // The methods provided by the extension. This value is not set until the loading function has
     // been run
-    methods: LazyInit<HashMap<&'static str, async_fn![fn(Value) -> Value]>>,
+    methods: LazyInit<HashMap<&'static str, async_fn![fn(Value<'_>) -> Value<'static>]>>,
 }
 
 impl Extension {
     /// Returns the function with the given name registered by this extension, if it exists
-    pub fn get_method(&self, name: &str) -> Option<async_fn![fn(Value) -> Value]> {
+    pub fn get_method(&self, name: &str) -> Option<async_fn![fn(Value<'_>) -> Value<'static>]> {
         self.methods.get(name).cloned()
     }
 
