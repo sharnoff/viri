@@ -6,9 +6,10 @@ use std::time::SystemTime;
 use tokio::fs;
 use tokio::sync::Mutex;
 
-// use crate::text::
 use crate::init::LazyInit;
 use crate::macros::{extension_export, id, make_extension, Typed};
+use crate::text::ranged::Ranged;
+use crate::text::History;
 
 make_extension! {
     path: file,

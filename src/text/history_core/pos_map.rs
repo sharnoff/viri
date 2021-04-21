@@ -3,8 +3,8 @@
 //!
 //! [`HistoryCore::edit`]: super::HistoryCore::edit
 
-use super::ranged::{Constant, IndexedRangeSlice, Ranged};
 use super::{BytesRef, Edit, EditId};
+use crate::text::ranged::{Constant, IndexedRangeSlice, Ranged};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::ops::Range;

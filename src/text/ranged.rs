@@ -1,4 +1,4 @@
-//! Wrapper module for the [`Ranged`] type, used in the implementation of [`HistoryCore`]
+//! Wrapper module for the [`Ranged`] type
 //!
 //! Information about the purpose that [`Ranged`] serves is available in the type's documentation.
 

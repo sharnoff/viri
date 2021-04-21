@@ -6,11 +6,13 @@
 
 mod cursor;
 mod diff;
-pub mod history;
+mod history;
 mod history_core;
+pub mod ranged;
 
 pub use cursor::{Cursor, Pos};
 pub use diff::{Diff, MaxVec};
+pub use history::History;
 
 // TODO-FEATURE
 pub trait Text {}

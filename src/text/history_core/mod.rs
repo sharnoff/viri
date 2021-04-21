@@ -24,15 +24,15 @@ use std::num::NonZeroUsize;
 mod cause;
 mod marker;
 mod pos_map;
-mod ranged;
 
 #[cfg(test)]
 mod tests;
 
+use super::ranged::{RangeSlice, Ranged};
+
 use cause::CauseStack;
 use marker::{EditsRef, Operation, Recover, Redo, Undo};
 use pos_map::{PosMap, TrackBlame};
-use ranged::{RangeSlice, Ranged};
 
 /// (*Internal*) The individual record of the regions a particular edit is responsible for
 /// affecting, as in [`HistoryCore.blame`] or [`HistoryCore.shadow`].
