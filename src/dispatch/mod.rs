@@ -33,16 +33,17 @@ static COMMS: LazyInit<mpsc::UnboundedSender<(Request, Callback)>> = LazyInit::n
 /// The primary event loop of this module, handling all [`Request`]s over [`COMMS`]
 pub async fn receive_all(mut rx: mpsc::UnboundedReceiver<(Request, Callback)>) {
     use ExtensionAccess::{Builtin, Internal};
-    use RequestKind::{EventNotify, GetValue};
+    use RequestKind::GetValue;
 
     let mut ns = BindingNamespace::new();
 
     while let Some((req, callback)) = rx.recv().await {
         match req.kind {
-            EventNotify { event_name, value } => {
+            /*
+            EventNotify { event, value } => {
                 let name = Name {
                     extension_id: req.originating_ext,
-                    method: event_name,
+                    method: event,
                 };
                 let hs = match ns.handlers.get(&name) {
                     Some(h) => h,
@@ -64,6 +65,7 @@ pub async fn receive_all(mut rx: mpsc::UnboundedReceiver<(Request, Callback)>) {
 
                 todo!() // send on all handlers that are mentioned here
             }
+            */
             GetValue { from, arg } => {
                 let access = match ns.access.get(&from.extension_id) {
                     Some(p) => p,
@@ -148,7 +150,7 @@ pub struct Request {
 }
 
 pub enum RequestKind {
-    EventNotify { event: Name, value: Value<'static> },
+    // EventNotify { event: Name, value: Value<'static> },
     GetValue { from: Name, arg: Value<'static> },
 }
 
