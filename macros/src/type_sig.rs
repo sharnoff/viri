@@ -163,7 +163,7 @@ pub fn type_sig(input: TokenStream) -> TokenStream {
     #[derive(Parse)]
     struct Signature {
         input: Type,
-        #[prefix(Option<Token![->]> as r_arrow)]
+        #[prefix(Option<Token![=>]> as r_arrow)]
         #[parse_if(r_arrow.is_some())]
         output: Option<Type>,
     }

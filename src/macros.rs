@@ -8,7 +8,7 @@
 //!  * [Dynamic (de-)serialization] - [`SerdeDynClone`], [`register_DynClone`]
 //!  * Async functions - [`async_method`], [`async_fn`]
 //!  * [Extension interfacing] - [`type_sig`], [`#[derive(Typed)]`](Typed)
-//!  * Miscellaneous pieces - [`id`], [`flag`]
+//!  * Miscellaneous pieces - [`id`], [`flag`], [`request`]
 //!
 //! This module works in conjunction with the `viri-macros` crate, which provides some of the
 //! backing procedural macros necessary for this to work. Generally, `viri-macros` is treated as
@@ -471,7 +471,7 @@ pub use viri_macros::manual_derive_typed;
 ///
 /// Typical usage tends to look something like:
 /// ```
-/// type_sig![{ x: @int, y: Foobar } -> ()]
+/// type_sig![{ x: @int, y: Foobar } => ()]
 /// ```
 /// The type construction here is pretty expressive - the full set of available type constructors
 /// is:
@@ -485,7 +485,7 @@ pub use viri_macros::manual_derive_typed;
 /// * Unrestricted values (as `@any`)
 ///
 /// The signature can consist of up to two parts; it's either a single "type" by itself, or of the
-/// form `<type> -> <type>`.
+/// form `<type> => <type>`.
 pub use viri_macros::type_sig;
 
 /// Convenience macro to produce a newtype'd `usize` for use as a unique identifier
@@ -588,3 +588,32 @@ pub use viri_macros::flag;
 
 // TODO-DOC:
 pub use viri_macros::{extension_export, make_extension, register_extensions};
+
+/// Helper macro for constructing [`Request`]s
+///
+/// Building requests is a little bit of a syntax hassle. To take an example from
+/// [`Extension::load`], we might have something like:
+/// ```ignore
+// @req "`Extension::load` request" v0
+/// let req = Request {
+///     originating_ext: this,
+///     kind: RequestKind::GetValue {
+///         from: Name { extension_id: builtin, method: "" },
+///         arg: Value::new(()),
+///     }
+/// };
+/// ```
+/// This is fairly large; we need to import each of `Request`, `RequestKind`, `Name`, and `Value`
+/// *and* it could be singificantly smaller. That's what this macro helps with.
+///
+/// At the expense of being significantly less obvious as to what's going on, this macro allows
+/// rewriting the above as:
+/// ```ignore
+/// let req = request!(@from this, @get builtin.FinishedLoading(()));
+/// ```
+///
+/// The exact syntax of a "get" request allows any number of field accesses to produce the relevant
+/// `ExtensionId` before the final method "access" -- which is `FinishedLoading` in this case.
+///
+/// [`Request`]: crate::dispatch::Request
+pub use viri_macros::request;

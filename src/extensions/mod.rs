@@ -10,7 +10,8 @@ use std::collections::HashMap;
 
 use crate::dispatch::{ExtensionId, Value};
 use crate::init::LazyInit;
-use crate::macros::{async_fn, init, register_extensions};
+use crate::macros::{async_fn, init, register_extensions, request};
+use crate::utils::DiscardResult;
 
 mod file;
 mod text;
@@ -54,6 +55,10 @@ impl Extension {
     pub async fn load(&self, builtin: ExtensionId, this: ExtensionId) {
         self.methods
             .initialize_with((self.loader)(builtin, this).await);
+
+        // @def "`Extension::load` request" v0
+        let req = request!(@from this, @get builtin.FinishedLoading(()));
+        req.spawn().await.discard_if_ok_else(|e| panic!("{}", e));
     }
 }
 

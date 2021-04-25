@@ -13,10 +13,13 @@ use uuid::Uuid;
 use crate::init::LazyInit;
 use crate::macros::{flag, init, require_initialized, Typed};
 
+#[macro_use]
 mod builtin;
+mod load;
 mod typed;
 
 use builtin::BUILTIN_NAME;
+use load::LoadingHandler;
 pub use typed::{TypeKind, TypeRepr, Typed, TypedConstruct, TypedDeconstruct, Value};
 
 init! {
@@ -83,7 +86,7 @@ pub async fn receive_all(mut rx: mpsc::UnboundedReceiver<(Request, Callback)>) {
                             }
                         };
 
-                        ns.handle_builtin(op, arg, callback);
+                        ns.handle_builtin(op, req.originating_ext, arg, callback);
                     }
                     Internal(_) => todo!(),
                 }
@@ -105,6 +108,13 @@ struct Signature {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Typed)]
 pub struct ExtensionId(Uuid);
+
+impl ExtensionId {
+    /// Creates a new, random `Extensionid`
+    fn random() -> Self {
+        ExtensionId(Uuid::new_v4())
+    }
+}
 
 struct RequestSignature {
     /// The extension that registered this particular binding name
@@ -229,17 +239,23 @@ struct BindingNamespace {
 
     access: HashMap<ExtensionId, ExtensionAccess>,
     ids: HashMap<ExtensionPath, ExtensionId>,
+    paths: HashMap<ExtensionId, ExtensionPath>,
+
+    // Alternative globally-unique names that can additionally be used to refer to particular
+    // extensions
     aliases: HashMap<String, ExtensionId>,
 
     // Handlers for each type of event
     handlers: HashMap<Name, Handlers>,
 
-    // All of the functions available to
+    // All of the methods provided by each extension
     registry: HashMap<ExtensionId, HashMap<String, Signature>>,
+
+    loader: LoadingHandler,
 }
 
 impl BindingNamespace {
-    /// Constructs a new [`BindingNamespace`] with all of the intrinsic bindings provided
+    /// Constructs a new [`BindingNamespace`] with all of the builtin bindings provided
     fn new() -> Self {
         let builtin_id = ExtensionId(Uuid::new_v4());
 
@@ -247,9 +263,11 @@ impl BindingNamespace {
             builtin_id,
             access: hashmap! { builtin_id => ExtensionAccess::Builtin },
             ids: hashmap! { ExtensionPath::Builtin => builtin_id },
+            paths: hashmap! { builtin_id => ExtensionPath::Builtin },
             aliases: hashmap! { BUILTIN_NAME.to_owned() => builtin_id },
             registry: hashmap! { builtin_id => builtin::initial_namespace() },
             handlers: HashMap::new(),
+            loader: LoadingHandler::new(builtin_id),
         }
     }
 }

@@ -180,7 +180,7 @@ macros! {
     typed::{manual_derive_typed},
     type_sig::type_sig,
     flag::flag,
-    extension::{make_extension, register_extensions},
+    extension::{make_extension, register_extensions, request},
 }
 
 #[proc_macro_attribute]

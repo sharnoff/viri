@@ -1,4 +1,5 @@
-//! Macros for creating & registering the internally-defined extensions
+//! Macros for creating & registering the internally-defined extensions. Also contains the
+//! `request!` macro for internal syntax sugar for sending requests.
 
 use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
@@ -6,9 +7,13 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote, quote_spanned};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{parse_macro_input, token, Block, Ident, ItemFn, LitStr, Path, Signature, Token, Type};
+use syn::{
+    parse_macro_input, token, Block, Expr, Ident, ItemFn, LitStr, Path, Signature, Token, Type,
+};
 
-keywords! { mod kwd = aliases, exports, init, path, extensions }
+use super::AtKwd;
+
+keywords! { mod kwd = aliases, exports, init, path, extensions, from, get }
 
 /// Input to the `make_extension!` macro
 #[derive(Parse)]
@@ -282,4 +287,69 @@ fn get_fields(sig: &Signature) -> syn::Result<(Vec<&Ident>, Vec<&Type>)> {
     }
 
     Ok((idents, types))
+}
+
+pub fn request(input: TokenStream) -> TokenStream {
+    #[derive(Parse)]
+    struct ReqInput {
+        #[prefix(AtKwd<kwd::from>)]
+        #[postfix(Token![,])]
+        this_ext_id: Expr,
+
+        kind: ReqKind,
+    }
+
+    #[derive(Parse)]
+    enum ReqKind {
+        #[peek_with(at_kwd![get], name = "`@get`")]
+        Get(AtKwd<kwd::get>, GetReq),
+    }
+
+    #[derive(Parse)]
+    struct GetReq {
+        #[call(Punctuated::parse_separated_nonempty)]
+        access: Punctuated<Ident, Token![.]>,
+
+        #[paren]
+        paren: token::Paren,
+        #[inside(paren)]
+        arg: Expr,
+    }
+
+    let ReqInput { this_ext_id, kind } = parse_macro_input!(input as ReqInput);
+
+    let req_kind = match kind {
+        #[rustfmt::skip]
+        ReqKind::Get(_, GetReq { access, arg, .. }) => {
+            if access.len() < 2 {
+                return syn::Error::new(
+                    access.span(),
+                    "expected <extension>.<method>"
+                ).into_compile_error().into();
+            }
+
+            let mut ext_id: Vec<Ident> = access.into_iter().collect();
+            let method = ext_id.pop().unwrap().to_string();
+
+            let value = quote_spanned!(arg.span()=> crate::dispatch::Value::new(#arg));
+
+            quote! {
+                crate::dispatch::RequestKind::GetValue {
+                    from: crate::dispatch::Name {
+                        extension_id: #(#ext_id).*,
+                        method: <::std::string::String as ::std::convert::From<_>>::from(#method),
+                    },
+                    arg: #value,
+                }
+            }
+        }
+    };
+
+    quote!(
+        crate::dispatch::Request {
+            originating_ext: #this_ext_id,
+            kind: #req_kind,
+        }
+    )
+    .into()
 }
