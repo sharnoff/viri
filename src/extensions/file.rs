@@ -102,6 +102,10 @@ pub async fn open(path: String, allow_create: bool) -> Result<Open, String> {
     Ok(Open { id, created })
 }
 
+fn path_info(path: &str) -> PathStatus {
+    todo!()
+}
+
 #[extension_export]
 pub fn record_renamed(original: String, new: String) -> Result<(), String> {
     todo!()
