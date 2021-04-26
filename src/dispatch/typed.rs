@@ -98,6 +98,58 @@ pub trait Typed: TypedConstruct + TypedDeconstruct {
     fn repr() -> TypeRepr;
 }
 
+/// Helper type for [`TypedConstruct`]: the different types that we might try to construct a value
+/// from
+///
+/// The variants here serve to provide a sort of directive as to how we can parse a value with the
+/// implementation of the associated functions in [`TypedConstruct`]. For more information, please
+/// refer to the documentation of the trait itself.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TypeKind {
+    Any,
+    Int,
+    Bool,
+    String,
+    Unit,
+    Struct,
+    Array,
+}
+
+// TODO-DOC: all return types are Result<Self, T>,
+// TODO-DOC: mostly exists to provide information to `Value::convert`
+#[rustfmt::skip]
+pub trait TypedConstruct: 'static + Sized {
+    /// The set of types that we can attempt to construct a value of this type from
+    ///
+    /// For most types, this will be a single value, e.g. `String` or `Struct`. But for *some*
+    /// others (particularly `enum`s), there are multiple possible ways to produce a value. Only
+    /// the methods corresponding to types given here will be attempted.
+    ///
+    /// To clarify: if `cons_order()` only returns `&[TypeKind::String]`, then only `from_string`
+    /// will be called, if anything.
+    fn cons_order() -> &'static [TypeKind];
+
+    /// Produces a diagnostic string to indicate that an error has occured. The string should be
+    /// something along the lines of `"expected foobar"`.
+    fn err_string() -> &'static str;
+
+    /// Attempts to construct the type directly from the `Value` itself
+    fn from_any(any: Value<'static>) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to produce the value from an integer
+    fn from_int(int: BigInt) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to produce the value from a boolean
+    fn from_bool(b: bool) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to produce the value from a string
+    fn from_string(s: String) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to produce the value from a unit
+    fn from_unit() -> Result<Self, String> { unimplemented!() }
+    /// Attempts to construct a value from the fields of a struct
+    fn from_struct(fields: HashMap<String, Value>) -> Result<Self, String> { unimplemented!() }
+    /// Attempts to construct a value from a dynamically-typed array (i.e. the elements are not
+    /// guaranteed to have the same type)
+    fn from_array(array: Vec<Value>) -> Result<Self, String> { unimplemented!() }
+}
+
 /// The deconstruction half of the facilities for [`Typed`] values.
 ///
 /// This trait is provided separately so that it can be used as a trait object in [`Value`], for
@@ -168,58 +220,6 @@ pub trait TypedDeconstruct: 'static + Send + Sync {
     /// that these values are all the same type, this method is also used for providing access to
     /// tuples.
     fn as_array(&self) -> Vec<Value> { unimplemented!() }
-}
-
-/// Helper type for [`TypedConstruct`]: the different types that we might try to construct a value
-/// from
-///
-/// The variants here serve to provide a sort of directive as to how we can parse a value with the
-/// implementation of the associated functions in [`TypedConstruct`]. For more information, please
-/// refer to the documentation of the trait itself.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum TypeKind {
-    Any,
-    Int,
-    Bool,
-    String,
-    Unit,
-    Struct,
-    Array,
-}
-
-// TODO-DOC: all return types are Result<Self, T>,
-// TODO-DOC: mostly exists to provide information to `Value::convert`
-#[rustfmt::skip]
-pub trait TypedConstruct: 'static + Sized {
-    /// The set of types that we can attempt to construct a value of this type from
-    ///
-    /// For most types, this will be a single value, e.g. `String` or `Struct`. But for *some*
-    /// others (particularly `enum`s), there are multiple possible ways to produce a value. Only
-    /// the methods corresponding to types given here will be attempted.
-    ///
-    /// To clarify: if `cons_order()` only returns `&[TypeKind::String]`, then only `from_string`
-    /// will be called, if anything.
-    fn cons_order() -> &'static [TypeKind];
-
-    /// Produces a diagnostic string to indicate that an error has occured. The string should be
-    /// something along the lines of `"expected foobar"`.
-    fn err_string() -> &'static str;
-
-    /// Attempts to construct the type directly from the `Value` itself
-    fn from_any(any: Value<'static>) -> Result<Self, String> { unimplemented!() }
-    /// Attempts to produce the value from an integer
-    fn from_int(int: BigInt) -> Result<Self, String> { unimplemented!() }
-    /// Attempts to produce the value from a boolean
-    fn from_bool(b: bool) -> Result<Self, String> { unimplemented!() }
-    /// Attempts to produce the value from a string
-    fn from_string(s: String) -> Result<Self, String> { unimplemented!() }
-    /// Attempts to produce the value from a unit
-    fn from_unit() -> Result<Self, String> { unimplemented!() }
-    /// Attempts to construct a value from the fields of a struct
-    fn from_struct(fields: HashMap<String, Value>) -> Result<Self, String> { unimplemented!() }
-    /// Attempts to construct a value from a dynamically-typed array (i.e. the elements are not
-    /// guaranteed to have the same type)
-    fn from_array(array: Vec<Value>) -> Result<Self, String> { unimplemented!() }
 }
 
 // Implementations on "primitive" types
