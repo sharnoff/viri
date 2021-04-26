@@ -115,8 +115,17 @@ pub enum TypeKind {
     Array,
 }
 
-// TODO-DOC: all return types are Result<Self, T>,
-// TODO-DOC: mostly exists to provide information to `Value::convert`
+/// The construction half of the facilities for [`Typed`] values
+///
+/// This trait serves to define the way that the value of this type can be constructed. Each of the
+/// `from_*` methods have a provided implementation that simply panics -- only the applicable
+/// methods should be implemented.
+///
+/// The `cons_order` function indicates which construction functions can be attempted without
+/// panicking. When using [`Value::convert`], only one such function will be attempted at a time,
+/// given by the indicated `TypeKind` of the corresponding deconstructed type.
+/// 
+/// This trait really only exists to provide information to `Value::convert`.
 #[rustfmt::skip]
 pub trait TypedConstruct: 'static + Sized {
     /// The set of types that we can attempt to construct a value of this type from
