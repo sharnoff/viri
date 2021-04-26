@@ -3,6 +3,7 @@
 use crate::borrow::Cow;
 use num_bigint::BigInt;
 use std::collections::HashMap;
+use std::fmt::{self, Display, Formatter};
 
 /// The structure of a type used to communicate with extensions
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,110 @@ pub enum TypeRepr {
     ///
     /// This is often also available in the bindings as an array with dynamically-typed elements.
     Tuple(Vec<TypeRepr>),
+}
+
+/// A contextual error for type construction
+///
+/// This error is primarily in the results returned by [`TypedConstruct`] methods. It serves to
+/// pair the cause of the error with the access on the value that would lead to it.
+///
+/// ## An illustrative example
+///
+/// It's worth looking at an example to get a sense of what this error looks like. Let's suppose we
+/// parsed the following JSON value:
+/// ```text
+/// { "id": 4, "values": [0, 1, 2, "three"] }
+/// ```
+/// We want to convert this abstract JSON value into our expected Rust type - say:
+/// ```
+/// #[derive(Typed)]
+/// struct IdWithValues {
+///     id: usize,
+///     values: Vec<i32>,
+/// }
+/// ```
+///
+/// The problem here is clearly that the third element of the parsed `values` array isn't an
+/// integer! And so the resulting error will looks something like:
+/// ```text
+/// in .values[3]: expected an integer
+/// ```
+///
+/// ## Usage
+///
+/// The individual elements of the context are built in reverse order, by successive calls to the
+/// [`context`](Self::context) method. So we could generate this error with:
+///
+/// ```
+/// # use super::Error;
+/// let err = Error::from_str("expected an integer")
+///     .context("[3]")
+///     .context(".values");
+///
+/// assert_eq!(err.to_string(), "in .values[3]: expected an integer");
+/// ```
+///
+#[derive(Debug, Clone)]
+pub struct Error {
+    // The context is stored backwards, so that wrapping with context is just appending to the end
+    context: Vec<std::borrow::Cow<'static, str>>,
+    message: String,
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        if !self.context.is_empty() {
+            f.write_str("in ")?;
+        }
+
+        for s in self.context.iter().rev() {
+            f.write_str(&s)?;
+        }
+
+        write!(f, ": {}", self.message)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Error {
+            context: Vec::new(),
+            message,
+        }
+    }
+}
+
+impl Error {
+    /// Constructs an error with no context from the message
+    pub fn from_str(string: &str) -> Self {
+        Self::from(string.to_owned())
+    }
+
+    /// Adds the contextual information to the error
+    ///
+    /// Because these errors can occur deep inside nested structs, contexts are always additive.
+    /// Here, each piece of context gets prepended to the full error message. These usually
+    /// indicate some kind of access into the value being deconstructed.
+    ///
+    /// Let's look at an example. Suppose our error says something like:
+    /// ```text
+    /// in .notifications[0].msg: expected a string
+    /// ```
+    /// The full context here is `".notifications[0].msg"`. If this occured as part of a deeper
+    /// structure, we might add some context like: `".all_events"`, which would result in the
+    /// following new error message:
+    /// ```text
+    /// in .all_events.notifications[0].msg: expected a string
+    /// ```
+    ///
+    /// It's typically expected that this method will be called to provide the appropriate context
+    /// to errors. The full error produced might otherwise appear incorrect.
+    pub fn context(mut self, ctx: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        self.context.push(ctx.into());
+        self
+    }
 }
 
 /// A typed, dynamic value
