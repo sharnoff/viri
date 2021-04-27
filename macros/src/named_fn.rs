@@ -5,10 +5,10 @@
 //! submodule).
 
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
-use syn::{FnArg, Ident, ItemFn, LitStr, Pat, PatType, ReturnType, Signature, Type};
+use syn::{FnArg, Ident, ItemFn, LitStr, Pat, PatType, ReturnType, Signature};
 
 pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
     named2(attr.into(), item.into()).into()
@@ -117,92 +117,6 @@ fn named2(attr: TokenStream2, item: TokenStream2) -> TokenStream2 {
         #inventory
     )
     .into()
-}
-
-// All the information about a single function we're going to register
-struct Sig {
-    args: Vec<(Ident, Type)>,
-    output_ty: TokenStream2,
-    // A tokenstream that can be expanded to
-    base_fn_caller: TokenStream2,
-    wrapper_name: Ident,
-    is_async: bool,
-    general_span: Span,
-    registered_name: String,
-}
-
-impl Sig {
-    fn register(&self) -> TokenStream2 {
-        let mut arg_names = Vec::new();
-        let mut input_type_ids = Vec::new();
-        let mut downcast_args = Vec::new();
-
-        let required_num_args = self.args.len();
-
-        for (i, (arg_name, arg_ty)) in self.args.iter().enumerate() {
-            input_type_ids.push(quote_spanned! {
-                arg_ty.span()=>
-                crate::any::Type::new::<#arg_ty>()
-            });
-            arg_names.push(arg_name);
-            downcast_args.push(quote! {
-                let #arg_name = #arg_name.try_downcast()
-                    .map_err(|err| format!("unexpected type for argument {}: {}", #i, err))
-                    .unwrap();
-            });
-        }
-
-        let output_ty = &self.output_ty;
-        let output_type_id = quote!(crate::any::Type::new::<#output_ty>());
-        let wrapper_name = &self.wrapper_name;
-        let base_fn_caller = &self.base_fn_caller;
-
-        let maybe_await = match self.is_async {
-            false => TokenStream2::new(),
-            true => quote!(.await),
-        };
-
-        let wrapper_fn = quote! {
-            // All wrapper functions are async, but we need to phrase them without the syntax sugar
-            // because we otherwise get a type mismatch - hence why we use `#[async_method]` here.
-            #[viri_macros::async_method]
-            async fn #wrapper_name( input_args: Vec<crate::any::BoxedAny> )
-                    -> crate::any::BoxedAny {
-                use std::convert::TryInto;
-
-                let args: Box<[crate::any::BoxedAny; #required_num_args]>;
-                args = input_args.into_boxed_slice().try_into()
-                    .unwrap_or_else(|args: Box<[_]>| panic!(
-                        "unexpected number of arguments. expected {}, found {}",
-                        #required_num_args,
-                        args.len()
-                    ));
-
-                let [#( #arg_names, )*] = *args;
-
-                #( #downcast_args )*
-
-                crate::any::BoxedAny::new(#base_fn_caller( #( #arg_names, )* ) #maybe_await)
-            }
-        };
-
-        let registered_name = &self.registered_name;
-
-        let inventory = quote_spanned! {
-            self.general_span.clone()=>
-            ::inventory::submit!(crate::config::named_fn::RegisteredFunction::new(
-                #registered_name,
-                vec![#( #input_type_ids, )*],
-                #output_type_id,
-                #wrapper_name,
-            ));
-        };
-
-        quote! {
-            #wrapper_fn
-            #inventory
-        }
-    }
 }
 
 /// Attempt to get a single bound name out of a pattern

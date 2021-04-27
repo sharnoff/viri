@@ -98,7 +98,6 @@ struct EnumCtx<'a> {
     unit_variants_strs: Vec<LitStr>,
     empty_tuple_variants: Vec<&'a Ident>,
     empty_tuple_variants_strs: Vec<LitStr>,
-    nonempty_variants_no_ambiguous: Vec<&'a Ident>,
     nonempty_variants_no_ambiguous_strs: Vec<LitStr>,
 
     non_unit_variants: Vec<&'a Ident>,
@@ -165,7 +164,6 @@ impl<'a> EnumCtx<'a> {
                 Fields::Unnamed(FieldsUnnamed { unnamed: fs, .. }) => {
                     this.nonempty_tuple_variants.push(ident);
                     this.nonempty_tuple_variants_strs.push(lit_str.clone());
-                    this.nonempty_variants_no_ambiguous.push(ident);
                     this.nonempty_variants_no_ambiguous_strs
                         .push(lit_str.clone());
 
@@ -196,7 +194,6 @@ impl<'a> EnumCtx<'a> {
                 Fields::Named(FieldsNamed { named: fs, .. }) => {
                     this.struct_variants.push(ident);
                     this.struct_variants_strs.push(lit_str.clone());
-                    this.nonempty_variants_no_ambiguous.push(ident);
                     this.nonempty_variants_no_ambiguous_strs
                         .push(lit_str.clone());
                     this.non_unit_variants_no_ambiguous.push(ident);
@@ -245,7 +242,7 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream 
         empty_tuple_variants, empty_tuple_variants_strs,
 
         // Any struct varant, or any tuple variant with >= 2 elements
-        nonempty_variants_no_ambiguous, nonempty_variants_no_ambiguous_strs,
+        nonempty_variants_no_ambiguous_strs,
 
         // "non-unit" variants are pretty much what it says on the label. Anything that's not a
         // unit. Edge-case examples of "non-unit" variants are:

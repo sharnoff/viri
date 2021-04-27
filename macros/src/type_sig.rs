@@ -46,6 +46,7 @@ enum Type {
 }
 
 #[derive(Parse)]
+#[allow(dead_code)]
 struct ArrayType {
     #[bracket]
     bracket: token::Bracket,
@@ -54,6 +55,7 @@ struct ArrayType {
 }
 
 #[derive(Parse)]
+#[allow(dead_code)]
 struct TupleType {
     #[paren]
     paren: token::Paren,
@@ -64,6 +66,7 @@ struct TupleType {
 
 /// Enum variants
 #[derive(Parse)]
+#[allow(dead_code)]
 struct Variants {
     #[brace]
     brace: token::Brace,
@@ -83,6 +86,7 @@ struct Variant {
 }
 
 #[derive(Parse)]
+#[allow(dead_code)]
 struct Fields {
     #[brace]
     brace: token::Brace,

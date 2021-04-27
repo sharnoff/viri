@@ -17,6 +17,7 @@ keywords! { mod kwd = aliases, exports, init, path, extensions, from, get }
 
 /// Input to the `make_extension!` macro
 #[derive(Parse)]
+#[allow(dead_code)]
 struct MakeInput {
     #[prefix(kwd::path)]
     #[prefix(Token![:])]
@@ -306,6 +307,7 @@ pub fn request(input: TokenStream) -> TokenStream {
     }
 
     #[derive(Parse)]
+    #[allow(dead_code)]
     struct GetReq {
         #[call(Punctuated::parse_separated_nonempty)]
         access: Punctuated<Ident, Token![.]>,

@@ -8,8 +8,8 @@ struct Input {
     #[call(Attribute::parse_outer)]
     attrs: Vec<Attribute>,
     vis: Visibility,
-    enum_kwd: Token![enum],
 
+    #[prefix(Token![enum])]
     // Allow an optional trailing semicolon, in case this macro is used like:
     //
     //   flag! {
