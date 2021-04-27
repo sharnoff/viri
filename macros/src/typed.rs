@@ -2,8 +2,8 @@ use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::spanned::Spanned;
 use syn::{
-    Data, DataEnum, DeriveInput, Field, Fields, FieldsNamed, FieldsUnnamed, Generics, Ident, Index,
-    LitStr, Type, Variant, WhereClause,
+    Data, DataEnum, DeriveInput, Field, Fields, FieldsNamed, FieldsUnnamed, GenericParam, Generics,
+    Ident, Index, LitStr, Type, Variant,
 };
 
 // Derive macro for `crate::dispatch::Typed`, including `TypeConstruct` and `TypeDeconstruct` as
@@ -284,8 +284,7 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream 
 
     let original_where_clause = generics.where_clause.as_ref();
 
-    let (cons_where, decon_where, typed_where) =
-        where_clauses(original_where_clause, &enum_types(&data));
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
     let generic_args = generic_args(&generics);
 
     let typed = quote! {
@@ -596,9 +595,8 @@ fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> Token
     } = derive_context();
 
     let field_types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
-    let (cons_where, decon_where, typed_where) =
-        where_clauses(generics.where_clause.as_ref(), &field_types);
 
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
     let generic_args = generic_args(&generics);
 
     let mut field_names = Vec::new();
@@ -688,8 +686,7 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
     let fields_len = fields.len();
 
     let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
-    let (cons_where, decon_where, typed_where) =
-        where_clauses(generics.where_clause.as_ref(), &types);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
     let generic_args = generic_args(&generics);
 
     let err_str = format!("expected tuple (array) of length {}", fields_len);
@@ -759,8 +756,7 @@ fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &Field) -> 
 
     let ty = &field.ty;
 
-    let (cons_where, decon_where, typed_where) =
-        where_clauses(generics.where_clause.as_ref(), &[ty]);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
     let generic_args = generic_args(&generics);
 
     quote! {
@@ -844,7 +840,7 @@ fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream {
         primitive_str, hashmap, ok, err, slice, send, sync, clone, string_from, vec, ..
     } = derive_context();
 
-    let (cons_where, decon_where, typed_where) = where_clauses(generics.where_clause.as_ref(), &[]);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
     let generic_args = generic_args(&generics);
 
     quote! {
@@ -897,7 +893,7 @@ fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream {
         string, primitive_str, hashmap, send, sync, clone, string_from, ..
     } = derive_context();
 
-    let (cons_where, decon_where, typed_where) = where_clauses(generics.where_clause.as_ref(), &[]);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
     let generic_args = generic_args(&generics);
 
     quote! {
@@ -961,10 +957,16 @@ fn generic_args(generics: &Generics) -> TokenStream {
 }
 
 // Produces the 'where' clauses required for TypeConstruct, TypeDeconstruct, and Typed
-fn where_clauses<'a>(
-    given: Option<&WhereClause>,
-    types: &[&'a Type],
-) -> (TokenStream, TokenStream, TokenStream) {
+fn where_clauses(generics: &Generics) -> (TokenStream, TokenStream, TokenStream) {
+    let types: Vec<_> = generics
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            GenericParam::Type(t) => Some(&t.ident),
+            _ => None,
+        })
+        .collect();
+
     let cons_type_bounds: TokenStream = types
         .iter()
         .map(|t| quote_spanned!(t.span()=> #t: crate::dispatch::TypedConstruct,))
@@ -985,7 +987,7 @@ fn where_clauses<'a>(
         .collect();
 
     // Handle possible missing/trailing commas or mising where clause altogether
-    if let Some(where_clause) = given {
+    if let Some(where_clause) = generics.where_clause.as_ref() {
         if where_clause.predicates.is_empty() || where_clause.predicates.trailing_punct() {
             (
                 quote!(#where_clause #cons_type_bounds),
@@ -1006,23 +1008,6 @@ fn where_clauses<'a>(
             quote!(where #typed_type_bounds),
         )
     }
-}
-
-// Produces all of the types individually represented within an enum
-fn enum_types(data: &DataEnum) -> Vec<&Type> {
-    let mut types = Vec::new();
-
-    for v in data.variants.iter() {
-        let fs = match &v.fields {
-            Fields::Unit => continue,
-            Fields::Named(FieldsNamed { named: fs, .. })
-            | Fields::Unnamed(FieldsUnnamed { unnamed: fs, .. }) => fs,
-        };
-
-        fs.iter().for_each(|f| types.push(&f.ty));
-    }
-
-    types
 }
 
 #[cfg(test)]
