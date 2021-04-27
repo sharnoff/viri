@@ -429,7 +429,7 @@ mod primitive_impls {
             };
             @decon_fns = {
                 fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
-                fn as_string(&self) -> String { *self }
+                fn as_string(&self) -> String { self.clone() }
             };
         }
 

@@ -148,7 +148,7 @@ impl BindingNamespace {
         }
 
         if let Some(&id) = self.ids.get(&path) {
-            return Ok(Box::new(|this, callback| {
+            return Ok(Box::new(move |this, callback| {
                 let this_paths = &this.paths;
                 let paths = |id| this_paths.get(&id).unwrap();
                 this.loader.load_existing(calling_ext, id, callback, paths);
@@ -175,7 +175,7 @@ impl BindingNamespace {
 
                 crate::runtime::spawn(ext.load(self.builtin_id, new_id));
 
-                Ok(Box::new(|this, callback| {
+                Ok(Box::new(move |this, callback| {
                     let this_paths = &this.paths;
                     let paths = |id| this_paths.get(&id).unwrap();
                     this.loader.load_new(calling_ext, new_id, callback, paths);

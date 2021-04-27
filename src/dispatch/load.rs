@@ -10,6 +10,7 @@ use std::fmt::{self, Display, Formatter};
 use std::mem;
 
 use super::{Callback, ExtensionId, ExtensionPath, Value};
+use crate::utils::DiscardResult;
 
 /// A handler responsible for coordinating the loading of extensions
 ///
@@ -111,7 +112,8 @@ impl LoadingHandler {
                 #[rustfmt::skip]
                 callback.send(Ok(Some(
                     Value::new(Ok(to_load) as builtin_return_ty![LoadExtension])
-                )));
+                )))
+                    .discard_if_ok_else(|_| log::warn!("failed to send on loading callback"));
                 return;
             }
             Some(info) => info,
@@ -123,7 +125,8 @@ impl LoadingHandler {
             #[rustfmt::skip]
             callback.send(Ok(Some(
                 Value::new(Err(err_msg.clone()) as builtin_return_ty![LoadExtension])
-            )));
+            )))
+                .discard_if_ok_else(|_| log::warn!("failed to send on loading callback"));
             return;
         }
 
@@ -134,7 +137,7 @@ impl LoadingHandler {
             Entry::Vacant(e) => {
                 e.insert(LoadingInfo::new_blocked(to_load, callback));
             }
-            Entry::Occupied(e) => {
+            Entry::Occupied(mut e) => {
                 e.get_mut().blocked_on.insert(to_load, callback);
             }
         }
@@ -162,7 +165,7 @@ impl LoadingHandler {
             Entry::Vacant(e) => {
                 e.insert(LoadingInfo::new_blocked(to_load, callback));
             }
-            Entry::Occupied(e) => {
+            Entry::Occupied(mut e) => {
                 e.get_mut().blocked_on.insert(to_load, callback);
             }
         }
@@ -287,10 +290,10 @@ impl LoadingHandler {
     }
 
     /// Sends an error on all callback channels reported as part of the cycle
-    fn report_cycle<'a>(
+    fn report_cycle<'a, 'b: 'a>(
         &mut self,
         cycle: &LoadCycleError,
-        paths: impl 'a + Fn(ExtensionId) -> &'a ExtensionPath,
+        paths: impl 'a + Fn(ExtensionId) -> &'b ExtensionPath,
     ) {
         // We'll go through this in a few phases. In the first phase, we'll handle all of the
         // responses to each member of the cycle in turn. We'll then clean up anything else that
@@ -301,18 +304,22 @@ impl LoadingHandler {
 
         let cycle_msg = format!(
             "cannot load extension; dependencies form a cycle:\n{}",
-            cycle.display_with_paths(paths)
+            cycle.display_with_paths(&paths)
         );
         let cycle_res = Err(cycle_msg) as builtin_return_ty![LoadExtension];
 
         for (id, dep) in pairs {
-            let info = &mut self.loading[id];
+            let info = self.loading.get_mut(id).unwrap();
             let callback = info.blocked_on.remove(dep).unwrap();
-            callback.send(Ok(Some(Value::new(cycle_res.clone()))));
+            callback
+                .send(Ok(Some(Value::new(cycle_res.clone()))))
+                .discard_if_ok_else(|_| {
+                    log::warn!("failed to report extension load cycle on loading callback")
+                });
 
             // While we're sending the cycle error to each of the callbacks, we also need to remove
             // the corresponding back edges in the graph.
-            let dep_info = &mut self.loading[dep];
+            let dep_info = self.loading.get_mut(dep).unwrap();
             dep_info.waiting.remove(id);
         }
 
@@ -321,7 +328,7 @@ impl LoadingHandler {
         // many!) cycles reported, and that's not exactly helpful.
 
         for id in &cycle.0 {
-            let info = &mut self.loading[id];
+            let info = self.loading.get_mut(id).unwrap();
 
             // We use a different message to send to anything that was previously waiting on this
             // extension to load that *wasn't* part of the cycle; the full cycle isn't relevant to
@@ -338,9 +345,13 @@ impl LoadingHandler {
             )));
 
             for w in &waiting {
-                let w_info = &mut self.loading[w];
+                let w_info = self.loading.get_mut(w).unwrap();
                 let callback = w_info.blocked_on.remove(id).unwrap();
-                callback.send(secondary_error.clone());
+                callback
+                    .send(secondary_error.clone())
+                    .discard_if_ok_else(|_| {
+                        log::warn!("failed to send extension loading error on callback")
+                    });
             }
         }
     }
@@ -362,14 +373,14 @@ impl LoadCycleError {
     /// (This example is a little contrived; try to look past that for now.)
     fn display_with_paths<'a, 'b: 'a>(
         &'a self,
-        paths: impl 'b + Fn(ExtensionId) -> &'b ExtensionPath,
+        paths: impl 'a + Fn(ExtensionId) -> &'b ExtensionPath,
     ) -> impl 'a + Display {
         struct Disp<'a, F> {
             ids: &'a [ExtensionId],
             paths: F,
         }
 
-        impl<'a, 'b: 'a, F: 'b + Fn(ExtensionId) -> &'b ExtensionPath> Display for Disp<'a, F> {
+        impl<'a, 'b, F: Fn(ExtensionId) -> &'b ExtensionPath> Display for Disp<'a, F> {
             fn fmt(&self, f: &mut Formatter) -> fmt::Result {
                 writeln!(f, "┌─────┐")?;
 

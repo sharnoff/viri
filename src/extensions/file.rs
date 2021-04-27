@@ -33,7 +33,7 @@ struct Registry {
 id! {
     /// A unique, incrementing identifier for files that have been opened in this edit session
     #[derive(Typed)]
-    struct FileId in [FileInfo];
+    pub struct FileId in [FileInfo];
 }
 
 /// The result of a successfully opened file
@@ -79,6 +79,8 @@ pub async fn open(path: String, allow_create: bool) -> Result<Open, String> {
     let mut registry = REGISTRY.lock().await;
     let mut created = false;
 
+    let registry_size = registry.info.len();
+
     let id = match registry.paths.entry(path.clone()) {
         Entry::Vacant(e) => {
             // If the file already exists on disk, we'll read it in.
@@ -86,7 +88,7 @@ pub async fn open(path: String, allow_create: bool) -> Result<Open, String> {
                 created = true;
                 Vec::new()
             });
-            let new_id = FileId(registry.info.len());
+            let new_id = FileId(registry_size);
             e.insert(new_id);
             registry.info.push(Some(FileInfo::new(content)));
 
