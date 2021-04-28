@@ -76,13 +76,12 @@ pub enum TypeRepr {
 /// assert_eq!(err.to_string(), "in .values[3]: expected an integer");
 /// ```
 ///
-/// This error type internally uses a `String` to store the message; the `from_string` method is
-/// also available for dynamically-constructed error messages.
+/// All `Error`s are initially constructed with the [`from_str`](Self::from_str) method.
 #[derive(Debug, Clone)]
 pub struct Error {
     // The context is stored backwards, so that wrapping with context is just appending to the end
     context: Vec<std::borrow::Cow<'static, str>>,
-    message: String,
+    message: std::borrow::Cow<'static, str>,
 }
 
 impl Display for Error {
@@ -102,17 +101,12 @@ impl Display for Error {
 impl std::error::Error for Error {}
 
 impl Error {
-    /// Constructs an error with no context from the message, as a `String`
-    pub fn from_string(message: String) -> Self {
+    /// Constructs an error with no context from the message
+    pub fn from_str(message: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         Error {
             context: Vec::new(),
-            message,
+            message: message.into(),
         }
-    }
-
-    /// Constructs an error with no context from the message, as a `&str`
-    pub fn from_str(message: &str) -> Self {
-        Self::from_string(message.to_owned())
     }
 
     /// Adds the contextual information to the error
