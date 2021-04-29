@@ -720,7 +720,11 @@ mod std_impls {
             "expected an array"
         }
         fn from_array(array: Vec<Value>) -> super::Result<Self> {
-            todo!()
+            array
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| v.convert().map_err(|e| e.context(format!("[{}]", i))))
+                .collect()
         }
     }
 
@@ -732,7 +736,7 @@ mod std_impls {
             Value::new(self.clone())
         }
         fn as_array(&self) -> Vec<Value> {
-            todo!()
+            self.iter().map(Value::from_ref).collect()
         }
     }
 }
