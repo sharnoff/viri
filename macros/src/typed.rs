@@ -1035,7 +1035,6 @@ fn where_clauses(generics: &Generics) -> (TokenStream, TokenStream, TokenStream)
 mod tests {
     use super::derive_typed_impl;
 
-    /*
     test_macro! {
         @name: std_result,
         derive_typed_impl! {
@@ -1090,10 +1089,7 @@ mod tests {
                                 ))
                             } else {
                                 ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
-                                    ::std::format!(
-                                        "enum variant `{}` missing data",
-                                        v
-                                    )
+                                    ::std::format!("enum variant `{}` missing data", v)
                                 ))
                             }
                         },
@@ -1109,10 +1105,7 @@ mod tests {
                                 ))
                             } else {
                                 ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
-                                    ::std::format!(
-                                        "enum variant `{}` missing data",
-                                        v
-                                    )
+                                    ::std::format!("enum variant `{}` missing data", v)
                                 ))
                             }
                         },
@@ -1145,27 +1138,14 @@ mod tests {
                     let ctx_map = |e| crate::dispatch::typed::Error::context(e, ::std::format!(".{}", field));
 
                     match ::std::string::String::as_str(&field) {
-                        "Ok" => {
-                            ::std::result::Result::Ok(Self::Ok(
-                                ::std::result::Result::map_err(
-                                    crate::dispatch::Value::convert(&value),
-                                    ctx_map,
-                                )?
-                            ))
-                        },
-                        "Err" => {
-                            ::std::result::Result::Ok(Self::Err(
-                                ::std::result::Result::map_err(
-                                    crate::dispatch::Value::convert(&value),
-                                    ctx_map,
-                                )?
-                            ))
-                        },
+                        "Ok" => ::std::result::Result::Ok(Self::Ok(
+                            ::std::result::Result::map_err(crate::dispatch::Value::convert(&value), ctx_map)?
+                        )),
+                        "Err" => ::std::result::Result::Ok(Self::Err(
+                            ::std::result::Result::map_err(crate::dispatch::Value::convert(&value), ctx_map)?
+                        )),
                         unk => ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
-                            ::std::format!(
-                                "unknown enum variant {:?}",
-                                unk
-                            )
+                            ::std::format!("unknown enum variant {:?}", unk)
                         )),
                     }
                 }
@@ -1196,12 +1176,10 @@ mod tests {
 
                 fn as_string(&self) -> ::std::string::String {
                     match self {
-                        Self::Ok { .. } => {
-                            <::std::string::String as ::std::convert::From<_>>::from("Ok")
-                        },
-                        Self::Err { .. } => {
-                            <::std::string::String as ::std::convert::From<_>>::from("Err")
-                        },
+                        Self::Ok { .. } =>
+                            <::std::string::String as ::std::convert::From<_>>::from("Ok"),
+                        Self::Err { .. } =>
+                            <::std::string::String as ::std::convert::From<_>>::from("Err"),
                     }
                 }
 
@@ -1222,9 +1200,7 @@ mod tests {
             }
         }
     }
-    */
 
-    /*
     test_macro! {
         @name: std_option,
         derive_typed_impl! {
@@ -1278,18 +1254,12 @@ mod tests {
                                 ))
                             } else {
                                 ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
-                                    ::std::format!(
-                                        "enum variant `{}` missing data",
-                                        v
-                                    )
+                                    ::std::format!("enum variant `{}` missing data", v)
                                 ))
                             }
                         },
                         v => ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
-                            ::std::format!(
-                                "unexpected enum variant {:?}",
-                                v
-                            )
+                            ::std::format!("unexpected enum variant {:?}", v)
                         )),
                     }
                 }
@@ -1322,19 +1292,11 @@ mod tests {
                             )?;
                             ::std::result::Result::Ok(Self::None)
                         },
-                        "Some" => {
-                            ::std::result::Result::Ok(Self::Some(
-                                ::std::result::Result::map_err(
-                                    crate::dispatch::Value::convert(&value),
-                                    ctx_map,
-                                )?
-                            ))
-                        },
+                        "Some" => ::std::result::Result::Ok(Self::Some(
+                            ::std::result::Result::map_err(crate::dispatch::Value::convert(&value), ctx_map)?
+                        )),
                         unk => ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
-                            ::std::format!(
-                                "unknown enum variant {:?}",
-                                unk
-                            )
+                            ::std::format!("unknown enum variant {:?}", unk)
                         )),
                     }
                 }
@@ -1363,9 +1325,8 @@ mod tests {
                     match self {
                         Self::None =>
                             <::std::string::String as ::std::convert::From<_>>::from("None"),
-                        Self::Some { .. } => {
-                            <::std::string::String as ::std::convert::From<_>>::from("Some")
-                        },
+                        Self::Some { .. } =>
+                            <::std::string::String as ::std::convert::From<_>>::from("Some"),
                     }
                 }
 
@@ -1386,7 +1347,6 @@ mod tests {
             }
         }
     }
-    */
 
     test_macro! {
         @name: complex_enum,
