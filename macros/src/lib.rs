@@ -13,6 +13,30 @@ use quote::ToTokens;
 use syn::parse::ParseStream;
 use syn::Token;
 
+// Helper function to return whether two tokenstreams are unequal
+fn tokenstreams_not_eq(x: TokenStream2, y: TokenStream2) -> bool {
+    use proc_macro2::TokenTree;
+
+    fn trees_not_eq((x, y): (TokenTree, TokenTree)) -> bool {
+        use TokenTree::{Group, Ident, Literal, Punct};
+
+        match (x, y) {
+            (Group(gx), Group(gy)) => tokenstreams_not_eq(gx.stream(), gy.stream()),
+            (Ident(ix), Ident(iy)) => ix.to_string() != iy.to_string(),
+            (Literal(lx), Literal(ly)) => lx.to_string() != ly.to_string(),
+
+            // Note: we could also compare {px,py}.spacing() here. Unfortunately, that doesn't seem
+            // to be entirely consistent - even with careful work. So we ignore it for now.
+            (Punct(px), Punct(py)) => px.as_char() != py.as_char(),
+
+            // Match these explicitly so that we know we got all of the possible tree variants
+            (Group(_), _) | (Ident(_), _) | (Punct(_), _) | (Literal(_), _) => true,
+        }
+    }
+
+    x.into_iter().zip(y).any(trees_not_eq)
+}
+
 #[cfg(test)]
 macro_rules! test_macro {
     (
@@ -52,7 +76,7 @@ macro_rules! test_macro {
             // will produce the same formatting.
             let expected_to_str = expected_tokens.to_string();
 
-            if output_to_str != expected_to_str {
+            if $crate::tokenstreams_not_eq(output_tokens, expected_tokens) {
                 panic!(
                     "output != expected\noutput = ```\n{}\n```,\nexpected = ```\n{}\n```",
                     output_to_str,

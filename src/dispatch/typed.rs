@@ -4,6 +4,7 @@ use crate::borrow::Cow;
 use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
+use std::ops::Deref;
 
 /// The structure of a type used to communicate with extensions
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +188,14 @@ impl<'a> Value<'a> {
             Cow::Owned(boxed) => Value {
                 val: Cow::Owned(boxed),
             },
+        }
+    }
+
+    /// Returns a reference to the inner trait object
+    pub fn inner(&self) -> &dyn TypedDeconstruct {
+        match &self.val {
+            Cow::Borrowed(r) => *r,
+            Cow::Owned(boxed) => boxed.deref(),
         }
     }
 
