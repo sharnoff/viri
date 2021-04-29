@@ -1,9 +1,11 @@
 use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote, quote_spanned, ToTokens};
+use std::collections::HashSet;
 use syn::spanned::Spanned;
 use syn::{
-    Data, DataEnum, DeriveInput, Field, Fields, FieldsNamed, FieldsUnnamed, GenericParam, Generics,
-    Ident, Index, LitStr, Type, Variant,
+    Data, DataEnum, DeriveInput, Field, Fields, FieldsNamed, FieldsUnnamed, GenericArgument,
+    GenericParam, Generics, Ident, Index, LitStr, PathArguments, ReturnType, Type, TypeParamBound,
+    Variant,
 };
 
 // Derive macro for `crate::dispatch::Typed`, including `TypeConstruct` and `TypeDeconstruct` as
@@ -285,7 +287,8 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream 
 
     let original_where_clause = generics.where_clause.as_ref();
 
-    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
+    let types = enum_types(&data);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics, &types);
     let generic_args = generic_args(&generics);
 
     let typed = quote! {
@@ -605,7 +608,7 @@ fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> Token
 
     let field_types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
 
-    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics, &field_types);
     let generic_args = generic_args(&generics);
 
     let mut field_names = Vec::new();
@@ -698,7 +701,7 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
     let fields_len = fields.len();
 
     let types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
-    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics, &types);
     let generic_args = generic_args(&generics);
 
     let err_str = format!("expected tuple (array) of length {}", fields_len);
@@ -775,7 +778,7 @@ fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &Field) -> 
 
     let ty = &field.ty;
 
-    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics, &[ty]);
     let generic_args = generic_args(&generics);
 
     quote! {
@@ -863,7 +866,7 @@ fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream {
         error, string, primitive_str, hashmap, ok, err, slice, send, sync, clone, vec, ..
     } = derive_context();
 
-    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics, &[]);
     let generic_args = generic_args(&generics);
 
     quote! {
@@ -916,7 +919,7 @@ fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream {
         error, ok, err, string, primitive_str, hashmap, send, sync, clone, ..
     } = derive_context();
 
-    let (cons_where, decon_where, typed_where) = where_clauses(&generics);
+    let (cons_where, decon_where, typed_where) = where_clauses(&generics, &[]);
     let generic_args = generic_args(&generics);
 
     quote! {
@@ -977,14 +980,45 @@ fn generic_args(generics: &Generics) -> TokenStream {
     quote!( <#( #args ),*> )
 }
 
+fn enum_types(data: &DataEnum) -> Vec<&Type> {
+    let mut types = Vec::new();
+
+    for v in data.variants.iter() {
+        let fs = match &v.fields {
+            Fields::Unit => continue,
+            Fields::Named(FieldsNamed { named: fs, .. })
+            | Fields::Unnamed(FieldsUnnamed { unnamed: fs, .. }) => fs,
+        };
+
+        fs.iter().for_each(|f| types.push(&f.ty));
+    }
+
+    types
+}
+
 // Produces the 'where' clauses required for TypeConstruct, TypeDeconstruct, and Typed
-fn where_clauses(generics: &Generics) -> (TokenStream, TokenStream, TokenStream) {
-    let types: Vec<_> = generics
+fn where_clauses(generics: &Generics, types: &[&Type]) -> (TokenStream, TokenStream, TokenStream) {
+    // Collect all of the type parameters, so that we can add type bounds for the things that use
+    // them
+    let idents: Vec<_> = generics
         .params
         .iter()
         .filter_map(|p| match p {
             GenericParam::Type(t) => Some(&t.ident),
             _ => None,
+        })
+        .collect();
+
+    // Only bound the types that include a generic type parameter. Also, don't duplicate bounds.
+    // Non-duplication isn't strictly necessary, but it's a nice way of shrinking the quantity of
+    // test output
+    let mut already_have = HashSet::new();
+
+    let types: Vec<_> = types
+        .iter()
+        .filter(|t| {
+            // HashSet::insert returns true if the element wasn't present
+            type_contains(**t, &idents) && already_have.insert(*t)
         })
         .collect();
 
@@ -1028,6 +1062,138 @@ fn where_clauses(generics: &Generics) -> (TokenStream, TokenStream, TokenStream)
             quote!(where #decon_type_bounds),
             quote!(where #typed_type_bounds),
         )
+    }
+}
+
+// A helper method for `where_clauses` -- determines if any of the types referenced in the set are
+// present in the given type.
+//
+// This allows us to only make complex requirements (e.g. `where Vec<T>: Typed`) for types that are
+// directly related to the generic arguments.
+//
+// We're using a slice here instead of a hashset because this list will tend to be very small
+// (usually not more than a couple!), so a slice will be singificantly faster in most cases.
+fn type_contains(ty: &Type, set: &[&Ident]) -> bool {
+    if set.is_empty() {
+        return false;
+    }
+
+    // Some of the types are trivially false, and act as a sort of base case. The comments above
+    // these are prefixed with ">" and indicate the sort of type being referred to.
+    match ty {
+        Type::Array(t) => type_contains(&t.elem, set),
+        Type::BareFn(t) => {
+            match &t.output {
+                // If the output type of the function is defined *and* it has something we're
+                // looking for, use that
+                ReturnType::Type(_, ty) if type_contains(ty, set) => true,
+                // Otherwise, scan the arguments to the function
+                _ => t.inputs.iter().any(|arg| type_contains(&arg.ty, set)),
+            }
+        }
+        Type::Group(t) => type_contains(&t.elem, set),
+        // the `impl Trait` syntax can't be used in type definitions or type bounds; we don't want
+        // to produce an additional error if it's used here.
+        Type::ImplTrait(_) => false,
+        // > `_`
+        Type::Infer(_) => false,
+        // For macros, we'll try to be a little sensible. If the contents of the macro contains one
+        // of the identifiers we're interested in, we'll include it. Otherwise, it probably isn't
+        // accessing the generic type parameters.
+        Type::Macro(t) => tokens_contains(t.mac.tokens.clone(), set),
+        // > `!`
+        Type::Never(_) => false,
+        Type::Paren(t) => type_contains(&t.elem, set),
+        Type::Path(t) => {
+            // "qself" is something like `<$ty as $trait>` that might go at the start of a path,
+            // but only refers to the `$ty`.  We'll include this in our search.
+            match &t.qself {
+                Some(q) if type_contains(&q.ty, set) => return true,
+                _ => (),
+            }
+
+            // Otherwise, there's two other cases:
+            //  1. if the entire path *is* the ident, or
+            //  2. if our ident is used in some generics in the path
+            // Note that if the entire path is a single ident, we can't have the second case.
+            match t.path.get_ident() {
+                // 1
+                Some(id) if set.contains(&id) => true,
+                // 2 -- things like `Vec<T>` will fall under this category, so it's definitely
+                // worth checking.
+                _ => t
+                    .path
+                    .segments
+                    .iter()
+                    .any(|seg| path_arg_contains(&seg.arguments, set)),
+            }
+        }
+        Type::Ptr(t) => type_contains(&t.elem, set),
+        Type::Reference(t) => type_contains(&t.elem, set),
+        Type::Slice(t) => type_contains(&t.elem, set),
+        Type::TraitObject(t) => t.bounds.iter().any(|b| param_bound_contains(b, set)),
+        Type::Tuple(t) => t.elems.iter().any(|t| type_contains(t, set)),
+        // This one's tricky. We could try to re-parse these as a type, but realistically these
+        // shouldn't occur in input that makes it to here. For now, we'll just pretend they don't
+        // exist.
+        Type::Verbatim(_) => false,
+
+        #[cfg(test)]
+        Type::__TestExhaustive(_) => todo!(),
+        #[cfg(not(test))]
+        _ => false,
+    }
+}
+
+fn tokens_contains(ts: TokenStream, set: &[&Ident]) -> bool {
+    use proc_macro2::TokenTree;
+
+    fn tt_contains(tt: TokenTree, set: &[&Ident]) -> bool {
+        match tt {
+            TokenTree::Ident(id) => set.contains(&&id),
+            TokenTree::Group(g) => tokens_contains(g.stream(), set),
+            TokenTree::Punct(_) | TokenTree::Literal(_) => false,
+        }
+    }
+
+    ts.into_iter().any(|tt| tt_contains(tt, set))
+}
+
+fn path_arg_contains(args: &PathArguments, set: &[&Ident]) -> bool {
+    use GenericArgument::{Binding, Const, Constraint, Lifetime, Type};
+    use PathArguments::{AngleBracketed, None, Parenthesized};
+
+    match args {
+        None => false,
+        AngleBracketed(args) => args.args.iter().any(|generic_arg| match generic_arg {
+            Lifetime(_) => false,
+            Type(t) => type_contains(t, set),
+            Binding(b) => type_contains(&b.ty, set),
+            Constraint(c) => c.bounds.iter().any(|b| param_bound_contains(b, set)),
+            Const(_) => false,
+        }),
+        Parenthesized(args) => match &args.output {
+            ReturnType::Type(_, ty) if type_contains(ty, set) => true,
+            _ => args.inputs.iter().any(|arg| type_contains(&arg, set)),
+        },
+    }
+}
+
+fn param_bound_contains(bound: &TypeParamBound, set: &[&Ident]) -> bool {
+    match bound {
+        TypeParamBound::Lifetime(_) => false,
+        TypeParamBound::Trait(b) => {
+            // This is essentially the same logic as for paths in `type_contains`. Check there for
+            // a little bit of a run-through
+            match b.path.get_ident() {
+                Some(id) if set.contains(&id) => true,
+                _ => b
+                    .path
+                    .segments
+                    .iter()
+                    .any(|seg| path_arg_contains(&seg.arguments, set)),
+            }
+        }
     }
 }
 
@@ -1365,6 +1531,7 @@ mod tests {
             impl<T> crate::dispatch::Typed for Complex<T>
             where
                 T: crate::dispatch::Typed,
+                Vec<T>: crate::dispatch::Typed,
                 Self: crate::dispatch::TypedDeconstruct + crate::dispatch::TypedConstruct
             {
                 fn repr() -> crate::dispatch::TypeRepr {
@@ -1419,6 +1586,7 @@ mod tests {
             impl<T> crate::dispatch::TypedConstruct for Complex<T>
             where
                 T: crate::dispatch::TypedConstruct,
+                Vec<T>: crate::dispatch::TypedConstruct,
                 Self: 'static + ::std::marker::Send + ::std::marker::Sync + ::std::clone::Clone
             {
                 fn cons_order() -> &'static [crate::dispatch::TypeKind] {
@@ -1811,6 +1979,7 @@ mod tests {
             impl<T> crate::dispatch::TypedDeconstruct for Complex<T>
             where
                 T: crate::dispatch::TypedDeconstruct,
+                Vec<T>: crate::dispatch::TypedDeconstruct,
                 Self: 'static + ::std::marker::Send + ::std::marker::Sync + ::std::clone::Clone
             {
                 fn type_kind(&self) -> crate::dispatch::TypeKind {
@@ -1881,6 +2050,7 @@ mod tests {
                             impl<T> crate::dispatch::TypedDeconstruct for _V<T>
                             where
                                 T: crate::dispatch::TypedDeconstruct,
+                                Vec<T>: crate::dispatch::TypedDeconstruct,
                                 Self: 'static,
                                 Complex<T>: Clone
                             {
@@ -1918,6 +2088,7 @@ mod tests {
                             impl<T> crate::dispatch::TypedDeconstruct for _V<T>
                             where
                                 T: crate::dispatch::TypedDeconstruct,
+                                Vec<T>: crate::dispatch::TypedDeconstruct,
                                 Self: 'static,
                                 Complex<T>: Clone
                             {
@@ -1956,6 +2127,7 @@ mod tests {
                             impl<T> crate::dispatch::TypedDeconstruct for _V<T>
                             where
                                 T: crate::dispatch::TypedDeconstruct,
+                                Vec<T>: crate::dispatch::TypedDeconstruct,
                                 Self: 'static,
                                 Complex<T>: Clone
                             {
@@ -1997,6 +2169,7 @@ mod tests {
                             impl<T> crate::dispatch::TypedDeconstruct for _V<T>
                             where
                                 T: crate::dispatch::TypedDeconstruct,
+                                Vec<T>: crate::dispatch::TypedDeconstruct,
                                 Self: 'static,
                                 Complex<T>: Clone
                             {
