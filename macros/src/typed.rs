@@ -39,6 +39,8 @@ struct DeriveContext {
     type_repr:         TokenStream,
     value:             TokenStream,
     result:            TokenStream,
+    crate_result:      TokenStream,
+    error:             TokenStream,
     ok:                TokenStream,
     err:               TokenStream,
     some:              TokenStream,
@@ -67,6 +69,8 @@ fn derive_context() -> DeriveContext {
         type_repr: quote!(crate::dispatch::TypeRepr),
         value: quote!(crate::dispatch::Value),
         result: quote!(::std::result::Result),
+        crate_result: quote!(crate::dispatch::typed::Result),
+        error: quote!(crate::dispatch::typed::Error),
         ok: quote!(::std::result::Result::Ok),
         err: quote!(::std::result::Result::Err),
         some: quote!(::std::option::Option::Some),
@@ -225,9 +229,9 @@ impl<'a> EnumCtx<'a> {
 fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, err,
-        string, primitive_str, hashmap, into_iter, next, is_some, ok_or_else, clone, slice,
-        send, sync, vec, some, string_from, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result,
+        crate_result, error, ok, err, string, primitive_str, hashmap, into_iter, next, is_some,
+        ok_or_else, clone, slice, send, sync, vec, some, string_from, ..
     } = derive_context();
 
     let ctx = EnumCtx::new(data.variants.iter());
@@ -337,7 +341,7 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream 
                 "expected an enum variant; either by name (string) or field-value (struct)"
             }
 
-            fn from_string(s: #string) -> #result<Self, #string> {
+            fn from_string(s: #string) -> #crate_result<Self> {
                 match #string::as_str(&s) {
                     #( #unit_variants_strs => #ok(Self::#unit_variants), )*
                     // Ambiguous variants *could* be a unit -- e.g. the `Err` variant of
@@ -354,61 +358,66 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream 
 
                         if does_contain {
                             #ok(Self::#single_elem_tuple_variants(
-                                <#ambiguous_tys_cloned as #typed_construct>::from_unit()?
+                                <#ambiguous_tys_cloned as #typed_construct>::from_unit()
                             ))
                         } else {
-                            #err(::std::format!("enum variant `{}` missing data", v))
+                            #err(#error::from_str(::std::format!("enum variant `{}` missing data", v)))
                         }
                     },)*
                     #( v @ #nonempty_variants_no_ambiguous_strs => {
-                        #err(::std::format!("enum variant `{}` missing data", v))
+                        #err(#error::from_str(::std::format!("enum variant `{}` missing data", v)))
                     },)*
-                    v => #err(::std::format!("unexpected enum variant {:?}", v)),
+                    v => #err(#error::from_str(::std::format!("unexpected enum variant {:?}", v))),
                 }
             }
 
-            fn from_struct(fields: #hashmap<#string, #value>) -> #result<Self, #string> {
+            fn from_struct(fields: #hashmap<#string, #value>) -> #crate_result<Self> {
                 let mut iter = #into_iter(fields);
 
                 let (field, value) = #ok_or_else(#next(&mut iter), || "expected a single field")?;
 
                 if #is_some(&#next(&mut iter)) {
-                    return #err(#string_from(
+                    return #err(#error::from_str(
                         "expected only one field to signify the enum variant"
                     ));
                 }
 
+                let ctx_map = |e| #error::context(e, ::std::format!(".{}", field));
+
                 match #string::as_str(&field) {
                     #( #unit_variants_strs => {
-                        let _: () = #value::convert(&value)?;
+                        let _: () = #result::map_err(#value::convert(&value), ctx_map)?;
                         #ok(Self::#unit_variants)
                     },)*
                     #( #empty_tuple_variants_strs => {
-                        let _: () = #value::convert(&value)?;
+                        let _: () = #result::map_err(#value::convert(&value), ctx_map)?;
                         #ok(Self::#empty_tuple_variants(()))
                     },)*
                     #( #single_elem_tuple_variants_strs => {
                         // Single-element tuples are equivalent to the values they contain
-                        #ok(Self::#single_elem_tuple_variants(#value::convert(&value)?))
+                        #ok(Self::#single_elem_tuple_variants(#result::map_err(
+                            #value::convert(&value),
+                            ctx_map,
+                        )?))
                     },)*
                     #( #nonempty_tuple_variants_strs => {
                         // Tuples with >1 elements are represented as arrays and only arrays.
                         let inner = #value::inner(&value);
                         let array = match #typed_deconstruct::type_kind(inner) {
                             #type_kind::Array => #typed_deconstruct::as_array(inner),
-                            t => return #err(::std::format!(
+                            t => return #err(ctx_map(#error::from_str(::std::format!(
                                 "expected an array type, found `{:?}`",
                                 t,
-                            )),
+                            )))),
                         };
 
                         match #vec::as_slice(&array) {
                             [ #( #nonempty_tuple_unique_names )* ] => todo!(),
-                            vs => #err(::std::format!(
+                            vs => #err(ctx_map(#error::from_str(::std::format!(
                                 "expected an array with {} elements, found {}",
                                 #nonempty_tuple_variants_len,
                                 #slice::len(vs),
-                            )),
+                            )))),
                         }
                     }, )*
                     #( #struct_variants_strs => {
@@ -416,10 +425,10 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream 
                         let inner = #value::inner(&value);
                         let fields = match #typed_deconstruct::type_kind(inner) {
                             #type_kind::Struct => #typed_deconstruct::as_struct(inner),
-                            t => return #err(::std::format!(
+                            t => return #err(ctx_map(#error::from_str(::std::format!(
                                 "expected a struct type, found `{:?}`",
                                 t,
-                            )),
+                            )))),
                         };
 
                         let this = Self::#struct_variants {
@@ -427,18 +436,20 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream 
                                 let s = #struct_variants_fields_strs;
                                 let val = #ok_or_else(
                                     #hashmap::remove(&mut fields, s),
-                                    || ::std::format!("missing field `{}`", s),
+                                    || ctx_map(#error::from_str(::std::format!("missing field `{}`", s))),
                                 )?;
                             },)*
                         };
 
                         if let #some((f, _)) = #next(&mut #hashmap::iter(&fields)) {
-                            return #err(::std::format!("unexpected field {:?}", f));
+                            return #err(ctx_map(#error::from_str(
+                                ::std::format!("unexpected field {:?}", f)
+                            )));
                         }
 
                         #ok(this)
                     },)*
-                    unk => #err(::std::format!("unknown enum variant {:?}", unk)),
+                    unk => #err(#error::from_str(::std::format!("unknown enum variant {:?}", unk))),
                 }
             }
         }
@@ -587,8 +598,9 @@ fn derive_enum(ident: Ident, generics: Generics, data: DataEnum) -> TokenStream 
 fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, err,
-        string, primitive_str, hashmap, clone, ok_or_else, some, next, send, sync, string_from, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result,
+        crate_result, error, ok, err, string, primitive_str, hashmap, clone, ok_or_else, some,
+        next, send, sync, string_from, ..
     } = derive_context();
 
     let field_types: Vec<_> = fields.named.iter().map(|f| &f.ty).collect();
@@ -604,8 +616,6 @@ fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> Token
         field_strs.push(LitStr::new(&ident.to_string(), ident.span()));
         field_names.push(ident);
     }
-
-    let field_strs_cloned = field_strs.clone();
 
     quote! {
         impl #generics #typed for #ident #generic_args
@@ -625,22 +635,27 @@ fn derive_struct(ident: Ident, generics: Generics, fields: FieldsNamed) -> Token
 
             fn err_string() -> &'static #primitive_str { "expected a struct" }
 
-            fn from_struct(mut fields: #hashmap<#string, #value>) -> #result<Self, #string> {
+            fn from_struct(mut fields: #hashmap<#string, #value>) -> #crate_result<Self> {
                 let this = Self {
                     #(
                     #field_names: {
+                        let s = #field_strs;
+
                         let val = #ok_or_else(
-                            #hashmap::remove(&mut fields, #field_strs),
-                            || ::std::format!("missing field `{}`", #field_strs_cloned),
+                            #hashmap::remove(&mut fields, s),
+                            || #error::from_str(::std::format!("missing field `{}`", s)),
                         )?;
 
-                        #value::convert(&val)?
+                        #result::map_err(
+                            #value::convert(&val),
+                            |e| #error::context(e, ::std::format!(".{}", s)),
+                        )?
                     },
                     )*
                 };
 
                 if let #some((f, _)) = #next(&mut #hashmap::iter(&fields)) {
-                    return #err(::std::format!("unexpected field {:?}", f));
+                    return #err(#error::from_str(::std::format!("unexpected field {:?}", f)));
                 }
 
                 #ok(this)
@@ -676,8 +691,8 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
 
     #[rustfmt::skip]
     let DeriveContext {
-        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, err,
-        string, primitive_str, vec, clone, slice, send, sync, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result,
+        crate_result, error, ok, err, primitive_str, vec, clone, slice, send, sync, ..
     } = derive_context();
 
     let fields_len = fields.len();
@@ -693,7 +708,9 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
         .collect();
     let elem_names_cloned = elem_names.clone();
 
-    let indexes = (0..fields_len).map(|i| proc_macro2::Literal::usize_unsuffixed(i));
+    let indexes: Vec<_> = (0..fields_len)
+        .map(|i| proc_macro2::Literal::usize_unsuffixed(i))
+        .collect();
 
     quote! {
         impl #generics #typed for #ident #generic_args
@@ -713,14 +730,19 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
 
             fn err_string() -> &'static #primitive_str { #err_str }
 
-            fn from_array(array: #vec<#value>) -> #result<Self, #string> {
+            fn from_array(array: #vec<#value>) -> #crate_result<Self> {
                 match array.as_slice() {
-                    [#( #elem_names, )*] => #ok(Self( #( #value::convert::<#types>(#elem_names_cloned)?, )* )),
-                    vs => #err(format!(
+                    [#( #elem_names, )*] => {
+                        #ok(Self( #( #result::map_err(
+                            #value::convert::<#types>(#elem_names_cloned),
+                            |e| #error::context(e, ::std::format!(".{}", #indexes)),
+                        )? )* ))
+                    }
+                    vs => #err(#error::from_str(format!(
                         "expected tuple with {} elements, found {}",
                         #fields_len,
                         #slice::len(vs),
-                    )),
+                    ))),
                 }
             }
         }
@@ -747,8 +769,8 @@ fn derive_tuple(ident: Ident, generics: Generics, fields: FieldsUnnamed) -> Toke
 fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &Field) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, string,
-        primitive_str, hashmap, bool, vec, send, sync, clone, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, crate_result, ok,
+        string, primitive_str, hashmap, bool, vec, send, sync, clone, ..
     } = derive_context();
 
     let ty = &field.ty;
@@ -774,27 +796,31 @@ fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &Field) -> 
                 <#ty as #typed_construct>::err_string()
             }
 
-            fn from_any(any: #value<'static>) -> #result<Self, #string> {
+            fn from_any(any: #value<'static>) -> #crate_result<Self> {
                 #ok(Self(<#ty as #typed_construct>::from_any(any)?))
             }
 
-            fn from_int(int: ::num_bigint::BigInt) -> #result<Self, #string> {
+            fn from_int(int: ::num_bigint::BigInt) -> #crate_result<Self> {
                 #ok(Self(<#ty as #typed_construct>::from_int(int)?))
             }
 
-            fn from_bool(b: #bool) -> #result<Self, #string> {
+            fn from_bool(b: #bool) -> #crate_result<Self> {
                 #ok(Self(<#ty as #typed_construct>::from_bool(b)?))
             }
 
-            fn from_string(s: #string) -> #result<Self, #string> {
+            fn from_string(s: #string) -> #crate_result<Self> {
                 #ok(Self(<#ty as #typed_construct>::from_string(s)?))
             }
 
-            fn from_struct(fs: #hashmap<#string, #value>) -> #result<Self, #string> {
+            fn from_unit() -> Self {
+                Self(<#ty as #typed_construct>::from_unit())
+            }
+
+            fn from_struct(fs: #hashmap<#string, #value>) -> #crate_result<Self> {
                 #ok(Self(<#ty as #typed_construct>::from_struct(fs)?))
             }
 
-            fn from_array(a: #vec<#value>) -> #result<Self, #string> {
+            fn from_array(a: #vec<#value>) -> #crate_result<Self> {
                 #ok(Self(<#ty as #typed_construct>::from_array(a)?))
             }
         }
@@ -833,8 +859,8 @@ fn derive_single_elem_tuple(ident: Ident, generics: Generics, field: &Field) -> 
 fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, string,
-        primitive_str, hashmap, ok, err, slice, send, sync, clone, string_from, vec, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, crate_result,
+        error, string, primitive_str, hashmap, ok, err, slice, send, sync, clone, vec, ..
     } = derive_context();
 
     let (cons_where, decon_where, typed_where) = where_clauses(&generics);
@@ -856,18 +882,18 @@ fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream {
                 <() as #typed_construct>::err_string()
             }
 
-            fn from_unit() -> #result<Self, #string> { #ok(Self()) }
-            fn from_struct(fields: #hashmap<#string, #value>) -> #result<Self, #string> {
+            fn from_unit() -> Self { Self() }
+            fn from_struct(fields: #hashmap<#string, #value>) -> #crate_result<Self> {
                 match #hashmap::is_empty(&fields) {
                     true => #ok(Self()),
-                    false => #err(#string_from("expected an empty struct")),
+                    false => #err(#error::from_str("expected an empty struct")),
                 }
             }
 
-            fn from_array(array: #vec<#value>) -> #result<Self, #string> {
+            fn from_array(array: #vec<#value>) -> #crate_result<Self> {
                 match #slice::is_empty(&array) {
                     true => #ok(Self()),
-                    false => #err(#string_from("expected an empty array")),
+                    false => #err(#error::from_str("expected an empty array")),
                 }
             }
         }
@@ -886,8 +912,8 @@ fn derive_unit_tuple(ident: Ident, generics: Generics) -> TokenStream {
 fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream {
     #[rustfmt::skip]
     let DeriveContext {
-        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, result, ok, err,
-        string, primitive_str, hashmap, send, sync, clone, string_from, ..
+        typed, typed_construct, typed_deconstruct, type_kind, type_repr, value, crate_result,
+        error, ok, err, string, primitive_str, hashmap, send, sync, clone, ..
     } = derive_context();
 
     let (cons_where, decon_where, typed_where) = where_clauses(&generics);
@@ -909,13 +935,11 @@ fn derive_unit_struct(ident: Ident, generics: Generics) -> TokenStream {
                 "expected a unit value or an empty struct"
             }
 
-            fn from_unit() -> #result<Self, #string> {
-                #ok(Self)
-            }
+            fn from_unit() -> Self { Self }
 
-            fn from_struct(fields: #hashmap<#string, #value>) -> #result<Self, #string> {
+            fn from_struct(fields: #hashmap<#string, #value>) -> #crate_result<Self> {
                 if !#hashmap::is_empty(&fields) {
-                    #err(#string_from("expected an empty struct, found one with fields"))
+                    #err(#error::from_str("expected an empty struct, found one with fields"))
                 } else {
                     #ok(Self)
                 }
@@ -1051,7 +1075,7 @@ mod tests {
 
                 fn from_string(
                     s: ::std::string::String
-                ) -> ::std::result::Result<Self, ::std::string::String> {
+                ) -> crate::dispatch::typed::Result<Self> {
                     match ::std::string::String::as_str(&s) {
                         v @ "Ok" => {
                             let does_contain = <[_]>::contains(
@@ -1061,12 +1085,14 @@ mod tests {
 
                             if does_contain {
                                 ::std::result::Result::Ok(Self::Ok(
-                                    <T as crate::dispatch::TypedConstruct>::from_unit()?
+                                    <T as crate::dispatch::TypedConstruct>::from_unit()
                                 ))
                             } else {
-                                ::std::result::Result::Err(::std::format!(
-                                    "enum variant `{}` missing data",
-                                    v
+                                ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
+                                    ::std::format!(
+                                        "enum variant `{}` missing data",
+                                        v
+                                    )
                                 ))
                             }
                         },
@@ -1078,25 +1104,29 @@ mod tests {
 
                             if does_contain {
                                 ::std::result::Result::Ok(Self::Err(
-                                    <E as crate::dispatch::TypedConstruct>::from_unit()?
+                                    <E as crate::dispatch::TypedConstruct>::from_unit()
                                 ))
                             } else {
-                                ::std::result::Result::Err(::std::format!(
-                                    "enum variant `{}` missing data",
-                                    v
+                                ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
+                                    ::std::format!(
+                                        "enum variant `{}` missing data",
+                                        v
+                                    )
                                 ))
                             }
                         },
-                        v => ::std::result::Result::Err(::std::format!(
-                            "unexpected enum variant {:?}",
-                            v
+                        v => ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
+                            ::std::format!(
+                                "unexpected enum variant {:?}",
+                                v
+                            )
                         )),
                     }
                 }
 
                 fn from_struct(
                     fields: ::std::collections::HashMap<::std::string::String, crate::dispatch::Value>
-                ) -> ::std::result::Result<Self, ::std::string::String> {
+                ) -> crate::dispatch::typed::Result<Self> {
                     let mut iter = ::std::iter::IntoIterator::into_iter(fields);
 
                     let (field, value) = ::std::option::Option::ok_or_else(
@@ -1105,22 +1135,36 @@ mod tests {
 
                     if ::std::option::Option::is_some(&::std::iter::Iterator::next(&mut iter)) {
                         return ::std::result::Result::Err(
-                            <::std::string::String as ::std::convert::From<_>>::from(
+                            crate::dispatch::typed::Error::from_str(
                                 "expected only one field to signify the enum variant"
                             )
                         );
                     }
 
+                    let ctx_map = |e| crate::dispatch::typed::Error::context(e, ::std::format!(".{}", field));
+
                     match ::std::string::String::as_str(&field) {
                         "Ok" => {
-                            ::std::result::Result::Ok(Self::Ok(crate::dispatch::Value::convert(&value)?))
+                            ::std::result::Result::Ok(Self::Ok(
+                                ::std::result::Result::map_err(
+                                    crate::dispatch::Value::convert(&value),
+                                    ctx_map,
+                                )?
+                            ))
                         },
                         "Err" => {
-                            ::std::result::Result::Ok(Self::Err(crate::dispatch::Value::convert(&value)?))
+                            ::std::result::Result::Ok(Self::Err(
+                                ::std::result::Result::map_err(
+                                    crate::dispatch::Value::convert(&value),
+                                    ctx_map,
+                                )?
+                            ))
                         },
-                        unk => ::std::result::Result::Err(::std::format!(
-                            "unknown enum variant {:?}",
-                            unk
+                        unk => ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
+                            ::std::format!(
+                                "unknown enum variant {:?}",
+                                unk
+                            )
                         )),
                     }
                 }
@@ -1216,7 +1260,7 @@ mod tests {
 
                 fn from_string(
                     s: ::std::string::String
-                ) -> ::std::result::Result<Self, ::std::string::String> {
+                ) -> crate::dispatch::typed::Result<Self> {
                     match ::std::string::String::as_str(&s) {
                         "None" => ::std::result::Result::Ok(Self::None),
                         v @ "Some" => {
@@ -1227,25 +1271,29 @@ mod tests {
 
                             if does_contain {
                                 ::std::result::Result::Ok(Self::Some(
-                                    <T as crate::dispatch::TypedConstruct>::from_unit()?
+                                    <T as crate::dispatch::TypedConstruct>::from_unit()
                                 ))
                             } else {
-                                ::std::result::Result::Err(::std::format!(
-                                    "enum variant `{}` missing data",
-                                    v
+                                ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
+                                    ::std::format!(
+                                        "enum variant `{}` missing data",
+                                        v
+                                    )
                                 ))
                             }
                         },
-                        v => ::std::result::Result::Err(::std::format!(
-                            "unexpected enum variant {:?}",
-                            v
+                        v => ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
+                            ::std::format!(
+                                "unexpected enum variant {:?}",
+                                v
+                            )
                         )),
                     }
                 }
 
                 fn from_struct(
                     fields: ::std::collections::HashMap<::std::string::String, crate::dispatch::Value>
-                ) -> ::std::result::Result<Self, ::std::string::String> {
+                ) -> crate::dispatch::typed::Result<Self> {
                     let mut iter = ::std::iter::IntoIterator::into_iter(fields);
 
                     let (field, value) = ::std::option::Option::ok_or_else(
@@ -1255,25 +1303,35 @@ mod tests {
 
                     if ::std::option::Option::is_some(&::std::iter::Iterator::next(&mut iter)) {
                         return ::std::result::Result::Err(
-                            <::std::string::String as ::std::convert::From<_>>::from(
+                            crate::dispatch::typed::Error::from_str(
                                 "expected only one field to signify the enum variant"
                             )
                         );
                     }
 
+                    let ctx_map = |e| crate::dispatch::typed::Error::context(e, ::std::format!(".{}", field));
+
                     match ::std::string::String::as_str(&field) {
                         "None" => {
-                            let _: () = crate::dispatch::Value::convert(&value)?;
+                            let _: () = ::std::result::Result::map_err(
+                                crate::dispatch::Value::convert(&value),
+                                ctx_map
+                            )?;
                             ::std::result::Result::Ok(Self::None)
                         },
                         "Some" => {
                             ::std::result::Result::Ok(Self::Some(
-                                crate::dispatch::Value::convert(&value)?
+                                ::std::result::Result::map_err(
+                                    crate::dispatch::Value::convert(&value),
+                                    ctx_map,
+                                )?
                             ))
                         },
-                        unk => ::std::result::Result::Err(::std::format!(
-                            "unknown enum variant {:?}",
-                            unk
+                        unk => ::std::result::Result::Err(crate::dispatch::typed::Error::from_str(
+                            ::std::format!(
+                                "unknown enum variant {:?}",
+                                unk
+                            )
                         )),
                     }
                 }

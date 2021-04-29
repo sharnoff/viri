@@ -39,6 +39,9 @@
     unused_mut,
     bare_trait_objects
 )]
+// Increased declarative macro recusion limit.
+//   @req "dispatch::impl_tuple!" v0
+#![recursion_limit = "256"]
 
 use clap::{Arg, ArgMatches};
 use std::ops::Deref;

@@ -35,6 +35,9 @@ pub enum TypeRepr {
     Tuple(Vec<TypeRepr>),
 }
 
+/// Type alias for convenience - the result of type conversion operations
+pub type Result<T> = std::result::Result<T, Error>;
+
 /// A contextual error for type construction
 ///
 /// This error is primarily in the results returned by [`TypedConstruct`] methods. It serves to
@@ -99,6 +102,18 @@ impl Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Error::from_str(message)
+    }
+}
+
+impl From<&'static str> for Error {
+    fn from(message: &'static str) -> Self {
+        Error::from_str(message)
+    }
+}
 
 impl Error {
     /// Constructs an error with no context from the message
@@ -176,7 +191,7 @@ impl<'a> Value<'a> {
     }
 
     /// Converts a `Value` into a type that it could represent
-    pub fn convert<T: TypedConstruct>(&self) -> Result<T, String> {
+    pub fn convert<T: TypedConstruct>(&self) -> Result<T> {
         todo!()
     }
 }
@@ -243,20 +258,20 @@ pub trait TypedConstruct: 'static + Sized {
     fn err_string() -> &'static str;
 
     /// Attempts to construct the type directly from the `Value` itself
-    fn from_any(any: Value<'static>) -> Result<Self, String> { unimplemented!() }
+    fn from_any(any: Value<'static>) -> Result<Self> { unimplemented!() }
     /// Attempts to produce the value from an integer
-    fn from_int(int: BigInt) -> Result<Self, String> { unimplemented!() }
+    fn from_int(int: BigInt) -> Result<Self> { unimplemented!() }
     /// Attempts to produce the value from a boolean
-    fn from_bool(b: bool) -> Result<Self, String> { unimplemented!() }
+    fn from_bool(b: bool) -> Result<Self> { unimplemented!() }
     /// Attempts to produce the value from a string
-    fn from_string(s: String) -> Result<Self, String> { unimplemented!() }
-    /// Attempts to produce the value from a unit
-    fn from_unit() -> Result<Self, String> { unimplemented!() }
+    fn from_string(s: String) -> Result<Self> { unimplemented!() }
+    /// Produces the value from a unit
+    fn from_unit() -> Self { unimplemented!() }
     /// Attempts to construct a value from the fields of a struct
-    fn from_struct(fields: HashMap<String, Value>) -> Result<Self, String> { unimplemented!() }
+    fn from_struct(fields: HashMap<String, Value>) -> Result<Self> { unimplemented!() }
     /// Attempts to construct a value from a dynamically-typed array (i.e. the elements are not
     /// guaranteed to have the same type)
-    fn from_array(array: Vec<Value>) -> Result<Self, String> { unimplemented!() }
+    fn from_array(array: Vec<Value>) -> Result<Self> { unimplemented!() }
 }
 
 /// The deconstruction half of the facilities for [`Typed`] values.
@@ -379,7 +394,7 @@ mod primitive_impls {
             @cons = [TypeKind::Any];
             @err = "expected any value";
             @cons_fns = {
-                fn from_any(any: Value<'static>) -> Result<Self, String> { Ok(any) }
+                fn from_any(any: Value<'static>) -> Result<Self> { Ok(any) }
             };
             @decon_fns = {
                 fn clone_into_value(&self) -> Value<'static> { self.clone() }
@@ -392,7 +407,7 @@ mod primitive_impls {
             @cons = [TypeKind::Int];
             @err = "expected an integer";
             @cons_fns = {
-                fn from_int(int: BigInt) -> Result<Self, String> { Ok(int) }
+                fn from_int(int: BigInt) -> Result<Self> { Ok(int) }
             };
             @decon_fns = {
                 fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
@@ -406,7 +421,7 @@ mod primitive_impls {
             @cons = [TypeKind::Bool];
             @err = "expected a boolean";
             @cons_fns = {
-                fn from_bool(b: bool) -> Result<Self, String> { Ok(b) }
+                fn from_bool(b: bool) -> Result<Self> { Ok(b) }
             };
             @decon_fns = {
                 fn clone_into_value(&self) -> Value<'static> { Value::new(*self) }
@@ -420,7 +435,7 @@ mod primitive_impls {
             @cons = [TypeKind::String];
             @err = "expected a string";
             @cons_fns = {
-                fn from_string(s: String) -> Result<Self, String> { Ok(s) }
+                fn from_string(s: String) -> Result<Self> { Ok(s) }
             };
             @decon_fns = {
                 fn clone_into_value(&self) -> Value<'static> { Value::new(self.clone()) }
@@ -434,17 +449,17 @@ mod primitive_impls {
             @cons = [TypeKind::Unit, TypeKind::Struct, TypeKind::Array];
             @err = "expected a unit value, empty struct, or empty array";
             @cons_fns = {
-                fn from_unit() -> Result<Self, String> { Ok(()) }
-                fn from_struct(fields: HashMap<String, Value>) -> Result<Self, String> {
+                fn from_unit() -> Self { () }
+                fn from_struct(fields: HashMap<String, Value>) -> Result<Self> {
                     match fields.is_empty() {
                         true => Ok(()),
-                        false => Err("expected a struct with no fields".to_owned()),
+                        false => Err(Error::from_str("expected a struct with no fields")),
                     }
                 }
-                fn from_array(array: Vec<Value>) -> Result<Self, String> {
+                fn from_array(array: Vec<Value>) -> Result<Self> {
                     match array.is_empty() {
                         true => Ok(()),
-                        false => Err("expected an array with no elements".to_owned()),
+                        false => Err(Error::from_str("expected an array with no elements")),
                     }
                 }
             };
@@ -453,62 +468,15 @@ mod primitive_impls {
             };
         }
 
-        /*
-        impl[(T: Typed)(T: TypedConstruct)(T: TypedDeconstruct)] for (T,) {
-            @kind = T::type_kind();
-            @cons = T::cons_order();
-            @err = T::err_string();
-            @cons_fns = {
-                fn from_any(any: Value<'static>) -> Result<Self, String>
-                    { T::from_any(any).map(|t| (t,)) }
-                fn from_int(int: BigInt) -> Result<Self, String> { T::from_int(int).map(|t| (t,)) }
-                fn from_bool(b: bool) -> Result<Self, String> { T::from_bool(b).map(|t| (t,)) }
-                fn from_string(s: String) -> Result<Self, String> { T::from_string(s).map(|t| (t,)) }
-                fn from_unit() -> Result<Self, String> { T::from_unit().map(|t| (t,)) }
-                fn from_struct(fs: HashMap<String, Value>) -> Result<Self, String>
-                    { T::from_struct(fs).map(|t| (t,)) }
-                fn from_array(a: Vec<Value>) -> Result<Self, String> { T::from_array(a).map(|t| (t,)) }
-            };
-            @decon_fns = {
-                fn clone_into_value(&self) -> Value<'static> { self.0.clone_into_value() }
-
-                fn as_int(&self) -> BigInt { self.0.as_int() }
-                fn as_bool(&self) -> bool { self.0.as_bool() }
-                fn as_string(&self) -> String { self.0.as_string() }
-                fn as_struct(&self) -> HashMap<String, Value> { self.0.as_struct() }
-                fn as_array(&self) -> Vec<Value> { self.0.as_array() }
-            };
-        }
-        */
-
-        /*
-        impl[<T: Typed>] for Vec<T> {
-            @repr = TypeKind::Array;
-            @cons = [TypeKind::Array];
-            @err = "expected an array";
-            @cons_fns = {
-                fn from_array(array: Vec<Value>) -> Result<Self, String> {
-                    array.into_iter().map(Value::convert).collect()
-                }
-            };
-            @decon_fns = {
-                fn clone_into_value(&self) -> Value<'static> { todo!() }
-                fn as_array(&self) -> Vec<Value> {
-                    self.iter().map(Value::from_ref).collect()
-                }
-            };
-        }
-        */
-
         // impl[<T: Clone + Typed, const N: usize>] for [T; N] {
         //     @repr = TypeKind::Array;
         //     @cons = [TypeKind::Array];
         //     @err = "expected an array of length (TODO)";
         //     @cons_fns = {
-        //         fn from_array(array: Vec<Value>) -> Result<Self, String> {
+        //         fn from_array(array: Vec<Value>) -> Result<Self> {
         //             array.iter()
         //                 .map(Value::convert)
-        //                 .collect::<Result<Self, _>>()?
+        //                 .collect::<Result<Self>>()?
         //                 .try_into()
         //                 .map_err(|e| e.to_string())
         //         }
@@ -532,11 +500,11 @@ mod primitive_impls {
                     @cons = [TypeKind::Int];
                     @err = concat!("expected ", stringify!($int_ty));
                     @cons_fns = {
-                        fn from_int(int: BigInt) -> Result<Self, String> {
+                        fn from_int(int: BigInt) -> Result<Self> {
                             use num::cast::ToPrimitive;
 
                             int.$into().ok_or_else(|| {
-                                format!("integer {} cannot fit within {}", int, stringify!($int_ty))
+                                Error::from_str(format!("integer {} cannot fit within {}", int, stringify!($int_ty)))
                             })
                         }
                     };
@@ -576,16 +544,28 @@ mod primitive_impls {
     // Produces implementations for tuples of size >= 2. Tuples of size 1 are treated as equivalent to
     // the inner type, so we ignore them. Tuples of size 0 are the "unit"; we exclude them.
     macro_rules! impl_tuple {
-        ($head:ident $next:ident $($tail:ident)*) => {
-            impl_tuple!(@do_impl $head $next $($tail)*);
-            impl_tuple!(@do_impl $next $($tail)*);
-            impl_tuple!($($tail)*);
+        ($($names:ident $indexes:literal,)*) => {
+            impl_tuple!(@do_impl $($names $indexes)*);
         };
-        // Don't do anything for size 0 or 1
-        ($($ignore:ident)?) => {};
+
+        // Don't do anything for tuples of length 1 and 2
+        (@do_impl $($name:ident $index:literal)?) => {};
+
+        // Helper functionality to extract all but the last pair of name + index
+        (@init $($name:ident $index:literal)* @mark $l_name:ident $l_index:literal) => {
+            impl_tuple!(@do_impl $($name $index)*);
+        };
+        (@init $($hn:ident $hi:literal)* @mark $n:ident $i:literal $($tn:ident $ti:literal)+) => {
+            impl_tuple!(@init $($hn $hi)* $n $i @mark $($tn $ti)*);
+        };
+
+        (@count) => {{ 0 }};
+        (@count $head:ident $($tail:ident)*) => {{ 1 + impl_tuple!(@count $($tail)*) }};
 
         // The actual implementations for tuples of various sizes:
-        (@do_impl $($name:ident)*) => {
+        (@do_impl $($name:ident $index:literal)*) => {
+            impl_tuple!(@init @mark $($name $index)*);
+
             impl_core! {
                 impl[
                     ($($name: 'static + Send + Sync + Clone + Typed),*)
@@ -598,14 +578,17 @@ mod primitive_impls {
                     @err = "expected tuple (as array)";
                     @cons_fns = {
                         #[allow(non_snake_case)]
-                        fn from_array(array: Vec<Value>) -> Result<Self, String> {
+                        fn from_array(array: Vec<Value>) -> Result<Self> {
                             match array.as_slice() {
-                                [$($name,)*] => Ok(($($name.convert::<$name>()?,)*)),
-                                vs => Err(format!(
+                                [$($name,)*] => Ok(($(
+                                    $name.convert::<$name>()
+                                        .map_err(|e| e.context($index.to_owned()))?,
+                                )*)),
+                                vs => Err(Error::from_str(format!(
                                     "expected tuple with {} elements, found {}",
                                     impl_tuple!(@count $($name)*),
                                     vs.len(),
-                                )),
+                                ))),
                             }
                         }
                     };
@@ -620,12 +603,13 @@ mod primitive_impls {
                 }
             }
         };
-        (@count) => {{ 0 }};
-        (@count $head:ident $($tail:ident)*) => {{ 1 + impl_tuple!(@count $($tail)*) }};
     }
 
+    // Note that evaluating this macro requires an increased recursion limit.
+    //   @def "dispatch::impl_tuple!" v0
     impl_tuple! {
-        A B C D E F G H I J K L M N O
+        A ".0", B ".1", C ".2", D ".3", E ".4", F ".5", G ".6", H ".7",
+        I ".8", J ".9", K ".10", L ".11", M ".12", N ".13", O ".14",
     }
 
     ////////////////////////////
@@ -646,31 +630,31 @@ mod primitive_impls {
         fn cons_order() -> &'static [TypeKind] { T::cons_order() }
         fn err_string() -> &'static str { T::err_string() }
 
-        fn from_any(any: Value<'static>) -> Result<Self, String> {
+        fn from_any(any: Value<'static>) -> Result<Self> {
             Ok( (T::from_any(any)?,) )
         }
 
-        fn from_int(int: BigInt) -> Result<Self, String> {
+        fn from_int(int: BigInt) -> Result<Self> {
             Ok( (T::from_int(int)?,) )
         }
 
-        fn from_bool(b: bool) -> Result<Self, String> {
+        fn from_bool(b: bool) -> Result<Self> {
             Ok( (T::from_bool(b)?,) )
         }
 
-        fn from_string(s: String) -> Result<Self, String> {
+        fn from_string(s: String) -> Result<Self> {
             Ok( (T::from_string(s)?,) )
         }
 
-        fn from_unit() -> Result<Self, String> {
-            Ok( (T::from_unit()?,) )
+        fn from_unit() -> Self {
+            (T::from_unit(),)
         }
 
-        fn from_struct(fields: HashMap<String, Value>) -> Result<Self, String> {
+        fn from_struct(fields: HashMap<String, Value>) -> Result<Self> {
             Ok( (T::from_struct(fields)?,) )
         }
 
-        fn from_array(array: Vec<Value>) -> Result<Self, String> {
+        fn from_array(array: Vec<Value>) -> Result<Self> {
             Ok( (T::from_array(array)?,) )
         }
     }
@@ -694,6 +678,8 @@ mod std_impls {
 
     use crate::macros::manual_derive_typed;
     use std::marker::PhantomData;
+    // re-import `Result` because we're using super::*
+    use std::result::Result;
 
     manual_derive_typed! {
         enum Result<T, E> {
@@ -733,7 +719,7 @@ mod std_impls {
         fn err_string() -> &'static str {
             "expected an array"
         }
-        fn from_array(array: Vec<Value>) -> Result<Self, String> {
+        fn from_array(array: Vec<Value>) -> super::Result<Self> {
             todo!()
         }
     }
@@ -765,8 +751,8 @@ mod extern_impls {
         fn cons_order() -> &'static [TypeKind] { &[TypeKind::String] }
         fn err_string() -> &'static str { "expected a UUID, as a string" }
 
-        fn from_string(s: String) -> Result<Self, String> {
-            Uuid::parse_str(&s).map_err(|e| e.to_string())
+        fn from_string(s: String) -> Result<Self> {
+            Uuid::parse_str(&s).map_err(|e| Error::from_str(e.to_string()))
         }
     }
 

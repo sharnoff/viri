@@ -16,7 +16,7 @@ use crate::macros::{flag, init, require_initialized, Typed};
 #[macro_use]
 mod builtin;
 mod load;
-mod typed;
+pub mod typed;
 
 use builtin::BUILTIN_NAME;
 use load::LoadingHandler;
