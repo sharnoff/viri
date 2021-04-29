@@ -14,6 +14,7 @@ use syn::parse::ParseStream;
 use syn::Token;
 
 // Helper function to return whether two tokenstreams are unequal
+#[cfg(test)]
 fn tokenstreams_not_eq(x: TokenStream2, y: TokenStream2) -> bool {
     use proc_macro2::TokenTree;
 
