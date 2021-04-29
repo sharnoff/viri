@@ -219,6 +219,9 @@ pub fn extension_export(attr: TokenStream, item: TokenStream) -> TokenStream {
         #vis #sig #block
 
         // Wrapper
+        //
+        // The compiler complains about non-snake case names for things like __foo__export_wrapper
+        #[allow(non_snake_case)]
         #[crate::macros::async_method]
         #vis async fn #wrapper_name(arg: crate::dispatch::Value<'_>) -> crate::dispatch::Value<'static> {
             use crate::macros::Typed;
