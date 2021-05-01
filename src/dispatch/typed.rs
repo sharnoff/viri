@@ -160,7 +160,12 @@ pub struct Value<'a> {
 
 impl<'a> Clone for Value<'a> {
     fn clone(&self) -> Self {
-        todo!()
+        match self.val {
+            Cow::Owned(ref boxed) => return boxed.clone_into_value(),
+            Cow::Borrowed(v) => Value {
+                val: Cow::Borrowed(v),
+            },
+        }
     }
 }
 
@@ -201,7 +206,24 @@ impl<'a> Value<'a> {
 
     /// Converts a `Value` into a type that it could represent
     pub fn convert<T: TypedConstruct>(&self) -> Result<T> {
-        todo!()
+        let inner = self.inner();
+        let self_kind = inner.type_kind();
+
+        let kind = T::cons_order()
+            .iter()
+            .cloned()
+            .find(|&k| k == self_kind)
+            .ok_or_else(|| T::err_string())?;
+
+        match kind {
+            TypeKind::Any => T::from_any(inner.clone_into_value()),
+            TypeKind::Int => T::from_int(inner.as_int()),
+            TypeKind::Bool => T::from_bool(inner.as_bool()),
+            TypeKind::String => T::from_string(inner.as_string()),
+            TypeKind::Unit => Ok(T::from_unit()),
+            TypeKind::Struct => T::from_struct(inner.as_struct()),
+            TypeKind::Array => T::from_array(inner.as_array()),
+        }
     }
 }
 
