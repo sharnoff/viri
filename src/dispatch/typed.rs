@@ -155,7 +155,7 @@ impl Error {
 /// This is simply a way of encapsulating a value of unknown type, alongside the actual typing
 /// information
 pub struct Value<'a> {
-    pub val: Cow<&'a dyn TypedDeconstruct, Box<dyn TypedDeconstruct>>,
+    val: Cow<&'a dyn TypedDeconstruct, Box<dyn TypedDeconstruct>>,
 }
 
 impl<'a> Clone for Value<'a> {
