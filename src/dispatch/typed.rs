@@ -92,13 +92,15 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         if !self.context.is_empty() {
             f.write_str("in ")?;
+
+            for s in self.context.iter().rev() {
+                f.write_str(&s)?;
+            }
+
+            f.write_str(": ")?;
         }
 
-        for s in self.context.iter().rev() {
-            f.write_str(&s)?;
-        }
-
-        write!(f, ": {}", self.message)
+        write!(f, "{}", self.message)
     }
 }
 
@@ -798,5 +800,188 @@ mod extern_impls {
         fn as_string(&self) -> String {
             self.to_simple().to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Value;
+    use crate::macros::Typed;
+
+    // The tests in this module are based around a number of types, some of which reference each
+    // other. This allows us to have tests based around complex data types, so that error messages
+    // can be properly checked.
+    //
+    // I've tried to make these types roughly resemble something reasonable, so that hopefully it's
+    // a bit easier to make sense of it all. There are a few generic parameters provided so that we
+    // can artificially produce differences between inputs and outputs, as well as add some
+    // variety.
+    //
+    // The types aren't used *quite* as much for the successful tests
+
+    #[derive(Debug, Clone, PartialEq, Eq, Typed)]
+    struct DataDump<Id, Point, Dir> {
+        length: usize,
+        values: Vec<DataValue<Id, Point, Dir>>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Typed)]
+    struct DataValue<Id, Point, Dir> {
+        hash: String,
+        id: Id,
+        position: Point,
+        direction: Dir,
+    }
+
+    /////////////////////////////////////
+    // Filler types for generic params //
+    /////////////////////////////////////
+
+    #[derive(Debug, Clone, PartialEq, Eq, Typed)]
+    struct DataId(usize);
+
+    #[derive(Debug, Clone, PartialEq, Eq, Typed)]
+    enum Direction {
+        North,
+        South,
+        East,
+        West,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Typed)]
+    struct Point2D<N> {
+        x: N,
+        y: N,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Typed)]
+    struct Point3D<N> {
+        x: N,
+        y: N,
+        z: N,
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    // Actual tests                                                               //
+    //                                                                            //
+    // The tests are roughly broken up into 3 sections, with those being:         //
+    //  1. Successful conversions                                                 //
+    //  2. Unsuccessful conversions (structural)                                  //
+    //  3. Unsuccessful conversions (method failures)                             //
+    // The difference between (2) and (3) is that we're considering "structural"  //
+    // failures to be a mismatch in a call to `Value::convert`, whereas "method"  //
+    // failures are resulting from the specifics of some `from_*` method failing. //
+    ////////////////////////////////////////////////////////////////////////////////
+    // Section 1: Successful conversions //
+    ///////////////////////////////////////
+
+    // Check that we can convert a type `x -> Value -> x`
+    #[test]
+    fn identity() {
+        type D = DataDump<DataId, i32, Direction>;
+
+        let input: D = DataDump {
+            length: 2,
+            values: vec![
+                DataValue {
+                    hash: "foo".to_owned(),
+                    id: DataId(10),
+                    position: 3_i32,
+                    direction: Direction::North,
+                },
+                DataValue {
+                    hash: "bar".to_owned(),
+                    id: DataId(13),
+                    position: 7_i32,
+                    direction: Direction::South,
+                },
+            ],
+        };
+
+        let output: D = Value::from_ref(&input).convert().unwrap();
+        assert_eq!(input, output);
+
+        let output: D = Value::new(input.clone()).convert().unwrap();
+        assert_eq!(input, output);
+    }
+
+    #[test]
+    fn enum_to_string() {
+        let input = Direction::North;
+        let output: String = Value::new(input).convert().unwrap();
+        assert_eq!(output, "North");
+    }
+
+    #[test]
+    fn string_to_enum() {
+        let input = "North".to_owned();
+        let output: Direction = Value::new(input).convert().unwrap();
+        assert_eq!(output, Direction::North);
+    }
+
+    #[test]
+    fn struct_to_enum() {
+        #[derive(Clone, Typed)]
+        #[allow(non_snake_case)]
+        struct Input {
+            North: (),
+        }
+
+        let input = Input { North: () };
+        let output: Direction = Value::new(input).convert().unwrap();
+        assert_eq!(output, Direction::North);
+    }
+
+    //////////////////////////////////////////////////////
+    // Section 2: Unsuccessful conversions (structural) //
+    //////////////////////////////////////////////////////
+
+    #[test]
+    fn string_to_struct_fails() {
+        let input: DataValue<u8, String, Direction> = DataValue {
+            hash: "foo".to_owned(),
+            id: 3,
+            position: "Upper".to_owned(),
+            direction: Direction::North,
+        };
+
+        let err_msg = Value::new(input)
+            .convert::<DataValue<u8, Point2D<i32>, Direction>>()
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err_msg, "in .position: expected a struct");
+    }
+
+    ///////////////////////////////////////////////////////////
+    // Section 2: Unsuccessful conversions (method failures) //
+    ///////////////////////////////////////////////////////////
+
+    #[test]
+    fn negative_int_to_unsigned_fails() {
+        // We're doing this in two parts -- first with the integers by themselves, and then as part
+        // of a larger struct.
+
+        let err_msg = Value::new(-4_i32).convert::<u32>().unwrap_err().to_string();
+        assert_eq!(err_msg, "integer -4 cannot fit within u32");
+
+        #[rustfmt::skip]
+        let input: DataValue<u8, Vec<Point2D<i32>>, Direction> = DataValue {
+            hash: "foo".to_owned(),
+            id: 10_u8,
+            position: vec![
+                Point2D { x: 1_i32, y: 2_i32 },
+                Point2D { x: 3_i32, y: -4_i32 },
+            ],
+            direction: Direction::North,
+        };
+
+        let err_msg = Value::new(input)
+            .convert::<DataValue<u8, Vec<Point2D<u32>>, Direction>>()
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err_msg,
+            "in .position[1].y: integer -4 cannot fit within u32"
+        );
     }
 }
