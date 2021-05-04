@@ -117,7 +117,7 @@ impl BindingNamespace {
     ) {
         let res = match op {
             BuiltinOp::LoadExtension => self.load_extn(ext, arg),
-            BuiltinOp::FinishedLoadingExtension => todo!(),
+            BuiltinOp::FinishedLoadingExtension => self.finish_load(ext, arg),
             BuiltinOp::SetAlias => todo!(),
             // BuiltinOp::RegisterHandler => todo!(),
             BuiltinOp::ReplaceHandler => todo!(),
@@ -182,5 +182,31 @@ impl BindingNamespace {
                 }))
             }
         }
+    }
+
+    // Wrapper around `LoadingHandler::finish_load` to handle value conversion and error handling
+    fn finish_load(&mut self, calling_ext: ExtensionId, result: Value) -> BuiltinResult {
+        let res: builtin_arg_ty![FinishedLoadingExtension] = result
+            .convert()
+            .map_err(|e| format!("failed to convert loading result: {}", e))?;
+
+        // We received a message from the extension, so we *really* should at least know about it
+        assert!(self.paths.contains_key(&calling_ext));
+
+        Ok(Box::new(move |this, callback| {
+            let this_paths = &this.paths;
+            let paths = |id| this_paths.get(&id).unwrap();
+            let finish_res = this.loader.finish_load(calling_ext, res, paths);
+
+            // TODO: send `finish_res` inside `finish_load`, before checking for cycles.
+
+            #[rustfmt::skip]
+            callback.send(Ok(Some(
+                Value::new(finish_res as builtin_return_ty![FinishedLoadingExtension])
+            )))
+                .discard_if_ok_else(|_| {
+                    log::warn!("failed to send on 'finished loading' callback");
+                });
+        }))
     }
 }

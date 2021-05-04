@@ -36,11 +36,12 @@ pub(super) struct LoadingHandler {
 
 /// Information about the loading of a particular extension
 struct LoadingInfo {
-    waiting: HashSet<ExtensionId>,
+    // The extensions currently blocked on this one
+    waiting: HashMap<ExtensionId, Callback>,
 
     // All of the extensions that this extension is currently blocked on, with the callbacks to
     // send the end result on
-    blocked_on: HashMap<ExtensionId, Callback>,
+    blocked_on: HashSet<ExtensionId>,
 
     // It's possible that this extension couldn't be loaded - either because of its own internal
     // error or a dependency cycle. IF so, this contains an error message that can be given to
@@ -51,19 +52,19 @@ struct LoadingInfo {
 impl LoadingInfo {
     /// Helper function for constructing a new `LoadingInfo` as blocked on waiting for another
     /// extension to load
-    fn new_blocked(to_load: ExtensionId, callback: Callback) -> Self {
+    fn new_blocked(to_load: ExtensionId) -> Self {
         LoadingInfo {
-            waiting: HashSet::new(),
-            blocked_on: maplit::hashmap!(to_load => callback),
+            waiting: HashMap::new(),
+            blocked_on: maplit::hashset!(to_load),
             failed_with: None,
         }
     }
 
     /// Helper function for constructing a new `LoadingInfo` with a single extension waiting
-    fn new_waiting(waiting: ExtensionId) -> Self {
+    fn new_waiting(waiting: ExtensionId, callback: Callback) -> Self {
         LoadingInfo {
-            waiting: maplit::hashset!(waiting),
-            blocked_on: HashMap::new(),
+            waiting: maplit::hashmap!(waiting => callback),
+            blocked_on: HashSet::new(),
             failed_with: None,
         }
     }
@@ -130,26 +131,20 @@ impl LoadingHandler {
             return;
         }
 
-        load_info.waiting.insert(source);
+        load_info.waiting.insert(source, callback);
 
-        // Add an entry for `source` to indicate it's blocked on `load_info`
-        match self.loading.entry(source) {
-            Entry::Vacant(e) => {
-                e.insert(LoadingInfo::new_blocked(to_load, callback));
-            }
-            Entry::Occupied(mut e) => {
-                e.get_mut().blocked_on.insert(to_load, callback);
-            }
+        // If `source` is currently loading as well, mark it as blocked on `to_load`:
+        if let Some(e) = self.loading.get_mut(&source) {
+            e.blocked_on.insert(to_load);
+            // If the extension that requested this wasn't blocked on anything before, it is now.
+            self.free_set.remove(&source);
         }
-
-        // If the extension that requested this wasn't blocked on anything before, it is now.
-        self.free_set.remove(&source);
 
         // If all of the extensions we know about are waiting for others to finish loading, then we
         // must have a cycle somewhere. We'll find that and report it.
-        if self.free_set.is_empty() {
+        while self.free_set.is_empty() && !self.loading.is_empty() {
             let cycle = self.find_load_cycle();
-            self.report_cycle(&cycle, paths);
+            self.report_cycle(&cycle, &paths);
         }
     }
 
@@ -161,19 +156,13 @@ impl LoadingHandler {
         callback: Callback,
         paths: impl 'a + Fn(ExtensionId) -> &'a ExtensionPath,
     ) {
-        match self.loading.entry(source) {
-            Entry::Vacant(e) => {
-                e.insert(LoadingInfo::new_blocked(to_load, callback));
-            }
-            Entry::Occupied(mut e) => {
-                e.get_mut().blocked_on.insert(to_load, callback);
-            }
-        }
-
-        self.free_set.remove(&source);
-
         self.loading
-            .insert(to_load, LoadingInfo::new_waiting(source));
+            .insert(to_load, LoadingInfo::new_waiting(source, callback));
+
+        if let Some(e) = self.loading.get_mut(&source) {
+            e.blocked_on.insert(to_load);
+            self.free_set.remove(&source);
+        }
 
         // We don't need to check if there's a cycle here; we can't have one because this new
         // extension isn't blocked yet.
@@ -182,16 +171,73 @@ impl LoadingHandler {
     /// Records that the given extension has finished loading, and therefore cannot be included in
     /// any cycles
     ///
-    /// Any error returned will have already been handled.
-    pub fn finish_load(&mut self, ext: ExtensionId) -> Result<(), Option<LoadCycleError>> {
-        todo!()
+    /// The provided result is passed to all other extensions that were waiting for this to load.
+    ///
+    /// It is possible for this method to "discover" that there are loading cycles; if this
+    /// happens, those will be silently reported.
+    ///
+    /// ## Errors
+    ///
+    /// This method will return an error if the provided extension either (a) has not started
+    /// loading, or (b) has already finished.
+    pub fn finish_load<'a>(
+        &mut self,
+        ext: ExtensionId,
+        result: Result<(), String>,
+        paths: impl 'a + Fn(ExtensionId) -> &'a ExtensionPath,
+    ) -> Result<(), String> {
+        let waiting;
+
+        match self.loading.entry(ext) {
+            // The extension passed in already exists, so we know that it must have been loading at
+            // *some point*. If it isn't loading any more, that's an error.
+            Entry::Vacant(_) => return Err("extension has already finished loading".into()),
+
+            // Only remove the existing extension if the loading failed for some reason
+            Entry::Occupied(mut entry) => match result.as_ref() {
+                Err(msg) => {
+                    let e = entry.get_mut();
+                    waiting = mem::replace(&mut e.waiting, HashMap::new());
+                    e.failed_with = Some(msg.clone());
+                    e.blocked_on = HashSet::new();
+                }
+                Ok(()) => {
+                    let e = entry.remove();
+                    waiting = e.waiting;
+                }
+            },
+        }
+
+        for (id, callback) in waiting {
+            #[rustfmt::skip]
+            callback.send(Ok(Some(
+                Value::new(result.clone() as builtin_return_ty![FinishedLoadingExtension])
+            )))
+                .discard_if_ok_else(|_| {
+                    log::warn!("failed to send on loading callback");
+                });
+
+            if let Some(e) = self.loading.get_mut(&id) {
+                e.blocked_on.remove(&ext);
+                if e.blocked_on.is_empty() {
+                    self.free_set.insert(id);
+                }
+            }
+        }
+
+        while self.free_set.is_empty() && !self.loading.is_empty() {
+            let cycle = self.find_load_cycle();
+            self.report_cycle(&cycle, &paths);
+        }
+
+        Ok(())
     }
 
     /// Finds a single cycle in the graph of loading dependencies, assuming that one exists
     ///
     /// This method panics if there is no cycle.
     fn find_load_cycle(&self) -> LoadCycleError {
-        use std::collections::hash_map;
+        use std::collections::hash_set;
 
         // To find a cycle, we can just use a standard depth-first search
 
@@ -203,7 +249,7 @@ impl LoadingHandler {
         }
 
         struct StackElem<'a> {
-            edges: hash_map::Keys<'a, ExtensionId, Callback>,
+            edges: hash_set::Iter<'a, ExtensionId>,
             id: ExtensionId,
         }
 
@@ -211,7 +257,7 @@ impl LoadingHandler {
 
         // Helper function to produce the stack elements for an ExtensionId
         #[rustfmt::skip]
-        let stack_elem = |id| StackElem { id, edges: self.loading[&id].blocked_on.keys() };
+        let stack_elem = |id| StackElem { id, edges: self.loading[&id].blocked_on.iter() };
 
         // From each `base_id` in `self.loading`, we'll try to find a cycle.
         for base_id in self.loading.iter().map(|(id, _)| *id) {
@@ -255,7 +301,7 @@ impl LoadingHandler {
                         v.insert(Label::Partial);
                         stack.push(StackElem {
                             id: next_id,
-                            edges: self.loading[&next_id].blocked_on.keys(),
+                            edges: self.loading[&next_id].blocked_on.iter(),
                         });
                     }
 
@@ -309,8 +355,8 @@ impl LoadingHandler {
         let cycle_res = Err(cycle_msg) as builtin_return_ty![LoadExtension];
 
         for (id, dep) in pairs {
-            let info = self.loading.get_mut(id).unwrap();
-            let callback = info.blocked_on.remove(dep).unwrap();
+            let dep_info = self.loading.get_mut(dep).unwrap();
+            let callback = dep_info.waiting.remove(id).unwrap();
             callback
                 .send(Ok(Some(Value::new(cycle_res.clone()))))
                 .discard_if_ok_else(|_| {
@@ -319,8 +365,12 @@ impl LoadingHandler {
 
             // While we're sending the cycle error to each of the callbacks, we also need to remove
             // the corresponding back edges in the graph.
-            let dep_info = self.loading.get_mut(dep).unwrap();
-            dep_info.waiting.remove(id);
+            let id_info = self.loading.get_mut(id).unwrap();
+            id_info.blocked_on.remove(dep);
+
+            if id_info.blocked_on.is_empty() {
+                self.free_set.insert(*id);
+            }
         }
 
         // While we could wait for the extensions to error out and indicate they've finished, it's
@@ -339,19 +389,20 @@ impl LoadingHandler {
             // All of the extensions that were waiting on this one to load should be given an
             // appropriate error. We need to remove the connection from both sides -- hence why we
             // clear `info.waiting`
-            let waiting = mem::replace(&mut info.waiting, HashSet::new());
+            let waiting = mem::replace(&mut info.waiting, HashMap::new());
             let secondary_error = Ok(Some(Value::new(
                 Err(failure_msg) as builtin_return_ty![LoadExtension]
             )));
 
-            for w in &waiting {
-                let w_info = self.loading.get_mut(w).unwrap();
-                let callback = w_info.blocked_on.remove(id).unwrap();
+            for (w_id, callback) in waiting {
                 callback
                     .send(secondary_error.clone())
                     .discard_if_ok_else(|_| {
                         log::warn!("failed to send extension loading error on callback")
                     });
+
+                let w_info = self.loading.get_mut(&w_id).unwrap();
+                w_info.blocked_on.remove(id);
             }
         }
     }
