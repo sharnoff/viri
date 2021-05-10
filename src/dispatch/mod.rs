@@ -11,14 +11,13 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::init::LazyInit;
-use crate::macros::{flag, init, require_initialized, Typed};
+use crate::macros::{init, require_initialized, Typed};
 
 #[macro_use]
 mod builtin;
 mod load;
 pub mod typed;
 
-use builtin::BUILTIN_NAME;
 use load::LoadingHandler;
 pub use typed::{TypeKind, TypeRepr, Typed, TypedConstruct, TypedDeconstruct, Value};
 
@@ -95,19 +94,11 @@ pub async fn receive_all(mut rx: mpsc::UnboundedReceiver<(Request, Callback)>) {
     }
 }
 
-/// The signature of a binding, given by the input and output types
-///
-/// An output type of `None` signifies that the binding does not provide any notification for when
-/// it has completed. The [`type_sig`] macro is provided to make constructing these easier.
-struct Signature {
-    input: TypeRepr,
-    // If `None`, indicates that we do not wait for the handler(s) to finish. Requests that allow
-    // multiple handlers will receive the output as an array of the output type.
-    output: Option<TypeRepr>,
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Typed)]
 pub struct ExtensionId(Uuid);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Typed)]
+pub struct EventId(Uuid);
 
 impl ExtensionId {
     /// Creates a new, random `Extensionid`
@@ -116,22 +107,11 @@ impl ExtensionId {
     }
 }
 
-struct RequestSignature {
-    /// The extension that registered this particular binding name
-    ///
-    /// This isn't the same as the extension *providing the implementation* for the binding; these
-    /// two may be different.
-    registered_by: ExtensionId,
-    /// The expected type signature of requests
-    sig: Signature,
-    /// The number of required handlers
-    required_handlers: RequiredHandlers,
-}
-
-/// The number of handlers required to be registered for a particular request
-enum RequiredHandlers {
-    Exactly(usize),
-    AtLeast(usize),
+impl EventId {
+    /// Creates a new, random `EventId`
+    fn random() -> Self {
+        EventId(Uuid::new_v4())
+    }
 }
 
 /// The name of a particular request or handler, with the extension given by its ID
@@ -213,27 +193,9 @@ impl Display for ExtensionPath {
     }
 }
 
-flag! {
-    /// Marker for whether a handler for an event can be replaced.
-    ///
-    /// Attempting to replace a handler with `CanReplace::No` will result in an error. Because
-    /// replacment is not exposed directly, this occurs when there is a limited number of handlers
-    /// allowed for an event and all existing handler slots are full.
-    enum CanReplace;
-}
-
-// Information about a particular request type
-struct Handlers {
-    // The acceptible range for the number of handlers for this event
-    required: RequiredHandlers,
-    // The type signature of this event
-    signature: RequestSignature,
-
-    can_replace: HashSet<Name>,
-    fixed: HashSet<Name>,
-}
-
 struct BindingNamespace {
+    loader: LoadingHandler,
+
     // A unique identifier for the "builtin" extension, stored for convenience
     builtin_id: ExtensionId,
 
@@ -241,17 +203,15 @@ struct BindingNamespace {
     ids: HashMap<ExtensionPath, ExtensionId>,
     paths: HashMap<ExtensionId, ExtensionPath>,
 
-    // Alternative globally-unique names that can additionally be used to refer to particular
-    // extensions
-    aliases: HashMap<String, ExtensionId>,
-
-    // Handlers for each type of event
-    handlers: HashMap<Name, Handlers>,
+    // The handlers registered for each event. Events without any handlers may have no entry here
+    handlers: HashMap<EventId, HashSet<Name>>,
+    // The events registered by each extension
+    owned_events: HashMap<ExtensionId, HashSet<EventId>>,
+    // The event handlers registered by each extension
+    owned_handlers: HashMap<ExtensionId, HashSet<(EventId, String)>>,
 
     // All of the methods provided by each extension
-    registry: HashMap<ExtensionId, HashMap<String, Signature>>,
-
-    loader: LoadingHandler,
+    registry: HashMap<ExtensionId, HashSet<String>>,
 }
 
 impl BindingNamespace {
@@ -260,14 +220,15 @@ impl BindingNamespace {
         let builtin_id = ExtensionId(Uuid::new_v4());
 
         BindingNamespace {
+            loader: LoadingHandler::new(builtin_id),
             builtin_id,
             access: hashmap! { builtin_id => ExtensionAccess::Builtin },
             ids: hashmap! { ExtensionPath::Builtin => builtin_id },
             paths: hashmap! { builtin_id => ExtensionPath::Builtin },
-            aliases: hashmap! { BUILTIN_NAME.to_owned() => builtin_id },
-            registry: hashmap! { builtin_id => builtin::initial_namespace() },
             handlers: HashMap::new(),
-            loader: LoadingHandler::new(builtin_id),
+            owned_events: HashMap::new(),
+            owned_handlers: HashMap::new(),
+            registry: hashmap! { builtin_id => builtin::initial_namespace() },
         }
     }
 }

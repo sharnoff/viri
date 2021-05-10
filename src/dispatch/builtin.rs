@@ -1,14 +1,11 @@
 //! Support for the sorts of "builtin", intrinsic operations associated with extension dispatch
 
-use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt::Write;
 use std::str::FromStr;
 
 use super::*;
-use crate::macros::type_sig;
 use crate::utils::DiscardResult;
-
-/// The extension name used to refer to the built-in operations
-pub static BUILTIN_NAME: &str = "builtin";
 
 /// A helper macro to define the various builtin operations in a centralized manner.
 ///
@@ -42,9 +39,9 @@ macro_rules! ops {
         }
 
         /// Constructs the namespace of builtin operations and their "handlers"
-        pub(super) fn initial_namespace() -> HashMap<String, Signature> {
-            maplit::hashmap! {
-                $( stringify!($op).to_owned() => type_sig![$arg_ty => $res_ty], )*
+        pub(super) fn initial_namespace() -> HashSet<String> {
+            maplit::hashset! {
+                $( stringify!($op).to_owned(), )*
             }
         }
 
@@ -93,9 +90,28 @@ ops! {
         /// marked as finished twice.
         FinishedLoadingExtension: type_sig![Result<(), String> => Result<(), String>],
 
-        SetAlias: type_sig![String => ()],
-        // RegisterHandler: type_sig![{ name: Name, allow_replaced: bool } => bool],
-        ReplaceHandler: type_sig![Name => ()],
+        /// Registers all of the provided strings as valid methods that can be called
+        ///
+        /// This can be called at any time, though is typically expected to be called while the
+        /// extension is loading.
+        Export: type_sig![Vec<String> => Result<(), String>],
+
+        /// Un-registers a particular method, marking it as no longer available to be called
+        ///
+        /// Any events that were previously handled by this method will be ignored.
+        UnExport: type_sig![String => Result<(), String>],
+
+        /// Creates a new event, returning a unique UUID corresponding to the registered event
+        ///
+        /// This method can be used both for individual objects (e.g. text objects) *or* events
+        /// that are global to a particular extension; it does not distinguish between them.
+        RegisterEvent: type_sig![() => EventId],
+
+        /// Unregisters the event given by the `EventId`. Returns an error if either: (a) the event
+        /// does not exist, or (b) the event is not owned by the calling extension.
+        UnregisterEvent: type_sig![EventId => Result<(), String>],
+
+        RegisterHandler: type_sig![String => Result<(), String>],
         UnregisterHandler: type_sig![Name => bool],
     }
 }
@@ -118,9 +134,14 @@ impl BindingNamespace {
         let res = match op {
             BuiltinOp::LoadExtension => self.load_extn(ext, arg),
             BuiltinOp::FinishedLoadingExtension => self.finish_load(ext, arg),
-            BuiltinOp::SetAlias => todo!(),
-            // BuiltinOp::RegisterHandler => todo!(),
-            BuiltinOp::ReplaceHandler => todo!(),
+
+            BuiltinOp::Export => self.export(ext, arg),
+            BuiltinOp::UnExport => self.un_export(ext, arg),
+
+            BuiltinOp::RegisterEvent => self.register_event(ext, arg),
+            BuiltinOp::UnregisterEvent => self.unregister_event(ext, arg),
+
+            BuiltinOp::RegisterHandler => todo!(),
             BuiltinOp::UnregisterHandler => todo!(),
         };
 
@@ -206,6 +227,177 @@ impl BindingNamespace {
             )))
                 .discard_if_ok_else(|_| {
                     log::warn!("failed to send on 'finished loading' callback");
+                });
+        }))
+    }
+
+    fn export(&mut self, calling_ext: ExtensionId, arg: Value) -> BuiltinResult {
+        let names: Vec<String> = arg
+            .convert::<builtin_arg_ty![Export]>()
+            .map_err(|e| e.to_string())?;
+
+        Ok(Box::new(move |this, callback| {
+            let methods = this
+                .registry
+                .get_mut(&calling_ext)
+                .expect("no registry entry for extension");
+
+            // We'll produce an error if any of the names are already present
+            let duplicates: Vec<_> = names
+                .iter()
+                .filter_map(|n| if methods.contains(n) { Some(n) } else { None })
+                .collect();
+
+            if !duplicates.is_empty() {
+                // We're putting a lot of work in here to produce a nice error message.
+                //
+                // Is this really necessary? Probably not - but it certainly looks nice. And that's
+                // what counts.
+                let msg = match duplicates.as_slice() {
+                    [] => unreachable!(),
+                    [single] => format!(
+                        "cannot export name: {:?} is already registered for this extension",
+                        single
+                    ),
+                    [pre @ .., last] => {
+                        let mut arr = String::new();
+                        for n in pre {
+                            writeln!(arr, "{:?}, ", n).unwrap();
+                        }
+                        writeln!(arr, "{:?}", last).unwrap();
+
+                        let quantifier = if pre.len() == 1 { "both" } else { "all" };
+                        format!(
+                            "cannot export names: [{}] {} already registered for this extension",
+                            arr, quantifier
+                        )
+                    }
+                };
+
+                let result = Err(msg) as builtin_return_ty![Export];
+                callback
+                    .send(Ok(Some(Value::new(result))))
+                    .discard_if_ok_else(|_| {
+                        log::warn!("failed to send on callback: channel already closed")
+                    });
+                return;
+            }
+
+            // Done checking for duplicates.
+            //
+            // Now we can just add all of the names and return as such.
+            methods.extend(names);
+            let result: builtin_return_ty![Export] = Ok(());
+            callback
+                .send(Ok(Some(Value::new(result))))
+                .discard_if_ok_else(|_| {
+                    log::warn!("failed to send on 'finished loading' callback");
+                });
+        }))
+    }
+
+    fn un_export(&mut self, calling_ext: ExtensionId, arg: Value) -> BuiltinResult {
+        let name: String = arg
+            .convert::<builtin_arg_ty![UnExport]>()
+            .map_err(|e| e.to_string())?;
+
+        Ok(Box::new(move |this, callback| {
+            let methods = this
+                .registry
+                .get_mut(&calling_ext)
+                .expect("no registry for extension");
+
+            let had_method = methods.remove(&name);
+            let res: builtin_return_ty![UnExport] = match had_method {
+                true => Ok(()),
+                false => Err(format!(
+                    "no method name {:?} to un-export for this extension",
+                    name
+                )),
+            };
+
+            callback
+                .send(Ok(Some(Value::new(res))))
+                .discard_if_ok_else(|_| {
+                    log::warn!("failed to send on callback: channel already closed")
+                });
+        }))
+    }
+
+    fn register_event(&mut self, calling_ext: ExtensionId, unit_arg: Value) -> BuiltinResult {
+        // We're expecting to receive nothing. We'll double-check that that's still the case
+        let _: () = unit_arg
+            .convert::<builtin_arg_ty![RegisterEvent]>()
+            .map_err(|e| e.to_string())?;
+
+        let id = EventId::random();
+        self.owned_events
+            .entry(calling_ext)
+            .or_insert(HashSet::new())
+            .insert(id);
+
+        Ok(Box::new(move |_this, callback| {
+            callback
+                .send(Ok(Some(Value::new(id))))
+                .discard_if_ok_else(|_| {
+                    log::warn!("failed to send on callback: channel already closed")
+                });
+        }))
+    }
+
+    fn unregister_event(&mut self, calling_ext: ExtensionId, ext_id: Value) -> BuiltinResult {
+        let event_id: EventId = ext_id
+            .convert::<builtin_arg_ty![UnregisterEvent]>()
+            .map_err(|e| e.to_string())?;
+
+        // Events are referenced in three fields in a `BindingNamespace`:
+        // * `handlers`,
+        // * `owned_events`, and
+        // * `owned_handlers`.
+        //
+        // Remove this event from its owner, if the calling extension *does* actually own it.
+        let this_ext_owned = self
+            .owned_events
+            .get_mut(&calling_ext)
+            .map(|set| set.remove(&event_id))
+            .unwrap_or(false);
+
+        let mut exists = false;
+        // Only remove the event if it's actually owned by the caller
+        if this_ext_owned {
+            // Remove the event from `handlers`.
+            let handlers = self.handlers.remove(&event_id);
+            exists = handlers.is_some();
+
+            // Remove all references to the event from `owned_handlers`. This *could* be made more
+            // efficient in the case where there's many extensions, but that probably doesn't
+            // matter too much.
+            //
+            // There *is* some unnecessary cloning and bad access patterns here, so that's
+            // something that we could improve at some point. (TODO-PERF)
+            for name in handlers.into_iter().flatten() {
+                let set = self
+                    .owned_handlers
+                    .get_mut(&name.extension_id)
+                    .expect("handler for extension that does not exist");
+
+                set.remove(&(event_id, name.method.clone()));
+            }
+        }
+
+        Ok(Box::new(move |_, callback| {
+            let res: builtin_return_ty![UnregisterEvent] = if exists && !this_ext_owned {
+                Err("cannot unregister event: not owned by this extension".into())
+            } else if !exists {
+                Err("cannot unregister event: event does not exist".into())
+            } else {
+                Ok(())
+            };
+
+            callback
+                .send(Ok(Some(Value::new(res))))
+                .discard_if_ok_else(|_| {
+                    log::warn!("failed to send on callback: channel already closed")
                 });
         }))
     }
