@@ -157,7 +157,6 @@ macro_rules! at_kwd { ($name:ident) => { <AtKwd<kwd::$name>>::peek }; }
 mod async_fns;
 mod attr;
 mod config;
-mod dyn_serde;
 mod flag;
 mod history_core_test;
 mod id;
@@ -187,7 +186,6 @@ macros! {
     attr::{new_attrs, provide_attrs, attr_type, impl_get_attr_any},
     async_fns::async_fn,
     id::id,
-    dyn_serde::register_dyn_clone,
     history_core_test::history_core_test,
     flag::flag,
 }
@@ -200,9 +198,4 @@ pub fn named(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn async_method(attr: TokenStream, item: TokenStream) -> TokenStream {
     async_fns::async_method(attr, item)
-}
-
-#[proc_macro_derive(SerdeDynClone)]
-pub fn serde_dyn_clone(item: TokenStream) -> TokenStream {
-    dyn_serde::serde_dyn_clone(item)
 }

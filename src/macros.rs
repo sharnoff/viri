@@ -5,7 +5,6 @@
 //!  * Initialization - [`init`], [`initialize`], [`require_initialized`]
 //!  * [Attributes] - [`attrs`], [`provide_attrs`], [`AttrType`], [`impl_GetAttrAny`]
 //!  * [Named functions] - [`named`]
-//!  * [Dynamic (de-)serialization] - [`SerdeDynClone`], [`register_DynClone`]
 //!  * Async functions - [`async_method`], [`async_fn`]
 //!  * Miscellaneous pieces - [`id`], [`flag`], [`request`]
 //!
@@ -28,7 +27,7 @@
 /// ## Example
 ///
 /// The typical usage that we might expect can be found in [`crate::config`]:
-// @req main-config v1
+// @req main-config v2
 /// ```
 /// config! {
 ///     // Define the name of the static item storing the configuration
@@ -43,9 +42,6 @@
 ///         // the #[flatten] attribute allows us to specify that the fields of this configuration
 ///         // should be merged for deserialization into the builder. This isn't always used, but
 ///         // in the case of the main configuration, it's nice to have most things collected.
-///         pub use crate::view::Config as view_config,
-///
-///         #[flatten]
 ///         pub use crate::container::Config as container_config,
 ///
 ///         // Each field is given a value to indicate what it defaults to if not provided
@@ -340,56 +336,6 @@ pub use viri_macros::impl_get_attr_any as impl_GetAttrAny;
 /// [`NamedFunction`]: crate::config::named_fn::NamedFunction
 /// [module-level documentation]: crate::config::named_fn
 pub use viri_macros::named;
-
-/// A `#[derive]` macro to register a [`DynClone`] value for [dynamic deserialization] (and
-/// serialization!)
-///
-/// Typical usage of this macro is simply to apply it to a value in order to make it
-/// deserialization-compatible. For example:
-///
-/// ```
-/// use crate::macros::SerdeDynClone;
-///
-/// #[derive(Clone, SerdeDynClone)]
-/// //       ^^^^^ note that this implementation of `Clone` is required
-/// //             for the implementation of `DynClone`
-/// struct Foo {
-///     bar: usize,
-///     baz: String,
-/// }
-/// ```
-///
-/// This macro cannot be used on generic types; there isn't a way to collect all possible resulting
-/// concrete types corresponding to a generic type. (It's actually worse - we can't even make a
-/// blanket trait implementation to provide these implementations, because you can't use type
-/// parameters from the implementation inside new items in the implementation, which is what
-/// `inventory` creates.)
-///
-/// For more information, refer to the general introduction to dynamic deserialization in
-/// [`crate::any::deserialize_dyn_clone`].
-///
-/// [`DynClone`]: crate::any::DynClone
-/// [dynamic deserialization]: crate::any::deserialize_dyn_clone
-pub use viri_macros::SerdeDynClone;
-
-/// Registers a list of types to be [dynamically deserializable]
-///
-/// This is fairly trivial to use - simply supply the list of types. These types *must* implement
-/// `DynClone`, but there are no complications beyond that. For more information, refer to the
-/// general introduction to dynamic deserialization in [`crate::any::deserialize_dyn_clone`].
-///
-/// ## Usage
-///
-/// ```
-/// # #[derive(Clone)] struct Foo; #[derive(Clone)] struct Bar; #[derive(Clone)] struct Baz;
-/// use crate::macro::register_DynClone;
-///
-/// // Assume we have types Foo, Bar, and Baz pre-defined
-/// register_DynClone![Foo, Bar, Baz];
-/// ```
-///
-/// [dynamically deserializable]: crate::any::deserialize_dyn_clone
-pub use viri_macros::register_dyn_clone as register_DynClone;
 
 /// A helper macro for converting a function pointer type to an `async` function type
 ///

@@ -27,7 +27,7 @@ init! {
 }
 
 // Define the main, crate-level configuation
-// @def main-config v1
+// @def main-config v2
 config! {
     static ROOT_CONFIG;
 
@@ -35,8 +35,6 @@ config! {
     ///
     /// Additional modules with configuration should be added here.
     pub struct MainConfig (MainConfigBuilder) {
-        #[flatten]
-        pub use crate::view::Config as view_config,
         #[flatten]
         pub use crate::container::Config as container_config,
 

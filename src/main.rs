@@ -55,9 +55,7 @@ mod container;
 mod event;
 mod fs;
 mod init;
-mod keys;
 mod logger;
-mod modes;
 mod runtime;
 mod size;
 mod term;
@@ -83,7 +81,6 @@ use fs::{File, Path};
 fn initalize_custom_modules() {
     initialize! {
         // your module here
-        mod any;
         mod container;
         mod view;
         mod config;
