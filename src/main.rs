@@ -39,9 +39,6 @@
     unused_mut,
     bare_trait_objects
 )]
-// Increased declarative macro recusion limit.
-//   @req "dispatch::impl_tuple!" v0
-#![recursion_limit = "256"]
 
 use clap::{Arg, ArgMatches};
 use std::ops::Deref;
@@ -55,9 +52,7 @@ mod any;
 mod borrow;
 mod config;
 mod container;
-mod dispatch;
 mod event;
-mod extensions;
 mod fs;
 mod init;
 mod keys;
@@ -92,8 +87,6 @@ fn initalize_custom_modules() {
         mod container;
         mod view;
         mod config;
-        mod dispatch;
-        mod extensions;
     };
 }
 

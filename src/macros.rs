@@ -7,7 +7,6 @@
 //!  * [Named functions] - [`named`]
 //!  * [Dynamic (de-)serialization] - [`SerdeDynClone`], [`register_DynClone`]
 //!  * Async functions - [`async_method`], [`async_fn`]
-//!  * [Extension interfacing] - [`type_sig`], [`#[derive(Typed)]`](Typed)
 //!  * Miscellaneous pieces - [`id`], [`flag`], [`request`]
 //!
 //! This module works in conjunction with the `viri-macros` crate, which provides some of the
@@ -19,7 +18,6 @@
 //! [Attributes]: crate::config::attr
 //! [Named functions]: crate::config::named_fn
 //! [Dynamic (de-)serialization]: crate::any::deserialize_dyn_clone
-//! [Extension interfacing]: crate::dispatch
 
 /// Produces a configuration struct with an associated implementation of [`Configurable`]
 ///
@@ -460,34 +458,6 @@ pub use viri_macros::async_fn;
 /// ```
 pub use viri_macros::async_method;
 
-/// Derive macro for [`Typed`](crate::dispatch::Typed)
-pub use viri_macros::Typed;
-
-/// Similar to the [derive macro](Typed) for `Typed`, but operates without the need for a
-/// definition. Intended for implementing on `std` types
-pub use viri_macros::manual_derive_typed;
-
-/// Convenience macro to write type extension type signatures
-///
-/// Typical usage tends to look something like:
-/// ```
-/// type_sig![{ x: @int, y: Foobar } => ()]
-/// ```
-/// The type construction here is pretty expressive - the full set of available type constructors
-/// is:
-/// * Structs,
-/// * Enums,
-/// * Arrays,
-/// * Named types (implementing [`Typed`](crate::dispatch::Typed)),
-/// * Strings (as `@string`),
-/// * Integers (as `@int`),
-/// * Unit (as `()`), and
-/// * Unrestricted values (as `@any`)
-///
-/// The signature can consist of up to two parts; it's either a single "type" by itself, or of the
-/// form `<type> => <type>`.
-pub use viri_macros::type_sig;
-
 /// Convenience macro to produce a newtype'd `usize` for use as a unique identifier
 ///
 /// This macro is one with syntax further away from the code that's actually generated. It is still
@@ -585,35 +555,3 @@ pub use viri_macros::id;
 /// }
 /// ```
 pub use viri_macros::flag;
-
-// TODO-DOC:
-pub use viri_macros::{extension_export, make_extension, register_extensions};
-
-/// Helper macro for constructing [`Request`]s
-///
-/// Building requests is a little bit of a syntax hassle. To take an example from
-/// [`Extension::load`], we might have something like:
-/// ```ignore
-// @req "`Extension::load` request" v0
-/// let req = Request {
-///     originating_ext: this,
-///     kind: RequestKind::GetValue {
-///         from: Name { extension_id: builtin, method: "" },
-///         arg: Value::new(()),
-///     }
-/// };
-/// ```
-/// This is fairly large; we need to import each of `Request`, `RequestKind`, `Name`, and `Value`
-/// *and* it could be singificantly smaller. That's what this macro helps with.
-///
-/// At the expense of being significantly less obvious as to what's going on, this macro allows
-/// rewriting the above as:
-/// ```ignore
-/// let req = request!(@from this, @get builtin.FinishedLoading(()));
-/// ```
-///
-/// The exact syntax of a "get" request allows any number of field accesses to produce the relevant
-/// `ExtensionId` before the final method "access" -- which is `FinishedLoading` in this case.
-///
-/// [`Request`]: crate::dispatch::Request
-pub use viri_macros::request;
