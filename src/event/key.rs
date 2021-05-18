@@ -68,18 +68,18 @@ impl From<event::KeyCode> for KeyCode {
     }
 }
 
-/// A set of modifiers attached to a single [`KeyEvent`]
+/// A set of modifiers attached to a single [`KeyEvent`] or [`MouseEvent`]
 ///
 /// This is quite different from crossterm's [`KeyModifiers`](crossterm::event::KeyModifiers)
 /// because (1) it disregards shift and (2) it explicitly lists possible combinations of the
-/// remaining modifiers (none of them may occur here).
-///
-/// It's worth noting `alt+ctrl` is not possible for key inputs, but *is* possible on mouse inputs
-/// - those are represented by [`MouseModifiers`](super::MouseModifiers).
+/// remaining modifiers.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum KeyModifiers {
     Alt,
     Ctrl,
+    #[serde(alias = "Alt|Ctrl")]
+    #[serde(alias = "Ctrl|Alt")]
+    AltCtrl,
 }
 
 // We need to implement XFrom in order to get conversion to Option
@@ -96,7 +96,7 @@ impl XFrom<event::KeyModifiers> for Option<KeyModifiers> {
             (false, false) => None,
             (true, false) => Some(Alt),
             (false, true) => Some(Ctrl),
-            (true, true) => panic!("unexpected key input combination; please file a bug report indicating that this error occured"),
+            (true, true) => Some(AltCtrl),
         }
     }
 }

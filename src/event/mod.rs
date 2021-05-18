@@ -15,4 +15,4 @@ mod key;
 mod mouse;
 
 pub use key::{KeyCode, KeyEvent, KeyModifiers};
-pub use mouse::{MouseButton, MouseEvent, MouseModifiers};
+pub use mouse::{MouseButton, MouseEvent};
