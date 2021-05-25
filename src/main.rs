@@ -18,7 +18,7 @@
     const_type_name, // Allows `any::type_name` in a const context
     const_type_id, // Allows `TypeId::of` in a const context
     rustc_attrs,   // Allows config! and init! trickery
-    const_fn, // Allows trait bounds in const fns -- `any::Type::new`
+    const_fn_trait_bound, // Allows trait bounds in const fns -- `any::Type::new`
     const_generics, // Needed for a whole bunch of things.
     specialization,     // required for dynamic deserialization
     maybe_uninit_ref, // Required for `init::LazyInit::deref`
