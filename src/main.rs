@@ -26,8 +26,8 @@
     maybe_uninit_extra,
     maybe_uninit_slice,
     maybe_uninit_uninit_array,
-    // Required for derived Typed implementations:
-    trivial_bounds,
+    // @req "KeyParser notable_trait" v0
+    doc_notable_trait
 )]
 // Lint flags:
 #![deny(
@@ -55,6 +55,7 @@ mod container;
 mod event;
 mod fs;
 mod init;
+mod keys;
 mod logger;
 mod runtime;
 mod size;

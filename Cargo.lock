@@ -766,6 +766,7 @@ dependencies = [
  "ansi_term",
  "arc-swap",
  "backtrace",
+ "bitflags",
  "chrono",
  "clap",
  "crossterm",
