@@ -28,7 +28,7 @@ mod pos_map;
 #[cfg(test)]
 mod tests;
 
-use super::ranged::{RangeSlice, Ranged};
+use super::ranged::{NoAccumulator, RangeSlice, Ranged};
 
 use cause::CauseStack;
 use marker::{EditsRef, Operation, Recover, Redo, Undo};
@@ -53,7 +53,17 @@ struct BlameRange {
 }
 
 impl RangeSlice for BlameRange {
-    fn split_at(&mut self, idx: usize) -> Self {
+    type Accumulator = NoAccumulator;
+
+    fn accumulated(&self, _base: usize, _idx: usize) -> NoAccumulator {
+        NoAccumulator
+    }
+
+    fn index_of_accumulated(&self, _base: usize, _acc: NoAccumulator) -> usize {
+        0
+    }
+
+    fn split_at(&mut self, _base: usize, idx: usize) -> Self {
         BlameRange {
             start_idx: self.start_idx + idx,
             id: self.id,
@@ -272,6 +282,7 @@ pub struct Edit<Time, R> {
 /// The result of adding an [`Edit`] to the [`HistoryCore`]
 ///
 /// For more information, see [`HistoryCore::edit`] - the only method that returns this type.
+#[derive(Clone)]
 pub struct EditResult<R> {
     /// The id of the new `Edit`, if the edit was successful
     ///
@@ -307,6 +318,7 @@ pub struct EditResult<R> {
 /// have been undone as well. It is the responsibility of the caller to record that these edits were
 /// undone - or separately check with [`HistoryCore::is_present`] before calls to
 /// [`undo`](HistoryCore::undo).
+#[derive(Clone)]
 pub struct UndoResult<R> {
     /// The change(s) required to the text object to account for this action, alongside the edits
     /// that caused them
@@ -328,6 +340,7 @@ pub struct UndoResult<R> {
 /// have been redone as well. It is the responsibility of the caller to record that these edits were
 /// redone - or separately check with [`HistoryCore::is_present`] before calls to
 /// [`redo`](HistoryCore::redo).
+#[derive(Clone)]
 pub struct RedoResult<R> {
     /// The change(s) required to the text object to account for this action, alongside the edits
     /// that caused them
@@ -516,7 +529,7 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
         println!("-------- End --------");
     }
 
-    /// Drops all of edits corresponding to the given `EditId`s, returning the edits themselves
+    /// Drops all of the edits corresponding to the given `EditId`s, returning the edits themselves
     ///
     /// The edits must no longer be in use - i.e. indicated as removed by a call to
     /// [`self.edit(..)`](Self::edit). The returned list has each edit paired with its ID.

@@ -27,6 +27,7 @@ log = { version = "0.4", features = ["serde"] }
 maplit = "1.0.2"
 num = "0.4"
 num-bigint = "0.4"
+rand = { version = "0.8", features = ["small_rng"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_yaml = "0.8"
 smallstr = "0.2"

@@ -27,7 +27,9 @@
     maybe_uninit_slice,
     maybe_uninit_uninit_array,
     // @req "KeyParser notable_trait" v0
-    doc_notable_trait
+    doc_notable_trait,
+    // Used in utf8 decoding -- @req "utf8 intrinsics::{likely, unlikely}" v0
+    core_intrinsics,
 )]
 // Lint flags:
 #![deny(

@@ -29,7 +29,7 @@ impl<T, const CAP: usize> Drop for MaxVec<T, CAP> {
 
 impl<T, const CAP: usize> MaxVec<T, CAP> {
     /// Creates a new [`MaxVec`], with no elements
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         MaxVec {
             len: 0,
             values: MaybeUninit::uninit_array(),
@@ -37,28 +37,28 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
     }
 
     /// Returns the capacity of the vector
-    const fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         CAP
     }
 
     /// Returns the number of elements in the vector
-    const fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
     /// Returns `true` if the vector contains no elements
-    const fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns `true` if the vector cannot contain more elements
-    const fn is_full(&self) -> bool {
+    pub const fn is_full(&self) -> bool {
         self.len == CAP
     }
 
     /// Appends the element onto the end of the vector, panicking if the length is equal to the
     /// capacity
-    fn push(&mut self, elem: T) {
+    pub fn push(&mut self, elem: T) {
         if self.len() >= self.capacity() {
             panic!("length equal to capacity {}", self.capacity());
         }
@@ -68,7 +68,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
     }
 
     /// Produces an iterator over references to the values in the `MaxVec`
-    fn iter<'a>(&'a self) -> Iter<'a, T> {
+    pub fn iter<'a>(&'a self) -> Iter<'a, T> {
         Iter {
             len: self.len,
             values: MaybeUninit::slice_as_ptr(&self.values),
@@ -77,7 +77,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
     }
 
     /// Creates the vector from at most `CAP` elements of the iterator
-    fn from_iter(iter: impl IntoIterator<Item = T>) -> Self {
+    pub fn from_iter(iter: impl IntoIterator<Item = T>) -> Self {
         // This is fairly simple; we just continuously push to the vector until it's full or we run
         // out of space
 
@@ -109,7 +109,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
     ///
     /// If the capacity of the vector is *equal* to `usize::MAX`, this function will always panic.
     /// They are not supported. This should hopefully not be an issue.
-    fn from_iter_reversed(iter: impl IntoIterator<Item = T>) -> Self {
+    pub fn from_iter_reversed(iter: impl IntoIterator<Item = T>) -> Self {
         // Our general strategy here is to construct the vector backwards, leaving space at the
         // start, until either the vector is full (in which case we're done), or the iterator runs
         // out of items (in which case we need to shift everything backwards)
@@ -194,11 +194,30 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
 }
 
 impl<T: Copy, const CAP: usize> MaxVec<T, CAP> {
+    /// Constructs the vector from the given slice, panicking if it is too big
+    ///
+    /// Like [`from_slice_prefix`] and [`from_slice_suffix`], this method is very cheap.
+    /// (Internally, it uses one of them.)
+    ///
+    /// [`from_slice_prefix`]: Self::from_slice_prefix
+    /// [`from_slice_suffix`]: Self::from_slice_suffix
+    ///
+    /// ## Panics
+    ///
+    /// Panics if `slice.len() > CAP`.
+    pub fn from_slice(slice: &[T]) -> Self {
+        if slice.len() > CAP {
+            panic!("slice len {} too long for capacity {}", slice.len(), CAP);
+        }
+
+        Self::from_slice_prefix(slice)
+    }
+
     /// Constructs the vector - up to capacity - from as long a prefix of the slice as possible
     ///
     /// This uses `std::ptr::copy_nonoverlapping` internally, and so is typically very cheap,
     /// operating entirely on the stack.
-    fn from_slice_prefix(slice: &[T]) -> Self {
+    pub fn from_slice_prefix(slice: &[T]) -> Self {
         let mut values: [MaybeUninit<T>; CAP] = MaybeUninit::uninit_array();
 
         let len = slice.len().min(CAP);
@@ -212,7 +231,7 @@ impl<T: Copy, const CAP: usize> MaxVec<T, CAP> {
     ///
     /// This uses `std::ptr::copy_nonoverlapping` internally, and so is typically very cheap,
     /// operating entirely on the stack.
-    fn from_slice_suffix(slice: &[T]) -> Self {
+    pub fn from_slice_suffix(slice: &[T]) -> Self {
         let mut values: [MaybeUninit<T>; CAP] = MaybeUninit::uninit_array();
 
         let len = slice.len().min(CAP);
@@ -224,6 +243,34 @@ impl<T: Copy, const CAP: usize> MaxVec<T, CAP> {
         unsafe { copy_nonoverlapping(slice_ptr, values_ptr, len) };
 
         MaxVec { len, values }
+    }
+
+    /// Analagous to [`Vec::extend_from_slice`], panics if the addition of the slice would fill up
+    /// the capacity of the vector
+    ///
+    /// ## Panics
+    ///
+    /// Panics if `self.len() + slice.len() > CAP`.
+    pub fn extend_from_slice(&mut self, slice: &[T]) {
+        if self.len() + slice.len() > CAP {
+            panic!(
+                "extended len {} would be greater than capacity {}",
+                self.len() + slice.len(),
+                CAP
+            )
+        }
+
+        let values_ptr = MaybeUninit::slice_as_mut_ptr(&mut self.values);
+        let values_end_ptr = unsafe { values_ptr.add(self.len) };
+
+        // SAFETY: We already know that `self.len() + slice.len() <= CAP`, and `values_end_ptr`
+        // just points to the value at index `self.len()`, so this won't overrun the array.
+        //
+        // The slice and `self` cannot safely overlap because we have a mutable reference to
+        // `self`.
+        unsafe { copy_nonoverlapping(slice.as_ptr(), values_end_ptr, slice.len()) };
+
+        self.len += slice.len();
     }
 }
 

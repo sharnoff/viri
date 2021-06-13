@@ -4,7 +4,7 @@
 
 use std::cmp::Ordering::{self, Equal, Greater, Less};
 use std::mem;
-use std::ops::Range;
+use std::ops::{AddAssign, Range, SubAssign};
 
 /// A compact representation of uniquely-tagged byte ranges
 ///
@@ -17,6 +17,8 @@ use std::ops::Range;
 /// This time-complexity tradeoff isn't even *that* bad, though -- internally, we use a structure
 /// that's essentially a splay tree, which guarantees constant time lookups for the last node
 /// checked. More information on how this works is available in the internal documentation.
+///
+// @def "`Ranged` is splay tree" v0
 ///
 /// The primary consequence of using a splay tree is that all operations modify the tree, so the
 /// methods that might otherwise take `&self` for something like a `BTreeMap` instead take
@@ -33,7 +35,7 @@ use std::ops::Range;
 //
 // TODO-DOC - we *really* need some internal documentation here
 #[derive(Clone)]
-pub struct Ranged<S> {
+pub struct Ranged<S: RangeSlice> {
     size: usize,
     // The root is always `Some(_)` when the structure is in a valid state. We allow it to be
     // `None` so that we can temporarily pass a `&mut Ranged` by value.
@@ -53,11 +55,13 @@ struct SizePair<S> {
 
 /// (*Internal*) An individual node in the [`Ranged`] splay tree
 #[derive(Clone)]
-struct Node<S> {
+struct Node<S: RangeSlice> {
     left: Option<Box<Node<S>>>,
     right: Option<Box<Node<S>>>,
     pair: SizePair<S>,
     offset_from_parent: isize,
+    // The total accumulated value from `pair.val` and both sub-trees.
+    total_accumulated: S::Accumulator,
 }
 
 /// A simple wrapper type that provides an implementation of [`RangeSlice`] for homogenous ranges
@@ -75,6 +79,18 @@ struct Node<S> {
 #[derive(Debug, Copy, Clone)]
 pub struct Constant<T>(pub T);
 
+/// A marker type for [`RangeSlice`] implementations with no accumulator
+///
+/// It's not necessary to use this type; it's just provided for the convenience of writing an
+/// implementation of `RangeSlice`.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct NoAccumulator;
+
+#[rustfmt::skip]
+impl AddAssign for NoAccumulator { fn add_assign(&mut self, _other: Self) {} }
+#[rustfmt::skip]
+impl SubAssign for NoAccumulator { fn sub_assign(&mut self, _other: Self) {} }
+
 /// An abstraction over values that can represent a single region in a [`Ranged`]
 ///
 /// ## Why does this trait exist?
@@ -85,23 +101,74 @@ pub struct Constant<T>(pub T);
 /// beforehand, so this trait provides a layer of abstraction over indexing, splitting, and joining
 /// ranges.
 ///
+/// ## Accumulation
+///
+/// This is a feature that only makes sense in certain contexts. For example: in a [`TextTree`], we
+/// want to have a way to go from byte indexes to line numbers. Our implementation of `RangeSlice`
+/// there treats each slice as some number of lines, with the accumulator counting the number of
+/// lines before each slice.
+///
+/// Fetching the accumulated value at a point is done with the [`accumulated_at`] method on
+/// [`Ranged`].
+///
+/// [`TextTree`]: crate::text::objects::TextTree;
+///
 /// ## Other things to note
 ///
 /// There a couple implementations of this trait provided for you; [`Constant`] and a blanket
 /// implementation on [`Option`]. The implementation on [`Option`] works in the expected way: it
 /// behaves like [`Constant`] when the values are `None`, and otherwise defers to the underlying
-/// ranges
+/// ranges.
 pub trait RangeSlice: Sized {
+    /// An accumulator for values
+    ///
+    /// If your implementation of `RangeSlice` does not need an accumulator, you may wish to
+    /// provide [`NoAccumulator`] here; it is a unit type that provides dummy implementations of
+    /// the required traits.
+    ///
+    /// The implementation of `Add` on the accumulator is expected to be commutative and
+    /// associative -- i.e. that `x + y = y + x` and `(x + y) + z = x + (y + z)`. This should
+    /// typically be true *anyways* for most sensible accumulators, but it's worth stating
+    /// explicitly. The implementation of `Sub` should similarly reflect these expectations.
+    ///
+    /// The value provided by `Default` should be the identity.
+    type Accumulator: Default + Clone + AddAssign + SubAssign;
+
+    /// Returns the value of `Self::Accumulator` that is present at a point within the slice
+    ///
+    /// Note that this method should be compatible with `split`. Essentially, that for any slice
+    /// and index within it:
+    /// ```
+    /// let original_acc = slice.accumulated(len);
+    /// let rhs = slice.split(idx);
+    /// assert!(original_acc == slice.accumulated(idx) + rhs.accumulated(len - idx));
+    /// ```
+    ///
+    /// It may be the case that `idx` is equal to the length of the slice.
+    ///
+    /// As an example, we we might have an implementation of `RangeSlice` tracking the number of
+    /// occurences of some phenomenon that would return.
+    fn accumulated(&self, base_idx: usize, idx: usize) -> Self::Accumulator;
+
+    /// Returns the index within the slice at which the accumulated value occurs
+    ///
+    /// If `index_of_accumulated(base, acc)` returns some `idx`, it must always be the case that
+    /// `accumulated(base, idx)` returns the original `acc`. This relation is not required the
+    /// other way around.
+    ///
+    /// The returned index may be equal to at most the size of the slice.
+    fn index_of_accumulated(&self, base_idx: usize, acc: Self::Accumulator) -> usize;
+
     /// Cuts the range in two at the given index, returning the upper half
     ///
     /// This is analogous to [`slice::split_at`], but instead modifies the receiver and returns
     /// only the second half of the tuple. As such, after calling this method, `self` should
     /// correspond to `[0, idx)` in the starting range, and the returned value should be
-    /// `[idx,len)`.
+    /// `[idx, len)`.
     ///
-    /// The length of the slice is provided for convenience; it will always be the case that `idx`
-    /// is less than the length of the range, though this should not be assumed for unsafe code.
-    fn split_at(&mut self, idx: usize) -> Self;
+    /// The `base` index gives the starting index of *this* range in the full tree, with the
+    /// desired splitting point at exactly `base + idx` in the tree.
+    fn split_at(&mut self, base: usize, idx: usize) -> Self;
 
     /// Attempts to join the two ranges, returning the original pair as given if unable to
     ///
@@ -126,25 +193,44 @@ pub trait RangeSlice: Sized {
 /// The methods from [`RangeSlice`] are additionally copied over, so that only one implementation
 /// is necessary; a blanket impementation of [`RangeSlice`] for all [`IndexedRangeSlice`] is
 /// provided.
-pub trait IndexedRangeSlice: RangeSlice {
+pub trait IndexedRangeSlice: Sized {
     /// The value provided after indexing
     type Value: Sized;
+
+    /// An accumulator for values
+    type Accumulator: Clone + Default + AddAssign + SubAssign;
+
+    /// Returns the value of `Self::Accumulator` that is present at a point within the slice
+    fn accumulated(&self, base_idx: usize, idx: usize) -> Self::Accumulator;
+
+    /// Returns the index within the slice at which the accumulated value occurs
+    fn index_of_accumulated(&self, base_idx: usize, acc: Self::Accumulator) -> usize;
 
     /// Gets the value at offset `idx` from the base of the range
     fn index(&self, idx: usize) -> Self::Value;
 
     /// See [`RangeSlice::split_at`]
-    fn split_at(&mut self, idx: usize) -> Self;
+    fn split_at(&mut self, base: usize, idx: usize) -> Self;
 
     /// See [`RangeSlice::try_join`]
-    fn try_join(self, self_size: usize, other: Self) -> Result<Self, (Self, Self)> {
+    fn try_join(self, _self_size: usize, other: Self) -> Result<Self, (Self, Self)> {
         Err((self, other))
     }
 }
 
 impl<S: IndexedRangeSlice> RangeSlice for S {
-    fn split_at(&mut self, idx: usize) -> Self {
-        <Self as IndexedRangeSlice>::split_at(self, idx)
+    type Accumulator = <Self as IndexedRangeSlice>::Accumulator;
+
+    fn accumulated(&self, base_idx: usize, idx: usize) -> Self::Accumulator {
+        <Self as IndexedRangeSlice>::accumulated(self, base_idx, idx)
+    }
+
+    fn index_of_accumulated(&self, base_idx: usize, acc: Self::Accumulator) -> usize {
+        <Self as IndexedRangeSlice>::index_of_accumulated(self, base_idx, acc)
+    }
+
+    fn split_at(&mut self, base: usize, idx: usize) -> Self {
+        <Self as IndexedRangeSlice>::split_at(self, base, idx)
     }
 
     fn try_join(self, self_size: usize, other: Self) -> Result<Self, (Self, Self)> {
@@ -153,7 +239,17 @@ impl<S: IndexedRangeSlice> RangeSlice for S {
 }
 
 impl<T: Clone + PartialEq> RangeSlice for Constant<T> {
-    fn split_at(&mut self, _idx: usize) -> Self {
+    type Accumulator = NoAccumulator;
+
+    fn accumulated(&self, _base: usize, _idx: usize) -> NoAccumulator {
+        NoAccumulator
+    }
+
+    fn index_of_accumulated(&self, _base: usize, acc: NoAccumulator) -> usize {
+        0
+    }
+
+    fn split_at(&mut self, _base: usize, _idx: usize) -> Self {
         self.clone()
     }
 
@@ -166,8 +262,26 @@ impl<T: Clone + PartialEq> RangeSlice for Constant<T> {
 }
 
 impl<S: RangeSlice> RangeSlice for Option<S> {
-    fn split_at(&mut self, idx: usize) -> Self {
-        Some(self.as_mut()?.split_at(idx))
+    type Accumulator = S::Accumulator;
+
+    fn accumulated(&self, base: usize, idx: usize) -> Self::Accumulator {
+        self.as_ref()
+            .map(|s| s.accumulated(base, idx))
+            .unwrap_or_default()
+    }
+
+    fn index_of_accumulated(&self, base: usize, idx: Self::Accumulator) -> usize {
+        self.as_ref()
+            // The reason why this should never be the case is that `Accumulator::default()` should
+            // return an additive identity (i.e. something equivalent to zero), and it should never
+            // be the case that a previous call to `accumulated` produced something that doesn't
+            // behave like zero.
+            .unwrap_or_else(|| panic!("unexpected call to index_of_accumulated for `None`"))
+            .index_of_accumulated(base, idx)
+    }
+
+    fn split_at(&mut self, base: usize, idx: usize) -> Self {
+        Some(self.as_mut()?.split_at(base, idx))
     }
 
     fn try_join(self, self_size: usize, other: Self) -> Result<Self, (Self, Self)> {
@@ -192,6 +306,7 @@ impl<S: RangeSlice> Ranged<S> {
                 right: None,
                 pair: SizePair { val: init, size },
                 offset_from_parent: 0,
+                total_accumulated: S::Accumulator::default(),
             })),
         }
     }
@@ -298,24 +413,36 @@ impl<S: RangeSlice> Ranged<S> {
             //               |---- range ----|
             // |- left_size -|
 
+            let root_pos = self.root_pos();
+
             let sub_left = self.root_mut().left.take();
             let left_size = range.start - self.root_pos();
 
             self.root_mut().pair.size -= left_size;
             self.size -= range.start;
+            let root = self.root_mut();
             // we set offset_from_parent to zero here because we just removed all of the nodes up
             // to range.start
-            self.root_mut().offset_from_parent = 0_isize;
+            root.offset_from_parent = 0_isize;
 
             // Because we're removing part of the root, we need to shift the location of
             // root.right:
-            if let Some(n) = self.root_mut().right.as_mut() {
+            if let Some(n) = root.right.as_mut() {
                 n.offset_from_parent -= left_size as isize;
             }
 
             // Split the left off from the root:
-            let mut left_val = self.root_mut().pair.val.split_at(left_size);
-            mem::swap(&mut left_val, &mut self.root_mut().pair.val);
+            let mut left_val = root.pair.val.split_at(root_pos, left_size);
+            mem::swap(&mut left_val, &mut root.pair.val);
+
+            // Acknowledge that we've taken some of the accumulated value out of the root - we're
+            // putting it into `lhs_accumulated`.
+            let mut lhs_accumulated = left_val.accumulated(root_pos, left_size);
+
+            if let Some(l) = sub_left.as_ref() {
+                lhs_accumulated += l.total_accumulated.clone();
+            }
+            root.total_accumulated -= lhs_accumulated.clone();
 
             Some(Box::new(Node {
                 pair: SizePair {
@@ -325,20 +452,27 @@ impl<S: RangeSlice> Ranged<S> {
                 left: sub_left,
                 right: None,
                 offset_from_parent: -(left_size as isize),
+                total_accumulated: lhs_accumulated,
             }))
         } else {
             self.size -= self.root_pos();
             let root = self.root_mut();
             root.offset_from_parent = 0_isize;
 
-            root.left.take()
+            root.left.take().map(|n| {
+                root.total_accumulated -= n.total_accumulated.clone();
+                n
+            })
         };
 
         // Extract the values from after the range
         // We need to move range.end to account for having just shifted everything by removing the
         // nodes up to range.start
         let end = range.len();
-        splay(self.root_mut(), end.saturating_sub(1));
+        let r = self.root_mut();
+        r.offset_from_parent += range.start as isize;
+        splay(r, end.saturating_sub(1));
+        r.offset_from_parent -= range.start as isize;
 
         let mut right = if end == self.size {
             None
@@ -350,29 +484,40 @@ impl<S: RangeSlice> Ranged<S> {
             // |------- range -------|
             //       |- rhs_in_node -|- right_size -|
 
+            // In order to keep the tree valid, we previously *fully* removed the left-hand side of
+            // the tree, so that the new "zero" is at the starting point of the range.
+            let root_pos = self.root_pos() + range.start;
+
             let right_size = self.root_pos() + self.root().pair.size - end;
-            let rhs_in_node = self.root().pair.size - right_size;
+            let root = self.root_mut();
+            let rhs_in_node = root.pair.size - right_size;
+
+            let rhs_val = root.pair.val.split_at(root_pos, rhs_in_node);
+            let mut rhs_accumulated = rhs_val.accumulated(root_pos + rhs_in_node, right_size);
 
             if let Some(n) = sub_right.as_mut() {
                 n.offset_from_parent -= rhs_in_node as isize;
+                rhs_accumulated += n.total_accumulated.clone();
             }
+            root.total_accumulated -= rhs_accumulated.clone();
 
-            self.root_mut().pair.size = rhs_in_node;
+            root.pair.size = rhs_in_node;
 
             Some(Box::new(Node {
                 pair: SizePair {
                     size: right_size,
-                    val: self.root_mut().pair.val.split_at(rhs_in_node),
+                    val: rhs_val,
                 },
                 left: None,
                 right: sub_right,
                 offset_from_parent: 0,
+                total_accumulated: rhs_accumulated,
             }))
         } else {
-            self.size = end;
             let root = self.root_mut();
             root.right.take().map(|mut n| {
                 n.offset_from_parent -= root.pair.size as isize;
+                root.total_accumulated -= n.total_accumulated.clone();
                 n
             })
         };
@@ -382,7 +527,7 @@ impl<S: RangeSlice> Ranged<S> {
         // `self` is now done. In order to get its replacement, we need to pass it by value. To do
         // this, we'll temporarily swap it out with a filler `Ranged`:
         #[rustfmt::skip]
-        fn temp_extract<S>(this: &mut Ranged<S>) -> Ranged<S> {
+        fn temp_extract<S: RangeSlice>(this: &mut Ranged<S>) -> Ranged<S> {
             mem::replace(this, Ranged { size: 0, root: None })
         }
         *self = func(temp_extract(self));
@@ -399,10 +544,13 @@ impl<S: RangeSlice> Ranged<S> {
 
         // Add `left`:
         let mut root = self.root_mut();
-        splay(root, 0);
-        debug_assert!(root.left.is_none());
-        root.left = left;
         root.offset_from_parent += left_size as isize;
+        splay(root, left_size);
+        debug_assert!(root.left.is_none());
+        if let Some(n) = left.as_ref() {
+            root.total_accumulated += n.total_accumulated.clone();
+        }
+        root.left = left;
         self.size += left_size;
         *self = temp_extract(self).try_join_left();
 
@@ -413,6 +561,7 @@ impl<S: RangeSlice> Ranged<S> {
         debug_assert!(root.right.is_none());
         if let Some(n) = right.as_mut() {
             n.offset_from_parent += root.pair.size as isize;
+            root.total_accumulated += n.total_accumulated.clone();
         }
         root.right = right;
         self.size += right_size;
@@ -526,26 +675,26 @@ impl<S: RangeSlice> Ranged<S> {
     /// This function can be used with [`clone_range`](Self::clone_range) to iterate over a smaller
     /// range.
     pub fn iter<'a>(&'a self) -> impl 'a + Iterator<Item = (&'a S, Range<usize>)> {
-        struct Iter<'a, S> {
+        struct Iter<'a, S: RangeSlice> {
             // The root is `Some` only on the first iteration
             root: Option<&'a Node<S>>,
             // Stack of nodes and their position
             stack: Vec<(usize, &'a Node<S>)>,
         }
 
-        impl<'a, S> Iter<'a, S> {
+        impl<'a, S: RangeSlice> Iter<'a, S> {
             fn push_lefts(&mut self, root_parent_pos: usize, root: &'a Node<S>) {
                 let mut pos = root_parent_pos;
                 let mut r = Some(root);
                 while let Some(n) = r {
-                    pos = (pos as isize + n.offset_from_parent) as usize;
+                    pos = stack_pos(pos, &*n);
                     self.stack.push((pos, n));
                     r = n.left.as_ref().map(|b| b.as_ref());
                 }
             }
         }
 
-        impl<'a, S> Iterator for Iter<'a, S> {
+        impl<'a, S: RangeSlice> Iterator for Iter<'a, S> {
             type Item = (&'a S, Range<usize>);
 
             fn next(&mut self) -> Option<Self::Item> {
@@ -575,6 +724,50 @@ impl<S: RangeSlice> Ranged<S> {
             stack: Vec::new(),
         }
     }
+
+    /// Returns the total value of the accumulator at the given index
+    ///
+    /// This is essentially the sum of all the accumulated values for slices that occur before
+    /// `idx` - including the range of the slice containing `idx`.
+    ///
+    /// Accumulators are a pretty niche feature. They're primarily used for tracking things like
+    /// line numbers by byte index, where there are relativeliy few lines compared to the number of
+    /// bytes and we want to quickly go from one to the other.
+    ///
+    /// If you're curious to use them, they're heavily used as part of the implementation of
+    /// [`TextTree`], and the internals are well-documented there.
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if the index is out of bounds.
+    ///
+    /// [`TextTree`]: crate::text::objects::TextTree;
+    pub fn accumulated_at(&mut self, mut idx: usize) -> S::Accumulator {
+        if idx > self.size() {
+            panic!(
+                "index out of bounds: the index is {} but the size is {}",
+                idx,
+                self.size()
+            )
+        }
+
+        splay(self.root_mut(), idx);
+        let root_pos = self.root_pos();
+        idx -= root_pos;
+
+        let r = self.root();
+        let mut acc = r.pair.val.accumulated(root_pos, idx);
+        if let Some(lhs) = r.left.as_ref() {
+            acc += lhs.total_accumulated.clone();
+        }
+
+        acc
+    }
+
+    /// Returns the total value of the accumulator across the entire tree
+    pub fn total_accumulated(&self) -> S::Accumulator {
+        self.root().total_accumulated.clone()
+    }
 }
 
 impl<S: IndexedRangeSlice> Ranged<S> {
@@ -599,6 +792,85 @@ impl<S: IndexedRangeSlice> Ranged<S> {
     }
 }
 
+impl<S: RangeSlice> Ranged<S>
+where
+    S::Accumulator: Ord,
+{
+    /// Returns the index at which the accumulator increases to the specified value
+    ///
+    /// The implementation of `Ord` on `S::Accumulator` should function "like integers", to phrase
+    /// it simply. For correctness, this method also relies on the accumulator being "unsigned" --
+    /// i.e. that the value of the accumulator can never decreases by expanding some range of the
+    /// tree.
+    ///
+    /// Formally, this requires that:
+    ///
+    /// > For all `i` < `j` <= `self.size()`, `self.accumulated_at(i)` < `self.accumulated_at(j)`
+    ///
+    /// Alongside the above assumption that:
+    ///
+    /// > For all `x` and `y`, `x` <= `x` + `y`
+    ///
+    /// In addition to the requirements listed in the documentation for
+    /// [`RangeSlice::Accumulator`].
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if `acc` is outside the range of the accumulator.
+    pub fn index_of_accumulated(&self, mut acc: S::Accumulator) -> usize {
+        let mut idx = self.root_pos();
+        let mut node = self.root();
+        let mut running_acc = S::Accumulator::default();
+
+        loop {
+            if let Some(n) = node.left.as_ref() {
+                // lhs_total = running_acc + n.total_accumulated
+                let mut lhs_total = running_acc.clone();
+                lhs_total += n.total_accumulated.clone();
+                if lhs_total >= acc {
+                    node = n;
+                    idx = stack_pos(idx, &*n);
+                    // Don't increment `running_acc`, because it only contains the accumulator that
+                    // we've "committed" to.
+                    continue;
+                }
+            }
+
+            if let Some(n) = node.right.as_ref() {
+                // pre_rhs_total = running_acc + node.total_accumulated - n.total_accumulated
+                let mut pre_rhs_total = running_acc.clone();
+                pre_rhs_total += node.total_accumulated.clone();
+                pre_rhs_total -= n.total_accumulated.clone();
+
+                if pre_rhs_total < acc {
+                    node = n;
+                    idx = stack_pos(idx, &*n) as usize;
+                    // Because we want `running_acc` to give everything that occurs before the
+                    // subtree rooted at this node, and `pre_rhs_total` gives everything before the
+                    // right-hand node, we set it to the right-hand node.
+                    running_acc = pre_rhs_total;
+                    continue;
+                }
+            }
+
+            // If it's not the left or right-hand node, then it must be in the middle. We'll
+            // double-check that the accumulator is still valid.
+            break;
+        }
+
+        let mut after_val_acc = node.pair.val.accumulated(idx, node.pair.size);
+        after_val_acc += running_acc.clone();
+        assert!(running_acc < acc);
+        assert!(after_val_acc >= acc);
+
+        acc -= running_acc;
+        let within_idx = node.pair.val.index_of_accumulated(idx, acc);
+        assert!(within_idx <= node.pair.size);
+
+        idx + within_idx
+    }
+}
+
 impl<S: Clone + RangeSlice> Ranged<S> {
     /// Extracts and clones a range of the values
     pub fn clone_range(&mut self, range: Range<usize>) -> Self {
@@ -612,74 +884,90 @@ impl<S: Clone + RangeSlice> Ranged<S> {
 }
 
 #[cfg(test)]
-impl<S> Ranged<S> {
-    fn print_node(node: &Option<Box<Node<S>>>, prefix: &str, lower: &str) {
-        trait Dbg {
-            fn make_str(&self) -> String;
-        }
-
-        impl<T> Dbg for T {
-            default fn make_str(&self) -> String {
-                String::new()
-            }
-        }
-
-        impl<T: std::fmt::Debug> Dbg for T {
-            fn make_str(&self) -> String {
-                format!(", val = {:?}", self)
+impl<S: RangeSlice> Ranged<S> {
+    fn print_node(
+        node: Option<&Box<Node<S>>>,
+        parent_pos: usize,
+        prefix: &str,
+        lower: &str,
+    ) -> String {
+        fn make_str<T>(this: &T, label: &str) -> String {
+            match crate::utils::MaybeDbg::maybe_dbg(this) {
+                Some(s) => format!(", {} = {}", label, s),
+                None => String::new(),
             }
         }
 
         match node {
-            None => println!("{}<empty>", prefix),
+            None => format!("{}<empty>", prefix),
             Some(n) => {
-                println!(
-                    "{}offset = {}, size = {}{}",
+                let pos = stack_pos(parent_pos, &*n);
+
+                let top_info = format!(
+                    "{}offset = {}, size = {}{}{}{}",
                     prefix,
                     n.offset_from_parent,
                     n.pair.size,
-                    n.pair.val.make_str()
+                    make_str(&n.pair.val, "val"),
+                    make_str(&n.pair.val.accumulated(pos, n.pair.size), "acc"),
+                    make_str(&n.total_accumulated, "total_acc"),
                 );
-                let left_prefix = format!("{}   ├─ left: ", lower);
-                let left_lower = format!("{}   │  ", lower);
-                Self::print_node(&n.left, &left_prefix, &left_lower);
+                let left_prefix = format!("{} ├─ left: ", lower);
+                let left_lower = format!("{} │  ", lower);
+                let left_info = Self::print_node(n.left.as_ref(), pos, &left_prefix, &left_lower);
 
-                let right_prefix = format!("{}   └─ right: ", lower);
-                let right_lower = format!("{}      ", lower);
-                Self::print_node(&n.right, &right_prefix, &right_lower);
+                let right_prefix = format!("{} └─ right: ", lower);
+                let right_lower = format!("{}    ", lower);
+                let right_info =
+                    Self::print_node(n.right.as_ref(), pos, &right_prefix, &right_lower);
+
+                format!("{}\n{}\n{}", top_info, left_info, right_info)
             }
         }
     }
 
-    pub fn print_tree(&self) {
-        println!("--- Print Tree ---");
-        println!("size: {}", self.size);
-        Self::print_node(&self.root, "root: ", "      ");
-        println!("---  End Tree  ---");
+    pub fn print_tree(&self) -> String {
+        format!(
+            "--- Print Tree ---\nsize: {}\n{}\n---  End Tree  ---",
+            self.size,
+            Self::print_node(self.root.as_ref(), 0, "root: ", ""),
+        )
     }
+}
 
+#[cfg(test)]
+impl<S> Ranged<S>
+where
+    S: RangeSlice,
+    S::Accumulator: PartialEq + std::fmt::Debug,
+{
     // Checks that the `Ranged` represents a valid set of ranges
     fn assert_valid(&self) {
-        fn assert_valid_node<S>(
+        fn assert_valid_node<S: RangeSlice>(
             node: &Node<S>,
             is_root: bool,
             within_range: Range<usize>,
             parent_pos: usize,
-        ) {
+        ) where
+            S::Accumulator: PartialEq + std::fmt::Debug,
+        {
             // Check that the recursion is valid
             assert!(is_root || !within_range.contains(&parent_pos));
 
             // And then on to the actual node checks.
             assert!(node.pair.size != 0);
-            let pos = (parent_pos as isize + node.offset_from_parent) as usize;
+            let pos = stack_pos(parent_pos, node);
             assert!(within_range.contains(&pos));
             let end_pos = pos + node.pair.size;
             assert!(end_pos <= within_range.end);
+
+            let mut running_accumulator = node.pair.val.accumulated(pos, node.pair.size);
 
             if let Some(n) = node.left.as_ref() {
                 let new_range = within_range.start..pos;
                 assert!(!new_range.is_empty());
                 assert_valid_node(&n, false, new_range, pos);
+                running_accumulator += n.total_accumulated.clone();
             } else {
                 assert_eq!(pos, within_range.start);
             }
@@ -688,9 +976,12 @@ impl<S> Ranged<S> {
                 let new_range = end_pos..within_range.end;
                 assert!(!new_range.is_empty());
                 assert_valid_node(&n, false, new_range, pos);
+                running_accumulator += n.total_accumulated.clone();
             } else {
                 assert_eq!(end_pos, within_range.end);
             }
+
+            assert_eq!(running_accumulator, node.total_accumulated);
         }
 
         let root = &self.root.as_ref().unwrap();
@@ -706,27 +997,29 @@ impl<S> Ranged<S> {
 
 // Performs the 'splay' operation to bubble the region containing the index to the root
 // This is pretty much just adapted from the implementation in Alex Crichton's splay-rs
-fn splay<S>(node: &mut Box<Node<S>>, idx: usize) {
+//
+// The `root_offset` parameter gives us an amount to add to the position of the root node. We
+// typically use this mid-replacement, so that it's still a valid tree passed to `splay`, but we
+// can pass the correct index of each slice to their functions.
+fn splay<S: RangeSlice>(node: &mut Box<Node<S>>, idx: usize) {
     let mut newleft: Option<Box<Node<S>>> = None;
     let mut newright: Option<Box<Node<S>>> = None;
 
-    struct Entry<'a, S> {
+    struct Entry<'a, S: RangeSlice> {
         node: &'a mut Option<Box<Node<S>>>,
         parent_pos: usize,
     }
 
-    // This is intentionally backwards; we'll eventually set node.left = l and node.right = r
-    //
     // We need to set `parent_pos` equal to `usize::MAX / 2` because adjusting positions down must
     // always result in something non-negative.
     //
     // @req "Ranged::replace requires less than usize::MAX / 2" v0
     let mut l = Entry {
-        node: &mut newright,
+        node: &mut newleft,
         parent_pos: usize::MAX / 2,
     };
     let mut r = Entry {
-        node: &mut newleft,
+        node: &mut newright,
         parent_pos: usize::MAX / 2,
     };
 
@@ -741,7 +1034,7 @@ fn splay<S>(node: &mut Box<Node<S>>, idx: usize) {
         }};
     }
 
-    fn swap_parent<S>(node: &mut Node<S>, old_pos: usize, new_pos: usize) {
+    fn swap_parent<S: RangeSlice>(node: &mut Node<S>, old_pos: usize, new_pos: usize) {
         // old
         //  |---- offset ----|
         //                  pos
@@ -767,14 +1060,18 @@ fn splay<S>(node: &mut Box<Node<S>>, idx: usize) {
             Less => {
                 // Note: the "parent" of `left` is expected to be `node_pos`.
                 let mut left = node.left.take().expect("expected lower value");
+                node.total_accumulated -= left.total_accumulated.clone();
                 let mut left_pos = stack_pos(node_pos, &left);
 
                 // rotate this node right if necessary
                 if idx < left_pos {
                     // set node.left = left.right
-                    left.right
-                        .as_mut()
-                        .map(|n| swap_parent(n, left_pos, node_pos));
+                    let left_acc = &mut left.total_accumulated; // TODO-RFC#2229
+                    left.right.as_mut().map(|n| {
+                        swap_parent(n, left_pos, node_pos);
+                        *left_acc -= n.total_accumulated.clone();
+                        node.total_accumulated += n.total_accumulated.clone();
+                    });
                     node.left = left.right.take();
                     assert_valid!(node);
 
@@ -789,6 +1086,7 @@ fn splay<S>(node: &mut Box<Node<S>>, idx: usize) {
                     // left.right earlier
                     debug_assert!(node.right.is_none());
                     // `left`'s "parent" is still correct; we don't need to update it here.
+                    node.total_accumulated += left.total_accumulated.clone();
                     node.right = Some(left);
 
                     match mem::replace(&mut node.left, None) {
@@ -799,6 +1097,7 @@ fn splay<S>(node: &mut Box<Node<S>>, idx: usize) {
                                 // to have this statement here either way for consistency.
                                 left_pos = stack_pos(node_pos, &l);
                             }
+                            node.total_accumulated -= l.total_accumulated.clone();
                             left = l;
                         }
                         None => break,
@@ -824,15 +1123,18 @@ fn splay<S>(node: &mut Box<Node<S>>, idx: usize) {
                     Some(n) => n,
                     None => break,
                 };
+                node.total_accumulated -= right.total_accumulated.clone();
                 let mut right_pos = stack_pos(node_pos, &right);
 
                 // Rotate left if necessary
                 if idx >= right_pos + right.pair.size {
                     // set node.right = right.left
-                    right
-                        .left
-                        .as_mut()
-                        .map(|n| swap_parent(n, right_pos, node_pos));
+                    let right_acc = &mut right.total_accumulated; // TODO-RFC#2229
+                    right.left.as_mut().map(|n| {
+                        swap_parent(n, right_pos, node_pos);
+                        *right_acc -= n.total_accumulated.clone();
+                        node.total_accumulated += n.total_accumulated.clone();
+                    });
                     node.right = right.left.take();
                     assert_valid!(node);
 
@@ -897,15 +1199,84 @@ fn splay<S>(node: &mut Box<Node<S>>, idx: usize) {
     // positions to `usize::MAX / 2`
     // @req "Ranged::replace requires less than usize::MAX / 2" v0
     swap_option_parents! {
-        newleft, usize::MAX / 2 => node_pos;
         newright, usize::MAX / 2 => node_pos;
+        newleft, usize::MAX / 2 => node_pos;
     }
 
-    node.left = newright;
-    node.right = newleft;
+    // As we went through earlier, we were assigning to sub-nodes of `newleft` and `newright`.
+    // These didn't properly set the accumulator, so we need to correct that now. However... if the
+    // accumulator is zero-sized (which may be quite possible), there isn't any data it *could*
+    // store; we should skip this step.
+    if mem::size_of::<S::Accumulator>() != 0 {
+        // We only need to take O(log(n)) steps on each one, because we only set the right-hand
+        // sub-nodes of `newleft` and the left-hand sub-nodes of `newright`. Any other node will
+        // already have the correct accumulator, as guaranteed above, during the body of the loop.
+        //
+        // We'll store all of the accumulators in a stack, so that we add up the contributions from the
+        // side we need to recalculate.
+
+        let root_pos = node.offset_from_parent as usize;
+        node.total_accumulated = node.pair.val.accumulated(root_pos, node.pair.size);
+
+        // Helper function for debugging.
+        fn make_str<T>(this: &T, label: &str) -> String {
+            match crate::utils::MaybeDbg::maybe_dbg(this) {
+                Some(s) => format!(", {} = {}", label, s),
+                None => String::new(),
+            }
+        }
+
+        // Handle `newleft`, recursing down on `.right`
+        let mut stack = vec![];
+        let mut stack_node = &mut newleft;
+        let mut node_pos = root_pos;
+        while let Some(n) = stack_node.as_mut() {
+            node_pos = stack_pos(node_pos, &*n);
+            n.total_accumulated = n.pair.val.accumulated(node_pos, n.pair.size);
+            if let Some(l) = n.left.as_ref() {
+                n.total_accumulated += l.total_accumulated.clone();
+            }
+
+            stack.push(&mut n.total_accumulated);
+            stack_node = &mut n.right;
+        }
+
+        let mut acc = S::Accumulator::default();
+        while let Some(a) = stack.pop() {
+            *a += acc;
+            acc = a.clone();
+        }
+
+        node.total_accumulated += acc;
+
+        // Repeat for `newright`, recursing down on `.left`
+        stack_node = &mut newright;
+        node_pos = root_pos;
+        while let Some(n) = stack_node.as_mut() {
+            node_pos = stack_pos(node_pos, &*n);
+            n.total_accumulated = n.pair.val.accumulated(node_pos, n.pair.size);
+            if let Some(r) = n.right.as_ref() {
+                n.total_accumulated += r.total_accumulated.clone();
+            }
+
+            stack.push(&mut n.total_accumulated);
+            stack_node = &mut n.left;
+        }
+
+        acc = S::Accumulator::default();
+        while let Some(a) = stack.pop() {
+            *a += acc;
+            acc = a.clone();
+        }
+
+        node.total_accumulated += acc;
+    }
+
+    node.left = newleft;
+    node.right = newright;
 }
 
-fn stack_pos<S>(base: usize, node: &Node<S>) -> usize {
+fn stack_pos<S: RangeSlice>(base: usize, node: &Node<S>) -> usize {
     (base as isize + node.offset_from_parent) as usize
 }
 
@@ -930,6 +1301,8 @@ mod tests {
     use super::{IndexedRangeSlice, Ranged};
     use itertools::Itertools;
     use std::fmt::{self, Debug, Formatter};
+    use std::panic::UnwindSafe;
+    use std::sync::Mutex;
 
     type TestRanged = Ranged<Slice>;
 
@@ -945,8 +1318,29 @@ mod tests {
     #[rustfmt::skip]
     impl IndexedRangeSlice for Slice {
         type Value = char;
+
+        // Our accumulation is pretty contrived; essentially we're counting the sum of the
+        // character's numbers from 'a': so 'a' is 1, 'b' is 2, etc.
+        type Accumulator = u64;
+        fn accumulated(&self, _base: usize, idx: usize) -> u64 {
+            match self.0 {
+                c @ 'a'..='z' => (c as u8 - b'a' + 1) as u64 * (idx as u64),
+                '-' => 27 * idx as u64,
+                '_' => 28 * idx as u64,
+                _ => panic!("unexpected character used in test: {:?}", self.0),
+            }
+        }
+        fn index_of_accumulated(&self, _base: usize, acc: u64) -> usize {
+            let multiplier = match self.0 {
+                c @ 'a'..='z' => (c as u8 - b'a' + 1) as u64,
+                '-' => 27,
+                '_' => 28,
+            };
+            assert!(acc % multiplier == 0);
+            (acc / multiplier) as usize
+        }
         fn index(&self, _idx: usize) -> char { self.0 }
-        fn split_at(&mut self, _idx: usize) -> Self { *self }
+        fn split_at(&mut self, _base: usize, _idx: usize) -> Self { *self }
         fn try_join(self, _size: usize, other: Self) -> Result<Self, (Self, Self)> {
             if other.0 == self.0 {
                 Ok(self)
@@ -993,7 +1387,7 @@ mod tests {
     fn do_all_perms<Func>(default: char, initial_sizes: &[(usize, char)], test: Func)
     where
         Func: Fn(TestRanged),
-        for<'a> &'a Func: std::panic::UnwindSafe,
+        for<'a> &'a Func: UnwindSafe,
     {
         const MAX_PERM_LEN: usize = 6;
 
@@ -1013,16 +1407,31 @@ mod tests {
         });
 
         for idxs in indexes.permutations(initial_sizes.len()) {
-            let mut r = base.clone();
+            let r = Mutex::new(base.clone());
+
             for &i in &idxs {
-                r.index(i);
-                r.assert_valid();
+                let last_tree = r.lock().unwrap().print_tree();
+
+                if let Err(e) = std::panic::catch_unwind(|| {
+                    r.lock().unwrap().index(i);
+                    r.lock().unwrap().assert_valid();
+                }) {
+                    println!("panicked with indexing order {:?} at index {}", idxs, i);
+                    let g = match r.lock() {
+                        Err(e) => e.into_inner(),
+                        Ok(g) => g,
+                    };
+                    println!("last tree:\n{}", last_tree);
+                    println!("current:\n{}", g.print_tree());
+                    std::panic::resume_unwind(e);
+                }
             }
 
+            let r = r.into_inner().unwrap();
             let cloned = r.clone();
             if let Err(e) = std::panic::catch_unwind(|| test(cloned)) {
                 println!("panicked with indexing order {:?}", idxs);
-                r.print_tree();
+                println!("{}", r.print_tree());
                 std::panic::resume_unwind(e);
             }
         }

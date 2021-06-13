@@ -5,10 +5,7 @@ use std::ops::{Deref, Range};
 
 // TODO-FEATURE: `Collect` is valuable, but currently not needed.
 // mod collect;
-mod max_vec;
-
 // pub use collect::Collect;
-pub use max_vec::MaxVec;
 
 /// A marker trait for various types of containers that can be used to reference byte slices
 ///
@@ -61,6 +58,31 @@ impl<R: BytesRef> Debug for Diff<R> {
 }
 
 impl<R: Deref<Target = [u8]>> Diff<R> {
+    /// Returns the byte range being replaced
+    ///
+    /// Equivalent to
+    /// ```ignore
+    /// self.diff_idx .. self.diff_idx + self.old.len()
+    /// ```
+    pub fn old_range(&self) -> Range<usize> {
+        self.diff_idx..self.diff_idx + self.old.len()
+    }
+
+    /// Analagous to [`old_range`], but for `self.new`
+    ///
+    /// This method returns the range that -- after applying the diff -- would correspond to the
+    /// values set by `new`.
+    ///
+    /// Equivalent to
+    /// ```ignore
+    /// self.diff_idx .. self.diff_idx + self.new.len()
+    /// ```
+    ///
+    /// [`old_range`]: Self::old_range
+    pub fn new_range(&self) -> Range<usize> {
+        self.diff_idx..self.diff_idx + self.new.len()
+    }
+
     /// Applies the `Diff` to an object that supports it, panicking if it is incompatible with the
     /// state of the object
     pub fn apply<B: ByteReplace>(&self, obj: &mut B) {
@@ -107,7 +129,10 @@ impl<R: Deref<Target = [u8]>> Diff<R> {
 
 /// A trait for types that can be modified by a [`Diff`]
 ///
-/// Implementations are provided for `Vec<u8>` and `{Box,Arc,Rc}<[u8]>`.
+/// Implementations are provided for `Vec<u8>` and `{Box,Arc,Rc}<[u8]>`. Typically however, the
+/// best type to use will usually be [`ByteTree`], due to its performance characteristics.
+///
+/// [`ByteTree`]: crate::text::objects::ByteTree
 pub trait ByteReplace {
     /// Returns the length in bytes of the object
     ///
@@ -118,7 +143,10 @@ pub trait ByteReplace {
     ///
     /// This function may assume that `self.length()` is less than `start_idx + bytes.len()`,
     /// panicking if not. This function *cannot* perform unsafe code under this assumption.
-    fn is_eq(&self, start_idx: usize, bytes: &[u8]) -> bool;
+    ///
+    /// We use an `&mut self` because certain data structures (namely: `ByteTree`) require a
+    /// mutable reference to extract ranges.
+    fn is_eq(&mut self, start_idx: usize, bytes: &[u8]) -> bool;
 
     /// Replaces the byte range with the given values
     fn replace(&mut self, replace: Range<usize>, with: &[u8]);
@@ -131,7 +159,7 @@ macro_rules! impl_byte_replace_container {
                 self.len()
             }
 
-            fn is_eq(&self, start_idx: usize, bytes: &[u8]) -> bool {
+            fn is_eq(&mut self, start_idx: usize, bytes: &[u8]) -> bool {
                 &self[start_idx..start_idx + bytes.len()] == bytes
             }
 

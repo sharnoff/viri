@@ -4,7 +4,7 @@
 //! [`HistoryCore::edit`]: super::HistoryCore::edit
 
 use super::{BytesRef, Edit, EditId};
-use crate::text::ranged::{Constant, IndexedRangeSlice, Ranged};
+use crate::text::ranged::{Constant, IndexedRangeSlice, NoAccumulator, Ranged};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -60,6 +60,16 @@ enum Translation {
 impl IndexedRangeSlice for Translation {
     type Value = Option<usize>;
 
+    type Accumulator = NoAccumulator;
+
+    fn accumulated(&self, _base: usize, _idx: usize) -> NoAccumulator {
+        NoAccumulator
+    }
+
+    fn index_of_accumulated(&self, _base: usize, _acc: NoAccumulator) -> usize {
+        0
+    }
+
     fn index(&self, idx: usize) -> Option<usize> {
         match self {
             Edited { .. } => None,
@@ -67,7 +77,7 @@ impl IndexedRangeSlice for Translation {
         }
     }
 
-    fn split_at(&mut self, idx: usize) -> Self {
+    fn split_at(&mut self, _base: usize, idx: usize) -> Self {
         match self {
             Shifted { new } => Shifted { new: *new + idx },
             Edited { .. } => self.clone(),

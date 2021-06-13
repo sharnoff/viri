@@ -18,7 +18,7 @@ impl View for SplashView {
     async fn handle(
         &mut self,
         input: Input,
-        _bottom_bar: &mut dyn Textual,
+        _bottom_bar: &mut BottomBar,
     ) -> (OutputSignal, Option<Input>) {
         // For any input, we replace ourselves with a blank file buffer
         (

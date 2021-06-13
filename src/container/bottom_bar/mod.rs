@@ -4,8 +4,8 @@ use crate::any::BoxedAny;
 use crate::config::{Attribute, Configurable, GetAttr, GetAttrAny};
 use crate::container::Painter;
 use crate::macros::{async_method, config};
-use crate::text::Cursor;
-use crate::{TermPos, TermSize, Text, Textual};
+// use crate::text::{Cursor, Text, Textual};
+use crate::{TermPos, TermSize};
 use std::sync::Arc;
 
 mod component;
@@ -31,7 +31,16 @@ pub struct BottomBar {
     pub user_input: Option<String>, // FIXME: when crate::text is added back in, this field should use that
 }
 
-impl Text for BottomBar {}
+/*
+impl Text for BottomBar {
+    fn len(&self) -> usize {
+        todo!()
+    }
+
+    fn fill_range(&self, start_idx: usize, buf: &mut [u8]) {
+        todo!()
+    }
+}
 
 impl Textual for BottomBar {
     fn cursor(&self) -> &Cursor {
@@ -42,6 +51,7 @@ impl Textual for BottomBar {
         todo!()
     }
 }
+*/
 
 /// The evaluation context required for rendering the [`BottomBar`]
 ///

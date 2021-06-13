@@ -7,9 +7,9 @@
 
 use crate::any::BoxedAny;
 use crate::config::{Attribute, GetAttrAny};
-use crate::container::{Input, Painter, Refresh};
+use crate::container::{BottomBar, Input, Painter, Refresh};
 use crate::macros::{async_method, impl_GetAttrAny, init};
-use crate::{TermPos, TermSize, Textual};
+use crate::{TermPos, TermSize};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 
@@ -34,7 +34,7 @@ pub trait View: Send + Sync + GetAttrAny {
     async fn handle(
         &mut self,
         input: Input,
-        bottom_bar: &mut dyn Textual,
+        bottom_bar: &mut BottomBar,
     ) -> (OutputSignal, Option<Input>);
 
     #[async_method]

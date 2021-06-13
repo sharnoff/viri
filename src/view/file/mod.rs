@@ -1,17 +1,17 @@
 //! Wrapper module for the [`FileView`]
 
 use super::{OutputSignal, View};
-use crate::container::{Input, Painter, Refresh};
+use crate::container::{BottomBar, Input, Painter, Refresh};
 use crate::fs::Path;
 use crate::macros::{async_method, id, impl_GetAttrAny};
-use crate::text::{Cursor, Textual};
+// use crate::text::Cursor;
 use crate::{TermPos, TermSize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// An editable buffer for a single "file" - independent of host location
 pub struct FileView {
     text: (),
-    cursor: Cursor,
+    // cursor: Cursor,
     locator: Locator,
     size: TermSize,
     refresh: Refresh,
@@ -42,7 +42,7 @@ impl FileView {
     pub fn new_blank(size: TermSize, refresh: Refresh) -> FileView {
         FileView {
             text: (),
-            cursor: Cursor::new_single(),
+            // cursor: Cursor::new_single(),
             locator: Locator::Blank(BlankId::new()),
             size,
             refresh,
@@ -57,7 +57,7 @@ impl View for FileView {
     async fn handle(
         &mut self,
         input: Input,
-        bottom_bar: &mut dyn Textual,
+        bottom_bar: &mut BottomBar,
     ) -> (OutputSignal, Option<Input>) {
         todo!()
     }

@@ -172,3 +172,31 @@ impl<T, E> DiscardResult for Result<T, E> {
 
     fn discard_result(self) {}
 }
+
+/// A helper trait for debugging during tests
+///
+/// We use specialization to provide an implementation of this trait for all `T`, but only return
+/// `Some(_)` if `T` implements `Debug`.
+///
+/// Because it's *only* really for use during tests, we take the simple path and return a string;
+/// efficiency doesn't matter here.
+pub trait MaybeDbg {
+    /// Returns the output of `format!("{:?}", self)`, if it impements `Debug`; otherwise `None`.
+    fn maybe_dbg(&self) -> Option<String>;
+}
+
+impl<T> MaybeDbg for T {
+    default fn maybe_dbg(&self) -> Option<String> {
+        None
+    }
+}
+
+// We actually don't provide a meaningful implementation outside of `cfg(test)`. We could later, if
+// it's something that becomes necessary for certain types of logging, but at time of writing
+// that's not planned.
+#[cfg(test)]
+impl<T: Debug> MaybeDbg for T {
+    fn maybe_dbg(&self) -> Option<String> {
+        Some(format!("{:?}", self))
+    }
+}

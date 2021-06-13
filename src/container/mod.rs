@@ -12,10 +12,11 @@ mod config;
 pub mod paint;
 pub mod signal;
 
-use bottom_bar::{BBCtx, BottomBar};
+use bottom_bar::BBCtx;
 use paint::{Buffer, Extract};
 use signal::Signal;
 
+pub use bottom_bar::BottomBar;
 pub use config::Config;
 pub use paint::Painter;
 pub use signal::{make_event_stream, Input};
