@@ -15,10 +15,12 @@
 //     been destroyed, and so it wouldn't be possible to sync.
 
 use crate::text::diff::{BytesRef, Diff};
+use crate::utils::Never;
 use smallvec::SmallVec;
 use std::borrow::Borrow;
 use std::collections::{BTreeSet, BinaryHeap, HashSet};
 use std::hash::Hash;
+use std::mem;
 use std::num::NonZeroUsize;
 
 mod cause;
@@ -99,14 +101,9 @@ impl Slice for BlameRange {
 pub struct HistoryCore<Time, R> {
     /// The full list of edits, indexed by their `EditId`s
     ///
-    /// Values of `None` indicate an edit that has been discarded. The minimum index of these
-    /// yet-to-be-recycled edits is given by [`self.last_unused`], if there are any.
-    ///
-    /// [`self.last_unused`]: #structfield.last_unused
+    /// More information about the semantics of this array is given in the documentation for
+    /// [`Edits`].
     edits: Edits<Time, R>,
-
-    /// The last unused index of an edit, kept for recycling previous edits
-    last_unused: Option<usize>,
 
     /// Which edit is responsible for each byte of the text. Instead of using an effective size
     /// equal to the length of the text object, we *also* track the the edits responsible for
@@ -165,7 +162,18 @@ pub struct HistoryCore<Time, R> {
 /// [`get_mut`]: Self::get_mut
 struct Edits<Time, R> {
     /// The internal list of edits
-    ls: Vec<Option<Edit<Time, R>>>,
+    ///
+    /// Because can't really shift `EditId`s after they've been assigned, there's not much we can
+    /// do when we get rid of an edit except hope that we eventually reuse the index. So all
+    /// `EditId`s corresponding to a currently-valid edit have an `Ok` at their index.
+    ///
+    /// For the indexes with an `Err`, all of the error values form a singly-linked list that we
+    /// can use to extract new, empty slots. The `unused_head` field gives the head of the list, if
+    /// it's non-empty.
+    ls: Vec<Result<Edit<Time, R>, Option<usize>>>,
+
+    /// See docs above.
+    unused_head: Option<usize>,
 }
 
 /// A unique identifier corresponding to a single [`Edit`]
@@ -457,8 +465,10 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
     /// Creates a new, blank `HistoryCore` for a text object with the given length
     pub fn new(len: usize) -> Self {
         HistoryCore {
-            edits: Edits { ls: Vec::new() },
-            last_unused: None,
+            edits: Edits {
+                ls: Vec::new(),
+                unused_head: None,
+            },
             blame: StdRanged::new(None, 2 * len + 1),
             shadow: StdRanged::new(None, 2 * len + 1),
             topmost_applied: BTreeSet::new(),
@@ -527,7 +537,7 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
         let iter = (self.edits.ls)
             .iter()
             .enumerate()
-            .filter_map(|(i, e)| Some((i, e.as_ref()?)));
+            .filter_map(|(i, e)| Some((i, e.as_ref().ok()?)));
         for (idx, edit) in iter {
             let base_id = EditId {
                 idx,
@@ -558,8 +568,8 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
     /// There are also certain, internal invariants that may cause this method to panic if
     /// violated. Those cannot be avoided, except by submitting bug reports :)
     pub fn drop_edits(&mut self, ids: &[EditId]) -> Vec<(EditId, Edit<Time, R>)> {
-        let min_idx = ids.iter().map(|id| id.idx).min();
-        self.last_unused = self.last_unused.min(min_idx);
+        // let min_idx = ids.iter().map(|id| id.idx).min();
+        // self.last_unused = self.last_unused.min(min_idx);
 
         let edits = ids
             .into_iter()
@@ -572,7 +582,13 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
                     );
                 }
 
-                (id, self.edits.ls[id.idx].take().unwrap())
+                // Set up the next "pointer" in the contained linked list -- see docs for `Edits`
+                // for more info.
+                let next_id = self.edits.unused_head;
+                let old_edit = mem::replace(&mut self.edits.ls[id.idx], Err(next_id)).unwrap();
+                self.edits.unused_head = Some(id.idx);
+
+                (id, old_edit)
             })
             .collect();
 
@@ -842,16 +858,20 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
 
         let validation_id = self.count;
         self.count.increment();
-        let idx = (self.last_unused)
-            .map(|idx| {
-                self.last_unused =
-                    (idx + 1..self.edits.ls.len()).find(|&i| self.edits.ls[i].is_none());
+        let idx = match self.edits.unused_head {
+            Some(idx) => {
+                self.edits.unused_head = *self.edits.ls[idx]
+                    .as_ref()
+                    .map(|_| -> Never { panic!("expected `Err` value") })
+                    .unwrap_err();
                 idx
-            })
-            .unwrap_or_else(|| {
-                self.edits.ls.push(None);
+            }
+            None => {
+                // Pushing a temporary value because it'll get overwritten soon.
+                self.edits.ls.push(Err(None));
                 self.edits.ls.len() - 1
-            });
+            }
+        };
 
         let new_id = EditId { idx, validation_id };
 
@@ -902,9 +922,9 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
             previous_shadow: None,
         };
 
-        debug_assert!(self.edits.ls[idx].is_none());
+        debug_assert!(self.edits.ls[idx].is_err());
 
-        self.edits.ls[idx] = Some(edit);
+        self.edits.ls[idx] = Ok(edit);
 
         Ok(EditResult {
             new_id,
