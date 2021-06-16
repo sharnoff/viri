@@ -6,7 +6,7 @@
 //!  * [Attributes] - [`attrs`], [`provide_attrs`], [`AttrType`], [`impl_GetAttrAny`]
 //!  * [Named functions] - [`named`]
 //!  * Async functions - [`async_method`], [`async_fn`]
-//!  * Miscellaneous pieces - [`id`], [`flag`], [`request`]
+//!  * Miscellaneous pieces - [`id`], [`flag`]
 //!
 //! This module works in conjunction with the `viri-macros` crate, which provides some of the
 //! backing procedural macros necessary for this to work. Generally, `viri-macros` is treated as
