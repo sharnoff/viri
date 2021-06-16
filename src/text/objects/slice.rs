@@ -1,7 +1,7 @@
 //! Wrapper module for [`ByteSlice`]
 
 use super::INLINE_SIZE;
-use crate::text::ranged::{NoAccumulator, RangeSlice};
+use crate::text::ranged;
 use crate::text::MaxVec;
 use std::ops::{Deref, Range};
 use std::sync::Arc;
@@ -77,18 +77,8 @@ impl ByteSlice {
     }
 }
 
-impl RangeSlice for ByteSlice {
-    type Accumulator = NoAccumulator;
-
-    fn accumulated(&self, _base: usize, _idx: usize) -> NoAccumulator {
-        NoAccumulator
-    }
-
-    fn index_of_accumulated(&self, _base: usize, _acc: NoAccumulator) -> usize {
-        0
-    }
-
-    fn split_at(&mut self, _base: usize, idx: usize) -> Self {
+impl ranged::Slice for ByteSlice {
+    fn split_at(&mut self, idx: usize) -> Self {
         // There's a couple algorithmic notes here:
         //
         // If we're splitting an `Arc`-backed slice into one or more pieces that are smaller than
@@ -120,9 +110,7 @@ impl RangeSlice for ByteSlice {
     }
 
     #[rustfmt::skip]
-    fn try_join(self, self_size: usize, other: Self) -> Result<Self, (Self, Self)> {
-        debug_assert!(self_size == self.len());
-
+    fn try_join(self, other: Self) -> Result<Self, (Self, Self)> {
         // In joining, there's a couple things we'll do -- with a small amount of cheating
         // involved.
         //

@@ -19,9 +19,6 @@
 //! Having multiple ways of viewing the same file allows us to do interesting things -- like
 //! viewing the raw bytes of a file, as we're editing it.
 
-// Re-import here so that submodules can succinctly access it
-use super::ranged::Ranged;
-
 mod byte_tree;
 pub mod encoding;
 mod shared;

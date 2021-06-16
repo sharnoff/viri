@@ -1,6 +1,6 @@
 //! Wrapper module for [`TextTree`]
 
-use super::{Encoding, Ranged, SharedByteTree};
+use super::{Encoding, SharedByteTree};
 use crate::text::BytePos;
 use smallvec::SmallVec;
 use std::ops::Range;
@@ -14,8 +14,6 @@ mod lru;
 use cache::Cache;
 #[doc(inline)]
 pub use line::Line;
-#[doc(inline)]
-use line::LineRange;
 use lru::SizedLruCache;
 
 /// A view into a text object with a particular byte encoding and optional styling
@@ -49,7 +47,7 @@ pub struct TextTree<Time, Tag, Enc> {
     /// content and as a store for the computed values in certain ranges
     cache: Arc<Mutex<Cache>>,
     /// The locations of each newline in the text object
-    lines: Ranged<LineRange>,
+    lines: line::Ranges,
 }
 
 // SAFETY: The reason why this type doesn't normally implement `Send` or `Sync` is because it

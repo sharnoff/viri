@@ -28,7 +28,7 @@ mod pos_map;
 #[cfg(test)]
 mod tests;
 
-use super::ranged::{NoAccumulator, RangeSlice, Ranged};
+use super::ranged::{Slice, StdRanged};
 
 use cause::CauseStack;
 use marker::{EditsRef, Operation, Recover, Redo, Undo};
@@ -39,7 +39,7 @@ use pos_map::{PosMap, TrackBlame};
 ///
 /// [`HistoryCore.blame`]: HistoryCore#structfield.blame
 /// [`HistoryCore.shadow`]: HistoryCore#structfield.shadow
-type Blame = Ranged<Option<BlameRange>>;
+type Blame = StdRanged<Option<BlameRange>>;
 
 /// (*Internal*) The blame for a region of bytes, alongside the offset from the position of the
 /// original edit
@@ -52,31 +52,23 @@ struct BlameRange {
     id: EditId,
 }
 
-impl RangeSlice for BlameRange {
-    type Accumulator = NoAccumulator;
-
-    fn accumulated(&self, _base: usize, _idx: usize) -> NoAccumulator {
-        NoAccumulator
-    }
-
-    fn index_of_accumulated(&self, _base: usize, _acc: NoAccumulator) -> usize {
-        0
-    }
-
-    fn split_at(&mut self, _base: usize, idx: usize) -> Self {
+impl Slice for BlameRange {
+    fn split_at(&mut self, idx: usize) -> Self {
         BlameRange {
             start_idx: self.start_idx + idx,
             id: self.id,
         }
     }
 
-    fn try_join(self, self_size: usize, other: Self) -> Result<Self, (Self, Self)> {
+    fn try_join(self, other: Self) -> Result<Self, (Self, Self)> {
         // We only join if they're the same edit and the offset is continuous.
         //
-        // In practice, we shouldn't really need to check that the offset is continuous, because -
-        // if it's interrupted - that'll be a distinct region for the byte boundary. But it's worth
-        // having here anyways in case my infallible logic is not so infallible.
-        if self.id != other.id || self.start_idx + self_size != other.start_idx {
+        // We don't *actually* need to check if the offset is continuous, however, because there's
+        // no way to connect two `BlameRange`s so that they neighbor each other but their offsets
+        // are different. The reason for this is because our usage of `Blame` ensures that any edit
+        // will always leave behind *something* in `Blame`, so there's no way to remove the middle
+        // part of an edit in a way that doesn't also put something between the two regions.
+        if self.id != other.id {
             return Err((self, other));
         }
 
@@ -455,8 +447,8 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
         HistoryCore {
             edits: Edits { ls: Vec::new() },
             last_unused: None,
-            blame: Ranged::new(None, 2 * len + 1),
-            shadow: Ranged::new(None, 2 * len + 1),
+            blame: StdRanged::new(None, 2 * len + 1),
+            shadow: StdRanged::new(None, 2 * len + 1),
             topmost_applied: BTreeSet::new(),
             bottommost_unapplied: BTreeSet::new(),
             count: UniqueEditId {
@@ -851,7 +843,7 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
 
         let previous_blame = self.blame.replace(
             blame_range,
-            Ranged::new(Some(blame), 2 * diff.new.len() + 1),
+            StdRanged::new(Some(blame), 2 * diff.new.len() + 1),
         );
 
         // Calculate the final `Diff`:
@@ -1173,7 +1165,7 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
         if Op::IS_UNDO {
             // Undo!
 
-            let new_shadow = Ranged::new(Some(BlameRange { start_idx: 0, id }), new_blame_size);
+            let new_shadow = StdRanged::new(Some(BlameRange { start_idx: 0, id }), new_blame_size);
 
             debug_assert!(edit.previous_shadow.is_none());
             edit.previous_shadow = Some(self.shadow.replace(old_blame_range.clone(), new_shadow));
@@ -1184,7 +1176,7 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
             // We *could* double-check that the blame is the same, but that's a lot of extra work
             // when we don't need to use the value for anything else.
 
-            let new_blame = Ranged::new(Some(BlameRange { start_idx: 0, id }), new_blame_size);
+            let new_blame = StdRanged::new(Some(BlameRange { start_idx: 0, id }), new_blame_size);
             let _ = self.blame.replace(old_blame_range.clone(), new_blame);
 
             let restored_shadow = (edit.previous_shadow)

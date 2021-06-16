@@ -5,7 +5,8 @@ use std::marker::Unpin;
 use std::ops::Range;
 use tokio::io::AsyncRead;
 
-use super::{ByteSlice, Ranged};
+use super::ByteSlice;
+use crate::text::ranged::StdRanged;
 
 /// The low-level, byte-wise representation of a text object
 ///
@@ -34,7 +35,7 @@ use super::{ByteSlice, Ranged};
 /// proportional to the number of edits that have been made to the file.
 #[derive(Clone)]
 pub struct ByteTree {
-    bytes: Ranged<ByteSlice>,
+    bytes: StdRanged<ByteSlice>,
 }
 
 impl ByteTree {
@@ -53,7 +54,7 @@ impl ByteTree {
         let init = ByteSlice::new(&[]);
 
         ByteTree {
-            bytes: Ranged::new(init, 0),
+            bytes: StdRanged::new(init, 0),
         }
     }
 
@@ -103,7 +104,7 @@ impl ByteTree {
         let slice = ByteSlice::from_owned(array);
 
         ByteTree {
-            bytes: Ranged::new(slice, len),
+            bytes: StdRanged::new(slice, len),
         }
     }
 
@@ -142,7 +143,7 @@ impl crate::text::diff::ByteReplace for ByteTree {
 
     fn replace(&mut self, replace: Range<usize>, with: &[u8]) {
         let slice = ByteSlice::new(with);
-        let values = Ranged::new(slice, with.len());
+        let values = StdRanged::new(slice, with.len());
 
         self.bytes.replace(replace, values);
     }

@@ -4,7 +4,7 @@
 //! [`HistoryCore::edit`]: super::HistoryCore::edit
 
 use super::{BytesRef, Edit, EditId};
-use crate::text::ranged::{Constant, IndexedRangeSlice, NoAccumulator, Ranged};
+use crate::text::ranged::{Constant, IndexedSlice, StdRanged};
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -23,7 +23,7 @@ use Translation::{Edited, Shifted};
 pub(super) struct PosMap<Time, R> {
     /// The representation of how to map an "old" position to a new one, sectioned by how each
     /// range of indexes is mapped
-    map: Ranged<Translation>,
+    map: StdRanged<Translation>,
 
     /// All of the edits for which no edit they depend upon has had its "simulated undo", paired
     /// with their position in the text object
@@ -33,7 +33,7 @@ pub(super) struct PosMap<Time, R> {
     bottommost_undone: BTreeMap<EditId, usize>,
 
     /// If it's desired, store the blame
-    blame: Option<Ranged<Constant<Option<EditId>>>>,
+    blame: Option<StdRanged<Constant<Option<EditId>>>>,
 
     /// Ensure that a `PosMap` can't be shared between `HistoryCore`s - or at least not for ones
     /// with different types
@@ -54,39 +54,36 @@ pub(super) struct PosMap<Time, R> {
 #[derive(Clone)]
 enum Translation {
     Edited { id: EditId },
-    Shifted { new: usize },
+    Shifted { new: usize, size: usize },
 }
 
-impl IndexedRangeSlice for Translation {
+impl IndexedSlice for Translation {
     type Value = Option<usize>;
-
-    type Accumulator = NoAccumulator;
-
-    fn accumulated(&self, _base: usize, _idx: usize) -> NoAccumulator {
-        NoAccumulator
-    }
-
-    fn index_of_accumulated(&self, _base: usize, _acc: NoAccumulator) -> usize {
-        0
-    }
 
     fn index(&self, idx: usize) -> Option<usize> {
         match self {
             Edited { .. } => None,
-            Shifted { new } => Some(new + idx),
+            Shifted { new, .. } => Some(new + idx),
         }
     }
 
-    fn split_at(&mut self, _base: usize, idx: usize) -> Self {
+    fn split_at(&mut self, idx: usize) -> Self {
         match self {
-            Shifted { new } => Shifted { new: *new + idx },
+            Shifted { new, size } => {
+                let this = Shifted {
+                    new: *new,
+                    size: *size - idx,
+                };
+                *size = idx;
+                this
+            }
             Edited { .. } => self.clone(),
         }
     }
 
-    fn try_join(self, self_size: usize, other: Self) -> Result<Self, (Self, Self)> {
+    fn try_join(self, other: Self) -> Result<Self, (Self, Self)> {
         match (&self, &other) {
-            (Shifted { new: s }, Shifted { new: o }) if s + self_size == *o => Ok(self),
+            (Shifted { new: s, size: n }, Shifted { new: o, .. }) if s + n == *o => Ok(self),
             (Edited { id: s, .. }, Edited { id: o, .. }) if s == o => Ok(self),
             _ => Err((self, other)),
         }
@@ -106,9 +103,15 @@ impl<Time: Ord, R: BytesRef> PosMap<Time, R> {
     pub fn new(current_size: usize, do_blame: TrackBlame) -> Self {
         PosMap {
             bottommost_undone: BTreeMap::new(),
-            map: Ranged::new(Shifted { new: 0 }, current_size),
+            map: StdRanged::new(
+                Shifted {
+                    new: 0,
+                    size: current_size,
+                },
+                current_size,
+            ),
             blame: match do_blame {
-                TrackBlame::Yes => Some(Ranged::new(Constant(None), 2 * current_size + 1)),
+                TrackBlame::Yes => Some(StdRanged::new(Constant(None), 2 * current_size + 1)),
                 TrackBlame::No => None,
             },
             marker: PhantomData,
@@ -151,7 +154,7 @@ impl<Time: Ord, R: BytesRef> PosMap<Time, R> {
 
         self.map.replace(
             range.clone(),
-            Ranged::new(Edited { id }, edit.diff.old.len()),
+            StdRanged::new(Edited { id }, edit.diff.old.len()),
         );
 
         // If we're tracking the blame, do that
@@ -159,7 +162,7 @@ impl<Time: Ord, R: BytesRef> PosMap<Time, R> {
             let blame_range = 2 * range.start..2 * range.end + 1;
             let old_blame = b.replace(
                 blame_range,
-                Ranged::new(Constant(Some(id)), 2 * edit.diff.old.len() + 1),
+                StdRanged::new(Constant(Some(id)), 2 * edit.diff.old.len() + 1),
             );
             assert!({
                 let mut iter = old_blame.iter();

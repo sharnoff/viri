@@ -2,9 +2,12 @@
 
 use super::{Cache, Encoding};
 use crate::text::objects::ByteTree;
-use crate::text::ranged::{IndexedRangeSlice, Ranged};
+use crate::text::ranged::{AccumulatorSlice, Ranged};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
+
+// TODO: `Idx` and `Delta` need to be written.
+pub(super) type Ranges = Ranged<usize, (), (), LineRange>;
 
 /// A range of bytes, corresponding to a number of lines
 pub(super) struct LineRange {
@@ -59,11 +62,13 @@ pub(super) fn make_ranged<Enc: Encoding>(
     bytes: ByteTree,
     enc: &Enc,
     cache: &Arc<Mutex<Cache>>,
-) -> Ranged<LineRange> {
+) -> Ranges {
     todo!()
 }
 
-impl IndexedRangeSlice for LineRange {
+impl AccumulatorSlice for LineRange {
+    type Idx = usize;
+
     // The accumulator for a `LineRange` represents the number of lines contained within the range
     type Accumulator = usize;
 
@@ -75,9 +80,9 @@ impl IndexedRangeSlice for LineRange {
         todo!()
     }
 
-    type Value = Line;
+    type IndexedValue = Line;
 
-    fn index(&self, idx: usize) -> Line {
+    fn index(&self, base: usize, idx: usize) -> Line {
         todo!()
     }
 
@@ -85,7 +90,7 @@ impl IndexedRangeSlice for LineRange {
         todo!()
     }
 
-    fn try_join(self, _self_size: usize, other: Self) -> Result<Self, (Self, Self)> {
+    fn try_join(self, other: Self) -> Result<Self, (Self, Self)> {
         todo!()
     }
 }
