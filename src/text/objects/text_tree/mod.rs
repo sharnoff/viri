@@ -176,6 +176,11 @@ where
     /// `undo`/`redo` are treated as fallible, standalone requests. Instead of returning the
     /// [`EditResult`] directly, processing changes in case of success must be done by calls to
     /// [`sync`] instead.
+    ///
+    /// [`Diff`]: crate::text::Diff
+    /// [`sync`]: Self::sync
+    /// [`updated`]: Self::updated
+    /// [`EditResult`]: crate::text::grouped_history::EditResult
     pub fn edit(
         &mut self,
         replace_range: Range<Pos>,
@@ -199,7 +204,17 @@ where
     /// Returns the byte position for the given line-column pair, if it's a valid pair
     ///
     /// This method will not panic, and will instead return `Err(())` if the position is invalid.
-    fn byte_pos(&mut self, pos: Pos) -> Result<BytePos, ()> {
+    pub fn byte_pos(&mut self, pos: Pos) -> Result<BytePos, ()> {
+        todo!()
+    }
+
+    // TODO-DOC
+    pub fn sync(&mut self) {
+        todo!()
+    }
+
+    // TODO-DOC
+    pub async fn updated(&self) {
         todo!()
     }
 }

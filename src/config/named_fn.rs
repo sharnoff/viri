@@ -5,21 +5,11 @@
 //!
 //! ## Motivation
 //!
-//! Like nearly all technically interesting constructions in this project, named functions exist
-//! primarily to help with configuration - specifically for keybindings. More information is
-//! available in the [`keys`] and [`modes`] modules, but the reason is essentially this:
+//! Named functions primarily exist to help with configuration - essentially serving as drop-in
+//! predefined functions in any place that might expect them. Currently, they mostly exist as one
+//! of the components that's available for use inside the [bottom bar] to generate text.
 //!
-//! [`keys`]: crate::keys
-//! [`modes`]: crate::modes
-//!
-//! Because all keybindings aren't just for matching - they actually *produce* the output values as
-//! well - there needs to be some way of transforming the values that are emitted. One half of this
-//! is provided by the `Const` variants of the keybindings, with [dynamic deserialization], but the
-//! other half is provided here, by mapping those values (or: a list of values) through a function
-//! to produce the desired output type.
-//!
-//! This is a core component of the configuration system, and so it's worth describing at length
-//! here.
+//! [bottom bar]: crate::container::bottom_bar
 //!
 //! ## Features
 //!

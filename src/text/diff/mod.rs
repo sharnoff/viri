@@ -32,6 +32,7 @@ impl<T> BytesRef for T where T: Clone + Deref<Target = [u8]> {}
 ///
 /// [diff-match-patch]: https://github.com/google/diff-match-patch/wiki/Unidiff
 /// [Unidiff]: https://en.wikipedia.org/wiki/Diff#Unified_format
+/// [`HistoryCore`]: super::history_core::HistoryCore
 /// [`apply`]: Self::apply
 #[derive(Clone)]
 pub struct Diff<R> {

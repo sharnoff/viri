@@ -84,13 +84,15 @@ impl Slice for BlameRange {
 /// the representation of a byte slice used for [`Diff`]s, required to implement [`BytesRef`].
 ///
 /// The interface for this type is currently (pending further use-cases) quite limited; an
-/// `HistoryCore` is created with the [`new`](Self::new) function and functionality is primarily
-/// exposed through the [`edit`], [`undo`], [`redo`], and [`try_{undo,redo}`] methods.
+/// `HistoryCore` is created with the [`new`] function and functionality is primarily exposed
+/// through the [`edit`], [`undo`], [`redo`], and [`try_{undo,redo}`] methods.
 ///
 /// The [module-level documentation] has more detailed information about usage of this type.
 ///
+/// [`new`]: Self::new
 /// [`edit`]: Self::edit
 /// [`undo`]: Self::undo
+/// [`redo`]: Self::redo
 /// [`edit`]: Self::redo
 /// [`try_{undo,redo}`]: Self::try_undo
 /// [module-level documentation]: self
@@ -156,8 +158,11 @@ pub struct HistoryCore<Time, R> {
 
 /// (*Internal*) The edits stored in a [`HistoryCore`]
 ///
-/// This is extracted out so that we can provide the [`get`](Self::get) and
-/// [`get_mut`](Self::get_mut) methods without requiring a full borrow on the `HistoryCore` itself.
+/// This is extracted out so that we can provide the [`get`] and [`get_mut`] methods without
+/// requiring a full borrow on the `HistoryCore` itself.
+///
+/// [`get`]: Self::get
+/// [`get_mut`]: Self::get_mut
 struct Edits<Time, R> {
     /// The internal list of edits
     ls: Vec<Option<Edit<Time, R>>>,
@@ -209,9 +214,12 @@ impl UniqueEditId {
 /// module, but the descriptions available here may provide some additional insight not given by the
 /// [module-level documentation](self).
 ///
-/// An `Edit` can be returned from a [`HistoryCore`] by the [`get_edit`](HistoryCore::get_edit) or
-/// [`drop_edits`](HistoryCore::drop_edits) methods. This struct is primarily provided so that - if
-/// edits are at some point discarded, their pieces may be retreived later.
+/// An `Edit` can be returned from a [`HistoryCore`] by the [`get_edit`] or [`drop_edits`] methods.
+/// This struct is primarily provided so that - if edits are at some point discarded, their pieces
+/// may be retreived later.
+///
+/// [`get_edit`]: HistoryCore::get_edit
+/// [`drop_edits`]: HistoryCore::drop_edits
 pub struct Edit<Time, R> {
     /// A unique id given to this edit alone; used for ensuring that [`EditId`]s pointing to the
     /// index containing this value aren't stale.
@@ -309,7 +317,9 @@ pub struct EditResult<R> {
 /// This contains both the required change to the text object and the set of other edits that may
 /// have been undone as well. It is the responsibility of the caller to record that these edits were
 /// undone - or separately check with [`HistoryCore::is_present`] before calls to
-/// [`undo`](HistoryCore::undo).
+/// [`undo`].
+///
+/// [`undo`]: HistoryCore::undo
 #[derive(Clone)]
 pub struct UndoResult<R> {
     /// The change(s) required to the text object to account for this action, alongside the edits
@@ -331,7 +341,9 @@ pub struct UndoResult<R> {
 /// This contains both the required change to the text object and the set of other edits that may
 /// have been redone as well. It is the responsibility of the caller to record that these edits were
 /// redone - or separately check with [`HistoryCore::is_present`] before calls to
-/// [`redo`](HistoryCore::redo).
+/// [`redo`].
+///
+/// [`redo`]: HistoryCore::redo
 #[derive(Clone)]
 pub struct RedoResult<R> {
     /// The change(s) required to the text object to account for this action, alongside the edits
@@ -467,10 +479,22 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
     /// ## Panics
     ///
     /// This method will panic on any invalid `EditId`: always for edits that have since been
-    /// dropped (with [`drop_edits`](Self::drop_edits)), and sometimes for edits corresponding to a
-    /// different [`HistoryCore`].
+    /// dropped (with [`drop_edits`]), and sometimes for edits corresponding to a
+    /// different `HistoryCore`.
+    ///
+    /// [`drop_edits`]: Self::drop_edits
     pub fn get_edit(&self, id: EditId) -> &Edit<Time, R> {
         self.edits.get("", id)
+    }
+
+    /// Returns whether the given edit is currently applied
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic on any invalid `EditId`: either one that's been dropped or one that
+    /// never existed here.
+    pub fn is_present(&self, id: EditId) -> bool {
+        self.get_edit(id).cause_stack.is_present()
     }
 
     /// Prints the graph, using the provided function to map [`EditId`]s to a displayed name
@@ -1232,6 +1256,8 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
 
 impl<Time: Clone + Ord, R> Edits<Time, R> {
     /// (*Internal*) An immutable specialization of [`do_foreach_affected_internal`]
+    ///
+    /// [`do_foreach_affected_internal`]: Self::do_foreach_affected_internal
     fn do_foreach_affected_ref<'a, Op, Iter, Func>(&self, ids: Iter, mut func: Func)
     where
         Op: Operation<Time>,
@@ -1244,6 +1270,8 @@ impl<Time: Clone + Ord, R> Edits<Time, R> {
     }
 
     /// (*Internal*) A mutable specialization of [`do_foreach_affected_internal`]
+    ///
+    /// [`do_foreach_affected_internal`]: Self::do_foreach_affected_internal
     fn do_foreach_affected_mut<'a, Op, Iter, Func>(&mut self, ids: Iter, mut func: Func)
     where
         Op: Operation<Time>,

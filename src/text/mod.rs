@@ -8,7 +8,7 @@ use std::ops::Range;
 
 mod cursor;
 mod diff;
-mod grouped_history;
+pub mod grouped_history;
 mod history_core;
 mod max_vec;
 pub mod objects;
@@ -75,7 +75,9 @@ pub trait Textual<Pos>: Text {
     /// Produces a reference to the [`Cursor`] paired with the text
     ///
     /// This trait provides that the value of the cursor does not change outside of any changes
-    /// made by [`cursor_mut`](Self::cursor_mut), or by changes to the underlying [`Text`].
+    /// made by [`cursor_mut`], or by changes to the underlying [`Text`].
+    ///
+    /// [`cursor_mut`]: Self::cursor_mut
     fn cursor(&self) -> &Cursor<Pos>;
 
     /// Produces a mutable reference to the [`Cursor`] paired with the text

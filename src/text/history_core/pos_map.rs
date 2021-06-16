@@ -20,6 +20,8 @@ use Translation::{Edited, Shifted};
 /// edit, we can't immediately determine where it should go. We're given its position from *when it
 /// was made*, but that may have shifted since. In order to figure out what its current position
 /// *should* be, we can pretend to undo all of the newer edits, purely tracking their positions.
+///
+/// [`HistoryCore::edit`]: super::HistoryCore::edit
 pub(super) struct PosMap<Time, R> {
     /// The representation of how to map an "old" position to a new one, sectioned by how each
     /// range of indexes is mapped

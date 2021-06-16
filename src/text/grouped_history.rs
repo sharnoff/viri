@@ -5,7 +5,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 use super::diff::{BytesRef, Diff};
-use super::history_core::{Edit, EditId, EditResult, HistoryCore, RedoResult, UndoResult};
+pub use super::history_core::{Edit, EditId, EditResult, HistoryCore, RedoResult, UndoResult};
 
 /// Edit history with edit groups for block undo/redo
 ///

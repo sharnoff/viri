@@ -42,7 +42,7 @@ pub struct SharedByteTree<Time, Tag> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ChangeId(u64);
 
-/// The result of a single successful change made to the `SharedByteTree` object, by any of the
+/// The result of a single successful change made to the [`SharedByteTree`] object, by any of the
 /// [`edit`], [`undo`], or [`redo`] methods
 ///
 /// Values of this type are primarily exposed through the [`sync`] method.
@@ -50,10 +50,11 @@ struct ChangeId(u64);
 /// This type has a couple convenience methods. For example, [`diffs`] returns a reference to the
 /// actual changes to the text object corresponding to this conceptual change.
 ///
+/// [`sync`]: SharedByteTree::sync
 /// [`edit`]: SharedByteTree::edit
 /// [`undo`]: SharedByteTree::undo
 /// [`redo`]: SharedByteTree::redo
-/// [`diff`]: Self::diff
+/// [`diffs`]: Self::diffs
 #[derive(Clone)]
 pub enum Change {
     Edit(EditResult<ByteSlice>),
@@ -202,6 +203,8 @@ impl<Time: Clone + Ord, Tag: Clone> SharedByteTree<Time, Tag> {
     ///
     /// If an update has already been made since the last call to [`sync`], this method returns
     /// immediately. Because of this, dropping the future will not miss out on any signals.
+    ///
+    /// [`sync`]: Self::sync
     pub async fn updated(&self) {
         let mgr_guard = self.tree_ref.manager.lock().unwrap();
 
@@ -515,9 +518,11 @@ impl<Time: Clone + Ord, Tag: Clone> SharedByteTree<Time, Tag> {
 /// Returns whether there's any part of `target` that overlaps with `base`. The two sides are
 /// distinct because there's some subtle edge cases that we handle here.
 ///
-/// This function is specifically used to determine whether two [`Diffs`] overlap (i.e. if we can't
+/// This function is specifically used to determine whether two [`Diff`s] overlap (i.e. if we can't
 /// apply one with range `target` because of `base`). This is why there's some subtle edge cases,
 /// and why it may not return results that are generally expected.
+///
+/// [`Diff`s]: Diff
 ///
 /// ## Edge Cases
 ///

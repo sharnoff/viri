@@ -153,6 +153,7 @@ where
     ///
     /// We also do not allow a cost of zero; this will panic as well.
     ///
+    /// [`insert`]: Self::insert
     /// [`get_range`]: Self::get_range
     pub fn cache(&mut self, index: Idx, val: T, cost: u64) {
         assert!(cost != 0);
@@ -187,6 +188,7 @@ where
     ///
     /// We also do not allow a cost of zero; this will panic as well.
     ///
+    /// [`cache`]: Self::cache
     /// [`get_range`]: Self::get_range
     pub fn insert(&mut self, index: Idx, val: T, cost: u64) {
         assert!(cost != 0);

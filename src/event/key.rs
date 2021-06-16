@@ -70,9 +70,11 @@ impl From<event::KeyCode> for KeyCode {
 
 /// A set of modifiers attached to a single [`KeyEvent`] or [`MouseEvent`]
 ///
-/// This is quite different from crossterm's [`KeyModifiers`](crossterm::event::KeyModifiers)
-/// because (1) it disregards shift and (2) it explicitly lists possible combinations of the
-/// remaining modifiers.
+/// This is quite different from crossterm's [`KeyModifiers`] because (1) it disregards shift and
+/// (2) it explicitly lists possible combinations of the remaining modifiers.
+///
+/// [`KeyModifiers`]: crossterm::event::KeyModifiers
+/// [`MouseEvent`]: super::MouseEvent
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum KeyModifiers {
     Alt,

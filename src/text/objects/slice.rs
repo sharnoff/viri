@@ -15,6 +15,9 @@ use std::sync::Arc;
 ///
 /// The primary ways to construct `ByteSlice`s are with the [`new`] and [`from_owned`] methods,
 /// which automatically store the provided bytes locally if possible.
+///
+/// [`new`]: Self::new
+/// [`from_owned`]: Self::from_owned
 #[derive(Clone)]
 pub struct ByteSlice(BsKind);
 

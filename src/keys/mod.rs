@@ -231,12 +231,14 @@ impl<Cmd> ModeBindings<Cmd> {
 
 /// A stream of keys to parse
 ///
-/// Primary usage of this type is
+/// This type is only really used inside implementations of [`KeyParser`], where parsers will use
+/// this by making repeated calls to [`next`] to parse key-by-key. For speculative parsing, there's
+/// the [`state`] and [`restore`] methods, though it's often easier to use an existing combinator,
+/// like [`Any`].
 ///
-/// Cloning is cheap -- we could have provided an implementation of `Copy`, but mutable methods on
-/// `Copy` types tend to run into trouble. Alternatively, the [`fork`](Self::fork) method is provided with the
-/// same behavior.
-#[derive(Clone)]
+/// [`next`]: Self::next
+/// [`state`]: Self::state
+/// [`restore`]: Self::restore
 pub struct KeyStream<'a> {
     keys: &'a [KeyEvent],
     /// The current position in the sequence

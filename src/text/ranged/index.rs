@@ -6,11 +6,15 @@
 ///
 /// The methods here are given individually because the standard library doesn't supply the
 /// necessary implementations of the traits that we'd otherwise use instead.
+///
+/// [`Ranged`]: super::Ranged
 pub trait RangedIndex: Copy + Ord {
     /// The maximum allowed size of a [`Ranged`] indexed by this type
     ///
     /// This is typically equal to the maximum value of `Self` over two -- there must be a wide
     /// enough range of possible values beyond `MAX_SIZE` to represent `2 * (MAX_SIZE - 1)`.
+    ///
+    /// [`Ranged`]: super::Ranged
     const MAX_SIZE: Self;
 
     /// Returns a string used to display the maximum size
@@ -58,6 +62,8 @@ pub trait RangedIndex: Copy + Ord {
     /// ## Panics
     ///
     /// This method must panic if `self.is_zero()` is true.
+    ///
+    /// [`Range`]: std::ops::Range
     fn decrement(self) -> Self;
 
     /// Returns the result of applying the delta to `self`, equivalent to `self + del`

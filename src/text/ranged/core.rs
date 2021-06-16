@@ -60,10 +60,11 @@ use super::RangedIndex;
 /// [`Constant`] implements [`IndexedSlice`] for the simplest case: uniform ranges of values
 /// without any special behavior.
 ///
-/// [`TextTree`]: crate::text::objects::TextTree;
+/// [`TextTree`]: crate::text::objects::TextTree
 /// [`StdRanged`]: super::StdRanged
 /// [`Slice`]: super::Slice
 /// [`IndexedSlice`]: super::IndexedSlice
+/// [`Constant`]: super::Constant
 #[derive(Clone)]
 pub struct Ranged<Acc, Idx, Delta, S> {
     size: Idx,
@@ -115,14 +116,8 @@ struct Node<Acc, Idx, Delta, S> {
 /// Fetching the accumulated value at a point is done with the [`accumulated_at`] method on
 /// [`Ranged`].
 ///
-/// [`TextTree`]: crate::text::objects::TextTree;
-///
-/// ## Other things to note
-///
-/// There a couple implementations of this trait provided for you; [`Constant`] and a blanket
-/// implementation on [`Option`]. The implementation on [`Option`] works in the expected way: it
-/// behaves like [`Constant`] when the values are `None`, and otherwise defers to the underlying
-/// ranges.
+/// [`TextTree`]: crate::text::objects::TextTree
+/// [`accumulated_at`]: Ranged::accumulated_at
 pub trait AccumulatorSlice: Sized {
     /// Representation of an index, used both for the starting position of a slice and an index
     /// within it
@@ -131,7 +126,9 @@ pub trait AccumulatorSlice: Sized {
     /// The value provided by indexing
     ///
     /// It may not always make sense to provide an indexed value; in these cases, the [`NoIndex`]
-    /// type is provided an empty type to make this explicit.
+    /// type is provided as an empty type to make this explicit.
+    ///
+    /// [`NoIndex`]: super::NoIndex
     type IndexedValue: Sized;
 
     /// Returns the value at the given offset `idx` inside of the slice

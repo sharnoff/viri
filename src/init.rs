@@ -8,7 +8,7 @@
 //! Outside of that, the [`LazyInit`] type is also provided, which allows the value of a `static`
 //! item to be specified exactly once, typically within an initializing block for a module.
 //!
-//! [`init`](crate::macros::init)
+//! [`init`]: crate::macros::init
 
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
@@ -28,7 +28,9 @@ const INIT: u8 = 2;
 /// that attempting to dereference to a value that has not been initialized will result in a
 /// panic.
 ///
-/// Typical usage of this type is within `static`s, set by the [`init!`] macro.
+/// Typical usage of this type is within `static`s, set by the [`init`] macro.
+///
+/// [`init`]: crate::macros::init
 pub struct LazyInit<T> {
     /// Marker for whether `val` has been set
     state: AtomicU8,
