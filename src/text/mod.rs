@@ -9,7 +9,6 @@ use std::ops::Range;
 mod cursor;
 mod diff;
 mod grouped_history;
-mod history;
 mod history_core;
 mod max_vec;
 pub mod objects;
@@ -18,7 +17,6 @@ pub mod ranged;
 pub use cursor::{Cursor, SingleCursor};
 pub use diff::Diff;
 pub use grouped_history::GroupedHistory;
-pub use history::History;
 pub use max_vec::MaxVec;
 
 /// Wrapper type for byte positions within a text object
