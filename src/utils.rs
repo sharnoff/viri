@@ -146,33 +146,6 @@ pub enum Directional<T> {
     Right(T),
 }
 
-/// An extension trait for `Result`s that allows ergonomic, explicit dropping
-///
-/// There's a pattern in a few places where we might want to explicitly discard a `Result` - where
-/// we either perform some action (e.g. logging) if it's an error, or do nothing.
-pub trait DiscardResult: Sized {
-    type Error;
-
-    /// Discards `self`, immediately dropping the value. Calls the provided function if the result
-    /// is an error
-    fn discard_if_ok_else(self, if_err: impl FnOnce(Self::Error));
-
-    /// Discards `self`, immediately dropping the value
-    fn discard_result(self);
-}
-
-impl<T, E> DiscardResult for Result<T, E> {
-    type Error = E;
-
-    fn discard_if_ok_else(self, if_err: impl FnOnce(E)) {
-        if let Err(e) = self {
-            if_err(e)
-        }
-    }
-
-    fn discard_result(self) {}
-}
-
 /// A helper trait for debugging during tests
 ///
 /// We use specialization to provide an implementation of this trait for all `T`, but only return
