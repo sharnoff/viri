@@ -72,6 +72,13 @@ pub struct Ranged<Acc, Idx, Delta, S> {
     // whenever `size = 0`. We also will sometimes `.take()` it in order to temporarily extract an
     // owned `Ranged` from a `&mut Ranged`.
     root: Option<Box<Node<Acc, Idx, Delta, S>>>,
+    // Helper value to store the default accumulator. This is kept in case the accumulator happens
+    // to be particularly expensive to construct -- we want to minimize unnecessary calls to
+    // `Acc::default()`
+    //
+    // This value is always kept as `Some(_)` between method calls, though `replace_with`
+    // temporarily moves out of it.
+    default_acc: Option<Acc>,
 }
 
 /// (*Internal*) A helper type for a [`Node`]; a value paired with its size
@@ -138,16 +145,25 @@ pub trait AccumulatorSlice: Sized {
 
     /// An accumulator for values
     ///
-    /// The implementation of `AddAssign` on the accumulator is expected to be commutative and
-    /// associative -- i.e. that `x + y = y + x` and `(x + y) + z = x + (y + z)`. This should
-    /// typically be true *anyways* for most sensible accumulators, but it's worth stating
-    /// explicitly. The implementation of `SubAssign` should similarly reflect these expectations.
-    ///
-    /// The value provided by `Default` should be the identity.
-    ///
     /// If your implementation of `AccumulatorSlice` does not need an accumulator, you may wish to
     /// provide [`NoAccumulator`] here; it is a unit type that provides dummy implementations of
     /// the required traits.
+    ///
+    /// ## Precise usage semantics
+    ///
+    /// The implementation of `AddAssign` on the accumulator need not be commutative, though it
+    /// must be associative. In other words, `x + y` can be different from `y + x`, but
+    /// `x + (y + z)` should always be the same as `(x + y) + z`. All usage of this implementation
+    /// will `add_assign` to the accumulator from a lower index. Usage of `SubAssign` will
+    /// similarly only subtract the first or last portion of an accumulated range -- i.e. for any
+    /// accumulated value over the range `i..k`, we'll only ever subtract an accumulator over
+    /// `i..j` or `j..k` from it, with `i <= j < k`.
+    ///
+    /// The value provided by `Default` should be the identity and valid in any position relative
+    /// to a value it's being added to.
+    ///
+    /// These features don't typically matter, but it becomes relevant for certain accumulators --
+    /// like the implementation of [`RelativeSet`], for example.
     ///
     /// [`NoAccumulator`]: super::NoAccumulator
     type Accumulator: Default + Clone + AddAssign + SubAssign;
@@ -247,6 +263,7 @@ where
                 offset_from_parent: S::Idx::ZERO_DELTA,
                 total_accumulated: S::Accumulator::default(),
             })),
+            default_acc: Some(S::Accumulator::default()),
         }
     }
 
@@ -257,6 +274,7 @@ where
         Ranged {
             size: S::Idx::ZERO,
             root: None,
+            default_acc: Some(S::Accumulator::default()),
         }
     }
 
@@ -390,13 +408,21 @@ where
             return;
         }
 
+        // Temp value, storing the default accumulator. We move it out of self so that we can hold
+        // references to `self.root_mut()` across modifying this value.
+        //
+        // We'll put it back at the end:
+        //   @req "Ranged::replace_with re-set self.default_acc at end" v0
+        let mut default_acc = self.default_acc.take();
+        debug_assert!(default_acc.is_some());
+
         // The expected sizes of the regions to the left and right of the range, stored for later
         // so that we can accurately re-build the final `Ranged`
         let left_size = range.start;
         let right_size = self.size.sub(range.end);
 
         // Extract the values from before the range:
-        Self::splay(self.root_mut(), range.start);
+        Self::splay(self.root_mut(), range.start, &mut default_acc);
 
         // We always set `left.offset_from_parent` to be equal to `-left.size`, which will be
         // correct if it's being added to an existing root node.
@@ -447,7 +473,12 @@ where
             let mut lhs_accumulated = left_val.accumulated(root_pos, left_size);
 
             if let Some(l) = sub_left.as_ref() {
-                lhs_accumulated += l.total_accumulated.clone();
+                // > lhs_accumulated += l.total_accumulated.clone();
+                Self::add_acc(
+                    l.total_accumulated.clone(),
+                    &mut lhs_accumulated,
+                    &mut default_acc,
+                );
             }
             root.total_accumulated -= lhs_accumulated.clone();
 
@@ -491,7 +522,7 @@ where
         if self.root.is_some() {
             // Extract the values from after the range
             let r = self.root_mut();
-            Self::splay(r, end);
+            Self::splay(r, end, &mut default_acc);
 
             right = if end == self.size {
                 None
@@ -608,14 +639,19 @@ where
             // We have to add to the root position before calling `splay` in order for the base
             // indexes passed to calls to `AccumulatorSlice::accumulated` to be valid.
             //
-            // Otherwise, this would really just be `Self::splay(root, 0)`, in order to align the
+            // Otherwise, this would really just be `Self::splay(root, 0, ..)`, in order to align the
             // tree so that there's nothing to the left of the root.
             S::Idx::delta_add_assign_idx(&mut root.offset_from_parent, left_size);
-            Self::splay(root, left_size);
+            Self::splay(root, left_size, &mut default_acc);
             debug_assert!(root.left.is_none());
 
             if let Some(n) = left.as_ref() {
-                root.total_accumulated += n.total_accumulated.clone();
+                // > root.total_accumulated += n.total_accumulated.clone();
+                Self::add_acc(
+                    n.total_accumulated.clone(),
+                    &mut root.total_accumulated,
+                    &mut default_acc,
+                );
             }
             root.left = left;
             self.size.add_assign(left_size);
@@ -639,7 +675,7 @@ where
         // Add `right`:
         if let Some(root) = self.root.as_mut() {
             let size = self.size;
-            Self::splay(root, size);
+            Self::splay(root, size, &mut default_acc);
             debug_assert!(root.right.is_none());
             if let Some(n) = right.as_mut() {
                 // right.offset_from_parent is always equal to zero, so this addition just sets it
@@ -662,6 +698,8 @@ where
         }
 
         // And then we're done!
+        // @def "Ranged::replace_with re-set self.default_acc at end" v0
+        self.default_acc = default_acc;
     }
 
     /// (*Internal*)
@@ -689,7 +727,7 @@ where
             // we'll subtract the same `offset_from_parent` in order to reset this temporary
             // addition.
             S::Idx::delta_add_assign(&mut left.offset_from_parent, self.root().offset_from_parent);
-            Self::splay(&mut left, root_pos.decrement());
+            Self::splay(&mut left, root_pos.decrement(), &mut self.default_acc);
             debug_assert!(left.right.is_none());
 
             // And then return the (new) left node's offset to be relative to the root
@@ -743,7 +781,11 @@ where
                 &mut right.offset_from_parent,
                 self.root().offset_from_parent,
             );
-            Self::splay(&mut right, root_pos.add(self.root().pair.size));
+            Self::splay(
+                &mut right,
+                root_pos.add(self.root().pair.size),
+                &mut self.default_acc,
+            );
             debug_assert!(right.left.is_none());
             S::Idx::delta_sub_assign(
                 &mut right.offset_from_parent,
@@ -862,16 +904,24 @@ where
                 idx,
                 self.size()
             )
+        } else if idx == S::Idx::ZERO {
+            // Explicitly handle accumulation at index zero, in case we don't actually have a root.
+            return S::Accumulator::default();
         }
 
-        Self::splay(self.root_mut(), idx);
+        Self::splay(self.root.as_mut().unwrap(), idx, &mut self.default_acc);
         let root_pos = self.root_pos();
         idx.sub_assign(root_pos);
 
         let r = self.root();
         let mut acc = r.pair.val.accumulated(root_pos, idx);
         if let Some(lhs) = r.left.as_ref() {
-            acc += lhs.total_accumulated.clone();
+            // > acc += lhs.total_accumulated.clone();
+            Self::add_acc(
+                lhs.total_accumulated.clone(),
+                &mut acc,
+                &mut self.default_acc,
+            );
         }
 
         acc
@@ -887,13 +937,25 @@ where
         base.apply_delta(node.offset_from_parent)
     }
 
+    // Helper function to add `lower` to `upper`. This function exists because we guarantee that
+    // accumulators are only added as `lower += upper`. There's some cases where it's particularly
+    // difficult to do that, so we handle the case where we'd like to say `*upper += lower` here.
+    fn add_acc(
+        mut lower: S::Accumulator,
+        upper: &mut S::Accumulator,
+        default: &mut Option<S::Accumulator>,
+    ) {
+        lower += mem::replace(upper, default.take().unwrap());
+        *default = Some(mem::replace(upper, lower));
+    }
+
     // Performs the 'splay' operation to bubble the region containing the index to the root This is
     // pretty much just adapted from the implementation in Alex Crichton's splay-rs
     //
     // The `root_offset` parameter gives us an amount to add to the position of the root node. We
     // typically use this mid-replacement, so that it's still a valid tree passed to `splay`, but
     // we can pass the correct index of each slice to their functions.
-    fn splay(node: &mut Box<SNode<S>>, idx: S::Idx) {
+    fn splay(node: &mut Box<SNode<S>>, idx: S::Idx, default_acc: &mut Option<S::Accumulator>) {
         let mut newleft: Option<Box<SNode<S>>> = None;
         let mut newright: Option<Box<SNode<S>>> = None;
 
@@ -951,7 +1013,12 @@ where
                         left.right.as_mut().map(|n| {
                             Self::swap_parent(n, left_pos, node_pos);
                             *left_acc -= n.total_accumulated.clone();
-                            node.total_accumulated += n.total_accumulated.clone();
+                            // > node.total_accumulated += n.total_accumulated.clone();
+                            Self::add_acc(
+                                n.total_accumulated.clone(),
+                                &mut node.total_accumulated,
+                                default_acc,
+                            );
                         });
                         node.left = left.right.take();
                         assert_valid!(node);
@@ -1130,7 +1197,12 @@ where
                 node_pos = Self::stack_pos(node_pos, &*n);
                 n.total_accumulated = n.pair.val.accumulated(node_pos, n.pair.size);
                 if let Some(l) = n.left.as_ref() {
-                    n.total_accumulated += l.total_accumulated.clone();
+                    // > n.total_accumulated += l.total_accumulated.clone();
+                    Self::add_acc(
+                        l.total_accumulated.clone(),
+                        &mut n.total_accumulated,
+                        default_acc,
+                    );
                 }
 
                 stack.push(&mut n.total_accumulated);
@@ -1143,7 +1215,8 @@ where
                 acc = a.clone();
             }
 
-            node.total_accumulated += acc;
+            // > node.total_accumulated += acc;
+            Self::add_acc(acc, &mut node.total_accumulated, default_acc);
 
             // Repeat for `newright`, recursing down on `.left`
             stack_node = &mut newright;
@@ -1161,7 +1234,8 @@ where
 
             acc = S::Accumulator::default();
             while let Some(a) = stack.pop() {
-                *a += acc;
+                // > *a += acc;
+                Self::add_acc(acc, a, default_acc);
                 acc = a.clone();
             }
 
@@ -1201,7 +1275,7 @@ where
             )
         }
 
-        Self::splay(self.root_mut(), idx);
+        Self::splay(self.root.as_mut().unwrap(), idx, &mut self.default_acc);
         let root_pos = self.root_pos();
         idx.sub_assign(root_pos);
         self.root().pair.val.index(root_pos, idx)
@@ -1383,14 +1457,24 @@ where
     S: AccumulatorSlice,
     S::Idx: Debug,
     S::Accumulator: Debug + PartialEq,
+    Self: std::panic::RefUnwindSafe,
 {
     // Checks that the `Ranged` represents a valid set of ranges
-    fn assert_valid(&self) {
-        if self.size != S::Idx::ZERO {
-            let root = &self.root.as_ref().unwrap();
-            Self::assert_valid_node(root, true, S::Idx::ZERO..self.size, S::Idx::ZERO);
-        } else {
-            assert!(self.root.is_none());
+    fn assert_valid(&self, print_on_panic: bool) {
+        let func = || {
+            if self.size != S::Idx::ZERO {
+                let root = &self.root.as_ref().unwrap();
+                Self::assert_valid_node(root, true, S::Idx::ZERO..self.size, S::Idx::ZERO);
+            } else {
+                assert!(self.root.is_none());
+            }
+        };
+
+        if let Err(e) = std::panic::catch_unwind(func) {
+            if print_on_panic {
+                println!("invalid tree:\n{}", self.print_tree());
+            }
+            std::panic::resume_unwind(e);
         }
     }
 
@@ -1416,7 +1500,12 @@ where
             let new_range = within_range.start..pos;
             assert!(!new_range.is_empty());
             Self::assert_valid_node(&n, false, new_range, pos);
-            running_accumulator += n.total_accumulated.clone();
+            // > running_accumulator += n.total_accumulated.clone();
+            Self::add_acc(
+                n.total_accumulated.clone(),
+                &mut running_accumulator,
+                &mut Some(S::Accumulator::default()),
+            );
         } else {
             assert_eq!(pos, within_range.start);
         }
@@ -1438,19 +1527,48 @@ where
 mod tests {
     use super::{AccumulatorSlice, Ranged};
     use itertools::Itertools;
-    use std::fmt::{self, Debug, Formatter};
+    use std::fmt::Debug;
+    use std::ops::{AddAssign, SubAssign};
     use std::panic::UnwindSafe;
     use std::sync::Mutex;
 
-    type TestRanged = Ranged<u64, usize, isize, Slice>;
+    type TestRanged = Ranged<Acc, usize, isize, Slice>;
 
-    #[derive(Copy, Clone)]
-    struct Slice(char, usize); // Tuple of (value, size)
+    #[derive(Clone, Debug)]
+    struct Slice {
+        // Two slices with the same `name` can merge.
+        name: char,
+        // The accumulator for this slice, containing the values stored at each index. We can
+        // retrieve the total size of the slice by counting the number of values in `acc`.
+        acc: Acc,
+    }
 
-    impl Debug for Slice {
-        fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-            self.0.fmt(f)
+    impl Slice {
+        // Helper method to return the size of the slice
+        fn size(&self) -> usize {
+            self.acc.vals.len()
         }
+    }
+
+    // Accumulator type for `Slice`.
+    //
+    // This type is specifically designed test that the various invariants guaranteed by the docs
+    // on `AccumulatorSlice::Accumulator` are actually upheld across all of the tree operations.
+    //
+    // We define the accumulated value for a single index as a single `u8`, with the promise that
+    // these values are strictly increasing across the full range of the tree -- they're typically
+    // *mostly* sequential, but we sometimes have gaps in order to be able to insert more
+    // in-between.
+    //
+    // The accumulated value across a range is then the full list of values for each index in the
+    // range. This *does* mean that tree operations can now be worst-case O(n^2), but that doesn't
+    // matter so much in testing -- especially for small values.
+    //
+    // Also: the derived implementation of `Default` works nicely to produce an accumulator that
+    // corresponds to no values.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    struct Acc {
+        vals: Vec<u8>,
     }
 
     #[rustfmt::skip]
@@ -1458,74 +1576,211 @@ mod tests {
         type Idx = usize;
 
         type IndexedValue = char;
-        fn index(&self, _base: usize, _idx: usize) -> char { self.0 }
+        fn index(&self, _base: usize, _idx: usize) -> char { self.name }
 
         // Our accumulation is pretty contrived; essentially we're counting the sum of the
         // character's numbers from 'a': so 'a' is 1, 'b' is 2, etc.
-        type Accumulator = u64;
-        fn accumulated(&self, _base: usize, idx: usize) -> u64 {
-            match self.0 {
-                c @ 'a'..='z' => (c as u8 - b'a' + 1) as u64 * (idx as u64),
-                '-' => 27 * idx as u64,
-                '_' => 28 * idx as u64,
-                _ => panic!("unexpected character used in test: {:?}", self.0),
-            }
+        type Accumulator = Acc;
+        fn accumulated(&self, _base: usize, _idx: usize) -> Acc {
+            self.acc.clone()
         }
-        fn index_of_accumulated(&self, _base: usize, acc: u64) -> usize {
-            let multiplier = match self.0 {
-                c @ 'a'..='z' => (c as u8 - b'a' + 1) as u64,
-                '-' => 27,
-                '_' => 28,
-                _ => panic!("unexpected character usedin test: {:?}", self.0),
-            };
-            assert!(acc % multiplier == 0);
-            (acc / multiplier) as usize
+        fn index_of_accumulated(&self, _base: usize, acc: Acc) -> usize {
+            let idx = acc.vals.len();
+            assert_eq!(self.acc.vals[..idx], acc.vals);
+
+            idx
         }
 
         fn split_at(&mut self, _base: usize, idx: usize) -> Self {
             // These values are provided by the "Guarantees" section of AccumulatorSlice::split_at,
             // which says that `split_at` is never called with 0 or size.
             assert!(idx != 0);
-            assert!(idx != self.1);
+            assert!(idx != self.size());
 
-            let val = Slice(self.0, self.1 - idx);
-            self.1 = idx;
-            val
+            Slice {
+                name: self.name,
+                acc: Acc {
+                    vals: self.acc.vals.drain(idx..).collect(),
+                },
+            }
         }
-        fn try_join(self, other: Self) -> Result<Self, (Self, Self)> {
-            if other.0 == self.0 {
-                Ok(Slice(self.0, self.1 + other.1))
+        fn try_join(mut self, other: Self) -> Result<Self, (Self, Self)> {
+            if self.name == other.name {
+                // We expect that the accumulators' values are aligned nicely, because of the order
+                // of the arguments.
+                assert!(
+                    self.acc.last_val() < other.acc.first_val(),
+                    "self = {:?}, other = {:?}",
+                    self,
+                    other,
+                );
+
+                self.acc.vals.extend(other.acc.vals);
+                Ok(self)
             } else {
                 Err((self, other))
             }
         }
     }
 
+    impl AddAssign for Acc {
+        fn add_assign(&mut self, other: Acc) {
+            // The documentation of `AccumulatorSlice::Accumulator` provides that this method will
+            // only ever be called with `self` occuring before `other` -- i.e. at a lower position.
+            // We can't test that they're directly neighboring, because we sometimes have initial
+            // gaps, but they should be. We'll also expect that they don't overlap.
+            //
+            // Check for defaults because we'll want to get the first and last values in a moment.
+            if self.is_default() {
+                *self = other;
+                return;
+            } else if other.is_default() {
+                return;
+            }
+
+            assert!(self.last_val() < other.first_val());
+            self.vals.extend(other.vals);
+        }
+    }
+
+    impl SubAssign for Acc {
+        fn sub_assign(&mut self, other: Acc) {
+            // The documentation of `AccumulatorSlice::Accumulator` says that we're always
+            // subtracting from *one* of the sides. So either `self.start == other.start`, or
+            // `self.end == other.end`. Ideally, we wouldn't have both of these be true, but...
+            // it's not strictly required.
+            if self.is_default() {
+                assert!(other.is_default());
+                return;
+            } else if other.is_default() {
+                return;
+            }
+
+            let start_align = self.first_val() == other.first_val();
+            let end_align = self.last_val() == other.last_val();
+
+            // temp values, in case of error
+            let self_vals_cloned = self.vals.clone();
+            let other_vals_cloned = other.vals.clone();
+
+            if start_align {
+                let first_i = other.vals.len();
+                self.vals
+                    .drain(..first_i)
+                    .zip(other.vals)
+                    .for_each(|(x, y)| {
+                        assert_eq!(
+                            x, y,
+                            "self.vals = {:?}, other.vals = {:?}",
+                            self_vals_cloned, other_vals_cloned
+                        );
+                    });
+            } else if end_align {
+                let last_i = self.vals.len() - other.vals.len();
+                self.vals
+                    .drain(last_i..)
+                    .zip(other.vals)
+                    .for_each(|(x, y)| {
+                        assert_eq!(
+                            x, y,
+                            "self.vals = {:?}, other.vals = {:?}",
+                            self_vals_cloned, other_vals_cloned
+                        );
+                    });
+            } else {
+                panic!("unaligned ranges. self = {:?}, other = {:?}", self, other);
+            }
+        }
+    }
+
+    impl Acc {
+        // Creates a new `Acc` with the given starting value and size.
+        //
+        // This populates `self.vals` with length `size`, where `self.vals[0] = start`. The pairs
+        // from `skips` are used to jump over a range of values. Let's do an example:
+        //
+        //   If `start = i` and skips has some `(j, k)`, then this indicates that the final array
+        //   `vals` will contain the sequence:
+        //
+        //     [i, i+1, ..., j-1, j+k, j+k+1, ...]
+        //
+        //   Essentially, the pair `(j, k)` indicates to skip over `k` values instead of going to
+        //   `j`.
+        //
+        // If there's multiple values in `skips`, each pair is treated individually as above; i.e.
+        // earlier jumps don't change the *value* at which later jumps occur.
+        fn new(start: u8, size: usize, skips: &[(u8, u8)]) -> Self {
+            let mut vals = Vec::with_capacity(size);
+
+            let mut i = start;
+            let mut sk_i = 0;
+
+            while vals.len() < size {
+                // If we're supposed to skip at this index, do so.
+                if let Some(&(j, k)) = skips.get(sk_i) {
+                    assert!(i <= j);
+                    if i == j {
+                        i += k;
+                        sk_i += 1;
+                    }
+                }
+
+                vals.push(i);
+                i += 1;
+            }
+
+            assert!(sk_i == skips.len());
+            Acc { vals }
+        }
+
+        fn is_default(&self) -> bool {
+            self.vals.is_empty()
+        }
+
+        fn first_val(&self) -> u8 {
+            self.vals[0]
+        }
+
+        fn last_val(&self) -> u8 {
+            self.vals[self.vals.len() - 1]
+        }
+    }
+
     // Define a couple helper methods for generating `Ranged`s and testing equality
     impl TestRanged {
-        fn from_sizes(sizes: &[(usize, char)]) -> TestRanged {
+        // `sized` tuples are: (size, name, start pos, skips)
+        //
+        // For more about the relationship between size, start pos, and skips, refer to `Acc::new`.
+        fn from_sizes(sizes: &[(usize, char, u8, &[(u8, u8)])]) -> TestRanged {
             let mut this = Ranged::new_empty();
 
-            for &(s, x) in sizes {
+            for &(size, x, rel_pos, skips) in sizes {
                 println!("{}", this.print_tree());
 
                 let i = this.size();
-                this.replace(i..i, Ranged::new(Slice(x, s), s));
+                let slice = Slice {
+                    name: x,
+                    acc: Acc::new(rel_pos, size, skips),
+                };
+                this.replace(i..i, Ranged::new(slice, size));
             }
 
             this
         }
 
-        fn assert_matches(&self, sizes: &[(usize, char)]) {
-            self.assert_valid();
+        // The tuple in `sizes` is briefly described in `from_sizes()`.
+        fn assert_matches(&self, sizes: &[(usize, char, u8, &[(u8, u8)])]) {
+            self.assert_valid(true);
 
             let mut so_far = 0;
             for (i, (x, r)) in self.iter().enumerate() {
                 assert_eq!(so_far, r.start);
                 assert!(i < sizes.len());
-                let (s, y) = sizes[i];
+                assert_eq!(r.len(), x.size());
+                let (s, y, p, skips) = sizes[i];
                 assert_eq!(r.len(), s);
-                assert_eq!(x.0, y);
+                assert_eq!(x.name, y);
+                assert_eq!(x.acc, Acc::new(p, s, skips));
                 so_far = r.end;
             }
         }
@@ -1537,7 +1792,9 @@ mod tests {
     // This is to ensure that various tests pass, regardless of the input structure of the tree. We
     // do this by accessing each range after creating the tree, testing all permutations of the
     // access pattern.
-    fn do_all_perms<Func>(initial_sizes: &[(usize, char)], test: Func)
+    //
+    // The tuple in `initial_sizes` is briefly described in `from_sizes()`.
+    fn do_all_perms<Func>(initial_sizes: &[(usize, char, u8, &[(u8, u8)])], test: Func)
     where
         Func: Fn(TestRanged),
         for<'a> &'a Func: UnwindSafe,
@@ -1553,7 +1810,7 @@ mod tests {
 
         // The starting indexes of each size:
         let mut idx = 0;
-        let indexes = initial_sizes.iter().map(|&(size, _)| {
+        let indexes = initial_sizes.iter().map(|&(size, _, _, _)| {
             let old = idx;
             idx += size;
             old
@@ -1567,7 +1824,7 @@ mod tests {
 
                 if let Err(e) = std::panic::catch_unwind(|| {
                     r.lock().unwrap().index(i);
-                    r.lock().unwrap().assert_valid();
+                    r.lock().unwrap().assert_valid(false);
                 }) {
                     println!("panicked with indexing order {:?} at index {}", idxs, i);
                     let g = match r.lock() {
@@ -1584,58 +1841,86 @@ mod tests {
             let cloned = r.clone();
             if let Err(e) = std::panic::catch_unwind(|| test(cloned)) {
                 println!("panicked with indexing order {:?}", idxs);
-                println!("{}", r.print_tree());
+                println!("last tree:\n{}", r.print_tree());
                 std::panic::resume_unwind(e);
             }
         }
     }
 
+    // Helper type for getting type inference to work properly
+    type Tuples<'a> = &'a [(usize, char, u8, &'a [(u8, u8)])];
+
     #[test]
     fn permuted_access() {
-        let sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        do_all_perms(&sizes, |r| r.assert_matches(&sizes));
+        let sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        do_all_perms(sizes, |r| r.assert_matches(sizes));
     }
 
     #[test]
     fn empty_replace() {
         let empty = Ranged::new_empty();
 
-        let sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        do_all_perms(&sizes, |replacement| {
+        let sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        do_all_perms(sizes, |replacement| {
             let mut e = empty.clone();
             e.replace(0..0, replacement).assert_matches(&[]);
-            e.assert_matches(&sizes);
+            e.assert_matches(sizes);
         });
     }
 
     #[test]
     fn insert_start() {
-        let sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
+        let sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
         let insert = Ranged::from_sizes(&sizes[0..1]);
         do_all_perms(&sizes[1..], |mut ranged| {
             ranged.replace(0..0, insert.clone()).assert_matches(&[]);
-            ranged.assert_matches(&sizes);
+            ranged.assert_matches(sizes);
         });
     }
 
     #[test]
     fn insert_middle_aligned() {
-        let start_sizes = vec![(4, 'a'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
+        let start_sizes: Tuples = &[(4, 'a', 0, &[]), (5, 'c', 7, &[]), (2, 'd', 12, &[])];
+        let end_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
 
-        let insert = Ranged::from_sizes(&[(3, 'b')]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        let insert = Ranged::from_sizes(&[(3, 'b', 4, &[])]);
+        do_all_perms(start_sizes, |mut ranged| {
             ranged.replace(4..4, insert.clone()).assert_matches(&[]);
-            ranged.assert_matches(&end_sizes);
+            ranged.assert_matches(end_sizes);
         });
     }
 
     #[test]
     fn insert_middle_unaligned() {
-        let start_sizes = vec![(5, 'c'), (2, 'd')];
-        let end_sizes = vec![(3, 'c'), (3, 'b'), (2, 'c'), (2, 'd')];
+        let start_sizes: Tuples = &[(5, 'c', 0, &[(3, 3)]), (2, 'd', 8, &[])];
+        let end_sizes: Tuples = &[
+            (3, 'c', 0, &[]),
+            (3, 'b', 3, &[]),
+            (2, 'c', 6, &[]),
+            (2, 'd', 8, &[]),
+        ];
 
-        let insert = Ranged::from_sizes(&[(3, 'b')]);
+        let insert = Ranged::from_sizes(&[(3, 'b', 3, &[])]);
         do_all_perms(&start_sizes, |mut ranged| {
             ranged.replace(3..3, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(&end_sizes);
@@ -1644,138 +1929,229 @@ mod tests {
 
     #[test]
     fn insert_end() {
-        let sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
+        let sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
         let insert = Ranged::from_sizes(&sizes[3..4]);
         do_all_perms(&sizes[..3], |mut ranged| {
             ranged.replace(12..12, insert.clone()).assert_matches(&[]);
-            ranged.assert_matches(&sizes);
+            ranged.assert_matches(sizes);
         });
     }
 
     #[test]
     fn replace_start_aligned() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(5, 'e'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes(&[(5, 'e')]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 5, &[]),
+            (5, 'c', 8, &[]),
+            (2, 'd', 13, &[]),
+        ];
+        let end_sizes: Tuples = &[
+            (5, 'e', 0, &[]),
+            (3, 'b', 5, &[]),
+            (5, 'c', 8, &[]),
+            (2, 'd', 13, &[]),
+        ];
+        let replacement = Ranged::from_sizes(&[(5, 'e', 0, &[])]);
+        do_all_perms(start_sizes, |mut ranged| {
             ranged
                 .replace(0..4, replacement.clone())
-                .assert_matches(&[(4, 'a')]);
-            ranged.assert_matches(&end_sizes);
+                .assert_matches(&[(4, 'a', 0, &[])]);
+            ranged.assert_matches(end_sizes);
         });
     }
 
     #[test]
     fn replace_start_unaligned() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(3, 'e'), (1, 'b'), (5, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes(&[(3, 'e')]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        let end_sizes: Tuples = &[
+            (3, 'e', 0, &[]),
+            (1, 'b', 6, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        let replacement = Ranged::from_sizes(&[(3, 'e', 0, &[])]);
+        do_all_perms(start_sizes, |mut ranged| {
             ranged
                 .replace(0..6, replacement.clone())
-                .assert_matches(&[(4, 'a'), (2, 'b')]);
-            ranged.assert_matches(&end_sizes);
+                .assert_matches(&[(4, 'a', 0, &[]), (2, 'b', 4, &[])]);
+            ranged.assert_matches(end_sizes);
         });
     }
 
     #[test]
     fn replace_middle_unaligned() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(4, 'a'), (2, 'b'), (3, 'e'), (3, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes(&[(3, 'e')]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        let end_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (2, 'b', 4, &[]),
+            (3, 'e', 6, &[]),
+            (3, 'c', 9, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        let replacement = Ranged::from_sizes(&[(3, 'e', 6, &[])]);
+        do_all_perms(start_sizes, |mut ranged| {
             ranged
                 .replace(6..9, replacement.clone())
-                .assert_matches(&[(1, 'b'), (2, 'c')]);
-            ranged.assert_matches(&end_sizes);
+                .assert_matches(&[(1, 'b', 6, &[]), (2, 'c', 7, &[])]);
+            ranged.assert_matches(end_sizes);
         });
     }
 
     #[test]
     fn replace_middle_aligned_left() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(4, 'a'), (3, 'b'), (3, 'e'), (3, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes(&[(3, 'e')]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 8, &[]),
+            (2, 'd', 13, &[]),
+        ];
+        let end_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (3, 'e', 7, &[]),
+            (3, 'c', 10, &[]),
+            (2, 'd', 13, &[]),
+        ];
+        let replacement = Ranged::from_sizes(&[(3, 'e', 7, &[])]);
+        do_all_perms(start_sizes, |mut ranged| {
             ranged
                 .replace(7..9, replacement.clone())
-                .assert_matches(&[(2, 'c')]);
-            ranged.assert_matches(&end_sizes);
+                .assert_matches(&[(2, 'c', 8, &[])]);
+            ranged.assert_matches(end_sizes);
         });
     }
 
     #[test]
     fn replace_middle_aligned_right() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(4, 'a'), (2, 'b'), (3, 'e'), (5, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes(&[(3, 'e')]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 9, &[]),
+            (2, 'd', 14, &[]),
+        ];
+        let end_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (2, 'b', 4, &[]),
+            (3, 'e', 6, &[]),
+            (5, 'c', 9, &[]),
+            (2, 'd', 14, &[]),
+        ];
+        let replacement = Ranged::from_sizes(&[(3, 'e', 6, &[])]);
+        do_all_perms(start_sizes, |mut ranged| {
             ranged
                 .replace(6..7, replacement.clone())
-                .assert_matches(&[(1, 'b')]);
-            ranged.assert_matches(&end_sizes);
+                .assert_matches(&[(1, 'b', 6, &[])]);
+            ranged.assert_matches(end_sizes);
         });
     }
 
     #[test]
     fn replace_middle_aligned_both() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(4, 'a'), (3, 'e'), (2, 'd')];
-        let replacement = Ranged::from_sizes(&[(3, 'e')]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        let end_sizes: Tuples = &[(4, 'a', 0, &[]), (3, 'e', 5, &[]), (2, 'd', 12, &[])];
+        let replacement = Ranged::from_sizes(&[(3, 'e', 5, &[])]);
+        do_all_perms(start_sizes, |mut ranged| {
             ranged
                 .replace(4..12, replacement.clone())
-                .assert_matches(&[(3, 'b'), (5, 'c')]);
-            ranged.assert_matches(&end_sizes);
+                .assert_matches(&[(3, 'b', 4, &[]), (5, 'c', 7, &[])]);
+            ranged.assert_matches(end_sizes);
         });
     }
 
     #[test]
     fn replace_end_aligned() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(4, 'a'), (3, 'b'), (2, 'e')];
-        let replacement = Ranged::from_sizes(&[(2, 'e')]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        let end_sizes: Tuples = &[(4, 'a', 0, &[]), (3, 'b', 4, &[]), (2, 'e', 7, &[])];
+        let replacement = Ranged::from_sizes(&[(2, 'e', 7, &[])]);
+        do_all_perms(start_sizes, |mut ranged| {
             ranged
                 .replace(7..14, replacement.clone())
-                .assert_matches(&[(5, 'c'), (2, 'd')]);
-            ranged.assert_matches(&end_sizes);
+                .assert_matches(&[(5, 'c', 7, &[]), (2, 'd', 12, &[])]);
+            ranged.assert_matches(end_sizes);
         });
     }
 
     #[test]
     fn replace_end_unaligned() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let end_sizes = vec![(4, 'a'), (3, 'b'), (2, 'c'), (2, 'e')];
-        let replacement = Ranged::from_sizes(&[(2, 'e')]);
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+        let end_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (2, 'c', 7, &[]),
+            (2, 'e', 9, &[]),
+        ];
+        let replacement = Ranged::from_sizes(&[(2, 'e', 9, &[])]);
         do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(9..14, replacement.clone())
-                .assert_matches(&[(3, 'c'), (2, 'd')]);
+                .assert_matches(&[(3, 'c', 9, &[]), (2, 'd', 12, &[])]);
             ranged.assert_matches(&end_sizes);
         });
     }
 
     #[test]
     fn join_both_ends() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (2, 'c'), (1, 'b'), (2, 'd')];
-        let end_sizes = vec![(4, 'a'), (5, 'b'), (2, 'd')];
-        let replacement = Ranged::from_sizes(&[(2, 'b')]);
+        // The relative positions don't increase here because we need both (3, 'b') and (1, 'b') to
+        // have the same position in order to join.
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (2, 'c', 7, &[]),
+            (1, 'b', 9, &[]),
+            (2, 'd', 10, &[]),
+        ];
+        let end_sizes: Tuples = &[(4, 'a', 0, &[]), (5, 'b', 4, &[(8, 1)]), (2, 'd', 10, &[])];
+        let replacement = Ranged::from_sizes(&[(2, 'b', 6, &[])]);
         do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(6..9, replacement.clone())
-                .assert_matches(&[(1, 'b'), (2, 'c')]);
+                .assert_matches(&[(1, 'b', 6, &[]), (2, 'c', 7, &[])]);
             ranged.assert_matches(&end_sizes);
         });
     }
 
     #[test]
     fn clone_range_unaligned() {
-        let start_sizes = vec![(4, 'a'), (3, 'b'), (2, 'c'), (5, 'd')];
+        let start_sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (2, 'c', 7, &[]),
+            (5, 'd', 12, &[]),
+        ];
         do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .clone_range(5..8)
-                .assert_matches(&[(2, 'b'), (1, 'c')]);
+                .assert_matches(&[(2, 'b', 5, &[]), (1, 'c', 7, &[])]);
         });
     }
 }
