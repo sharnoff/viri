@@ -337,7 +337,29 @@ where
         mem::replace(self, Self::new_empty())
     }
 
-    /// The only "insertion" operation provided
+    /// Inserts the slice with the given size into the tree at the index
+    ///
+    /// This is a convenience function; its definition is simply:
+    ///
+    /// ```ignore
+    /// // Given: index, size, values
+    /// let insertion = Ranged::new(values, size);
+    /// self.replace(index..index, insertion);
+    /// ```
+    ///
+    /// ## Panics
+    ///
+    /// This method can panic under certain conditions. These are given in the documentation for
+    /// [`replace`].
+    ///
+    /// [`replace`]: Self::replace
+    pub fn insert(&mut self, index: S::Idx, size: S::Idx, values: S) {
+        let insertion = Ranged::new(values, size);
+        self.replace(index..index, insertion);
+    }
+
+    /// Replaces the given range with a new set of values, shifting all later indexes by the
+    /// appropriate amount
     ///
     /// This operation replaces the values within a given range with the ones provided by the new
     /// `Ranged`, returning the previous values that were there. The range being replaced need not
@@ -1762,7 +1784,7 @@ mod tests {
                     name: x,
                     acc: Acc::new(rel_pos, size, skips),
                 };
-                this.replace(i..i, Ranged::new(slice, size));
+                this.insert(i, size, slice);
             }
 
             this
