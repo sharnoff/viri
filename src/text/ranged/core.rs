@@ -65,11 +65,12 @@ use super::RangedIndex;
 /// [`Slice`]: super::Slice
 /// [`IndexedSlice`]: super::IndexedSlice
 /// [`Constant`]: super::Constant
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Ranged<Acc, Idx, Delta, S> {
     size: Idx,
-    // The root is always `Some(_)` when the structure is in a valid state. We allow it to be
-    // `None` so that we can temporarily extract an owned `Ranged` from a `&mut Ranged`
+    // The root is always `Some(_)` if `size != 0`. It's equal to `None` in certain cases, i.e.
+    // whenever `size = 0`. We also will sometimes `.take()` it in order to temporarily extract an
+    // owned `Ranged` from a `&mut Ranged`.
     root: Option<Box<Node<Acc, Idx, Delta, S>>>,
 }
 
@@ -78,20 +79,20 @@ pub struct Ranged<Acc, Idx, Delta, S> {
 /// This really could have been flattened into the [`Node`] struct itself; the reason it isn't is
 /// because having a `size` field in a node might cause confusion; it could be misinterpreted as
 /// the total size of all children, which it is not.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct SizePair<S, Idx> {
     val: S,
     size: Idx,
 }
 
 /// (*Internal*) An individual node in the [`Ranged`] splay tree
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct Node<Acc, Idx, Delta, S> {
     left: Option<Box<Node<Acc, Idx, Delta, S>>>,
     right: Option<Box<Node<Acc, Idx, Delta, S>>>,
     pair: SizePair<S, Idx>,
     offset_from_parent: Delta,
-    // The total accumulated value from `pair.val` and both sub-trees.
+    // The total accumulated value from `pair.val` and both subtrees.
     total_accumulated: Acc,
 }
 
@@ -186,6 +187,11 @@ pub trait AccumulatorSlice: Sized {
     ///
     /// The `base` index gives the starting index of *this* range in the full tree, with the
     /// desired splitting point at exactly `base + idx` in the tree.
+    ///
+    /// ## Guarantees
+    ///
+    /// This method is never called with `idx = 0` or `idx = size`. This should not be assumed in
+    /// an unsafe way, but this method may panic if that is the case.
     fn split_at(&mut self, base_idx: Self::Idx, idx: Self::Idx) -> Self;
 
     /// Attempts to join the two ranges, returning the original pair as given if unable to
@@ -222,7 +228,17 @@ where
     S::Idx: Debug,
 {
     /// Creates a new `Ranged` with the given size and initial filled range
+    ///
+    /// Explicitly constructing a `Ranged` with a size of zero is best done with the [`new_empty`]
+    /// method, which is internally called by this method when applicable.
+    ///
+    /// [`new_empty`]: Self::new_empty
     pub fn new(init: S, size: S::Idx) -> Self {
+        if size == S::Idx::ZERO {
+            // We expect that sizes are non-zero. We need to explicitly
+            return Self::new_empty();
+        }
+
         Ranged {
             size,
             root: Some(Box::new(Node {
@@ -235,24 +251,49 @@ where
         }
     }
 
+    /// Creates a new `Ranged` with a size of zero
+    ///
+    /// To create a `Ranged` with a non-zero initial size, see [`Ranged::new`].
+    pub fn new_empty() -> Self {
+        Ranged {
+            size: S::Idx::ZERO,
+            root: None,
+        }
+    }
+
     /// Returns the length of the set of values this represents -- i.e the smallest index we don't
     /// have a value for
     pub fn size(&self) -> S::Idx {
         self.size
     }
 
-    // Provides an immutable reference to the root node
+    // Provides an immutable reference to the root nod
     fn root(&self) -> &SNode<S> {
+        #[cfg(debug_assertions)]
+        if self.size == S::Idx::ZERO {
+            panic!("cannot get root node while tree is empty");
+        }
+
         self.root.as_ref().expect("root node is in invalid state")
     }
 
     // Provides a mutable reference to the root node
     fn root_mut(&mut self) -> &mut Box<SNode<S>> {
+        #[cfg(debug_assertions)]
+        if self.size == S::Idx::ZERO {
+            panic!("cannot get root node while tree is empty");
+        }
+
         self.root.as_mut().expect("root node is in invalid state")
     }
 
     // Returns whether the root node contains the given index
     fn root_contains(&self, idx: S::Idx) -> bool {
+        // If the tree is empty, we don't contain the index
+        if self.root.is_none() {
+            return false;
+        }
+
         let start = self.root_pos();
         let end = start.add(self.root().pair.size);
 
@@ -261,16 +302,22 @@ where
 
     // Returns the position of the root node
     fn root_pos(&self) -> S::Idx {
-        S::Idx::from_delta(self.root().offset_from_parent)
+        if self.root.is_none() {
+            debug_assert!(self.size == S::Idx::ZERO);
+            self.size
+        } else {
+            S::Idx::from_delta(self.root().offset_from_parent)
+        }
     }
 
-    /// (*Internal*) Temporarily puts `self` in an invalid state in order to provide ownership of it
+    /// (*Internal*) Replaces `self` with `Self::new_empty()` in order to tempoarily provide
+    /// ownership of the existing value
     ///
-    /// The invalid state given is not unsafe in any way; it is simply that operations will fail if
+    /// The replacement value is not unsafe in any way; remaining operations may simply fail if
     /// `self` is left in that state.
     #[rustfmt::skip]
     fn temp_extract(&mut self) -> Self {
-        mem::replace(self, Ranged { size: S::Idx::ZERO, root: None })
+        mem::replace(self, Self::new_empty())
     }
 
     /// The only "insertion" operation provided
@@ -333,6 +380,17 @@ where
             );
         }
 
+        debug_assert!((self.size == S::Idx::ZERO) == self.root.is_none());
+
+        // The rest of this function will assume that we have a `root` we can extract from. If
+        // that's not the case, then we should just return quickly.
+        if self.root.is_none() {
+            // We already know that `self` empty; there's no use trying to extract out the specific
+            // value in `self` to pass to `func` if `new_empty()` will to just as well.
+            *self = func(Self::new_empty());
+            return;
+        }
+
         // The expected sizes of the regions to the left and right of the range, stored for later
         // so that we can accurately re-build the final `Ranged`
         let left_size = range.start;
@@ -341,9 +399,23 @@ where
         // Extract the values from before the range:
         Self::splay(self.root_mut(), range.start);
 
+        // We always set `left.offset_from_parent` to be equal to `-left.size`, which will be
+        // correct if it's being added to an existing root node.
         let left = if range.start == S::Idx::ZERO {
             None
+        } else if range.start == self.size {
+            // If the range *starts* at the end of the set of values, then we can just take the
+            // entire root as `left`. We'll have to check for this later.
+            self.size = S::Idx::ZERO;
+            self.root.take().map(|mut n| {
+                // left.offset_from_parent = -left_size; -- as given above
+                n.offset_from_parent = S::Idx::delta_from(S::Idx::ZERO, n.pair.size);
+                n
+            })
         } else if self.root_contains(range.start.decrement()) {
+            // If the node containing `range.start` has other values beneath it, then we need to
+            // split the range.
+            //
             // |-------- root --------|
             //               |---- range ----|
             // |- left_size -|
@@ -395,6 +467,10 @@ where
                 total_accumulated: lhs_accumulated,
             }))
         } else {
+            // This branch corresponds to the case where `range.start` is aligned with the starting
+            // index of a node. We want to leave `self` containing the set of values corresonding
+            // to `range`, so we extract out the left-hand side, which we know corresponds to
+            // indexes below `range.start`.
             self.size.sub_assign(self.root_pos());
             let root = self.root_mut();
             root.offset_from_parent = S::Idx::ZERO_DELTA;
@@ -405,67 +481,112 @@ where
             })
         };
 
-        // Extract the values from after the range
-        // We need to move range.end to account for having just shifted everything by removing the
-        // nodes up to range.start
-        let end = range.end.sub(range.start); // end = range.len()
-        let r = self.root_mut();
-        // last_idx = end_idx.saturating_sub(1);
-        let last_idx = match end == S::Idx::ZERO {
-            true => end,
-            false => end.decrement(),
-        };
-        Self::splay(r, last_idx);
+        // We just shifted everything by removing the nodes up to `range.start`. We'll store the
+        // "new" end index in `end`, even though it's just the length of the range.
+        let end = range.end.sub(range.start);
 
-        let mut right = if end == self.size {
-            None
-        } else if self.root_contains(end) {
-            let mut sub_right = self.root_mut().right.take();
+        // It's possible that the operation to get `left` removed the root. If that's the case,
+        // then we can't do any more accessing to get the `right`; we'll have to skip this part.
+        let mut right = None;
 
-            // self.root_pos()
-            //       |--------- root node ----------|
-            // |------- range -------|
-            //       |- rhs_in_node -|- right_size -|
+        if self.root.is_some() {
+            // Extract the values from after the range
+            let r = self.root_mut();
+            Self::splay(r, end);
 
-            // In order to keep the tree valid, we previously *fully* removed the left-hand side of
-            // the tree, so that the new "zero" is at the starting point of the range.
-            let root_pos = self.root_pos().add(range.start);
+            right = if end == self.size {
+                None
+            } else if end == S::Idx::ZERO {
+                // If the range has length zero, then we want to take the entire root node `right`.
+                self.size = S::Idx::ZERO;
+                // Because the value of `right.offset_from_parent` will always depend on the size
+                // of the root node it's being assigned to, we'll just set it to zero. We'll use
+                // this fact later.
+                self.root.take().map(|mut n| {
+                    n.offset_from_parent = S::Idx::ZERO_DELTA;
+                    n
+                })
+            } else if self.root_contains(end.decrement()) {
+                let mut sub_right = self.root_mut().right.take();
 
-            // right_size = self.root_pos() + self.root().pair.size - end
-            let right_size = self.root_pos().add(self.root().pair.size).sub(end);
-            let root = self.root_mut();
-            let rhs_in_node = root.pair.size.sub(right_size);
+                // self.root_pos()
+                //       |--------- root node ----------|
+                // |------- range -------|
+                //       |- rhs_in_node -|- right_size -|
 
-            let rhs_val = root.pair.val.split_at(root_pos, rhs_in_node);
-            let mut rhs_accumulated = rhs_val.accumulated(root_pos.add(rhs_in_node), right_size);
+                // In order to keep the tree valid, we previously *fully* removed the left-hand side of
+                // the tree, so that the new "zero" is at the starting point of the range.
+                let root_pos = self.root_pos().add(range.start);
 
-            if let Some(n) = sub_right.as_mut() {
-                S::Idx::delta_sub_assign_idx(&mut n.offset_from_parent, rhs_in_node);
-                rhs_accumulated += n.total_accumulated.clone();
-            }
-            root.total_accumulated -= rhs_accumulated.clone();
+                // right_size = self.root_pos() + self.root().pair.size - end
+                let right_size = self.root_pos().add(self.root().pair.size).sub(end);
+                let root = self.root_mut();
+                let rhs_in_node = root.pair.size.sub(right_size);
 
-            root.pair.size = rhs_in_node;
+                let rhs_val = root.pair.val.split_at(root_pos, rhs_in_node);
+                let mut rhs_accumulated =
+                    rhs_val.accumulated(root_pos.add(rhs_in_node), right_size);
 
-            Some(Box::new(Node {
-                pair: SizePair {
-                    size: right_size,
-                    val: rhs_val,
-                },
-                left: None,
-                right: sub_right,
-                offset_from_parent: S::Idx::ZERO_DELTA,
-                total_accumulated: rhs_accumulated,
-            }))
-        } else {
-            let root = self.root_mut();
-            root.right.take().map(|mut n| {
-                S::Idx::delta_sub_assign_idx(&mut n.offset_from_parent, root.pair.size);
-                root.total_accumulated -= n.total_accumulated.clone();
-                n
-            })
-        };
+                if let Some(n) = sub_right.as_mut() {
+                    S::Idx::delta_sub_assign_idx(&mut n.offset_from_parent, rhs_in_node);
+                    rhs_accumulated += n.total_accumulated.clone();
+                }
+                root.total_accumulated -= rhs_accumulated.clone();
 
+                root.pair.size = rhs_in_node;
+
+                Some(Box::new(Node {
+                    pair: SizePair {
+                        size: right_size,
+                        val: rhs_val,
+                    },
+                    left: None,
+                    right: sub_right,
+                    // The offset doesn't actually matter here - we just set it to zero as a
+                    // temporary value.
+                    offset_from_parent: S::Idx::ZERO_DELTA,
+                    total_accumulated: rhs_accumulated,
+                }))
+            } else {
+                // This branch corresponds to the case where the the index corresponding to the end
+                // of the range occurs *just* beyond the current root.
+                //
+                // In this case, we've just splayed the tree so that the root contains the part
+                // after the range that we want to remove. So we have to set the new root to
+                // `self.root.left`, and adjust offsets to compensate.
+                //
+                // Thankfully, we happen to know that the root node *must* exist at this point, so
+                // we at least have something to work with here. We also don't need to bother about
+                // setting the size of `self`, because we're just about to do that below this
+                // block.
+                let root = self.root_mut();
+                let lhs = root.left.take().map(|mut lhs| {
+                    // The new root's offset can be calculated based on the current root:
+                    //
+                    //    |---------- current root position ----------|
+                    //    |>>>>>>>>>>>>>>> root offset >>>>>>>>>>>>>>>|--- root node ---|
+                    //    |---- lhs position ----|<<<< lhs offset <<<<|
+                    //                           |--- lhs node ---|
+                    //
+                    // We want to go from lhs.offset_from_parent = "lhs offset" to "lhs position",
+                    // so we can just subtract the offset from the current root's position. In this
+                    // case though, the offset is negative, so we're actually adding it.
+                    S::Idx::delta_add_assign(&mut lhs.offset_from_parent, root.offset_from_parent);
+                    root.total_accumulated -= lhs.total_accumulated.clone();
+                    lhs
+                });
+
+                // For `root` itself, we promised above that all values of `right` will have
+                // `offset_from_parent = 0`, so we need to set that now.
+                root.offset_from_parent = S::Idx::ZERO_DELTA;
+
+                // Then, just swap in `lhs` as the new root and return the right-hand side as
+                // `right`.
+                mem::replace(&mut self.root, lhs)
+            };
+        }
+
+        // Fully adjust the remaining size of the `Ranged`.
         self.size = range.end.sub(range.start);
 
         // `self` is now done. In order to get its replacement, we need to pass it by value. To do
@@ -480,33 +601,66 @@ where
             );
         }
 
-        // Having replaced `self`, we can now re-attach the sub-trees on either side that we
+        // Having replaced `self`, we can now re-attach the subtrees on either side that we
         // previously extracted.
 
         // Add `left`:
-        let mut root = self.root_mut();
-        S::Idx::delta_add_assign_idx(&mut root.offset_from_parent, left_size);
-        Self::splay(root, left_size);
-        debug_assert!(root.left.is_none());
-        if let Some(n) = left.as_ref() {
-            root.total_accumulated += n.total_accumulated.clone();
+        if let Some(root) = self.root.as_mut() {
+            // We have to add to the root position before calling `splay` in order for the base
+            // indexes passed to calls to `AccumulatorSlice::accumulated` to be valid.
+            //
+            // Otherwise, this would really just be `Self::splay(root, 0)`, in order to align the
+            // tree so that there's nothing to the left of the root.
+            S::Idx::delta_add_assign_idx(&mut root.offset_from_parent, left_size);
+            Self::splay(root, left_size);
+            debug_assert!(root.left.is_none());
+
+            if let Some(n) = left.as_ref() {
+                root.total_accumulated += n.total_accumulated.clone();
+            }
+            root.left = left;
+            self.size.add_assign(left_size);
+            *self = self.temp_extract().try_join_left();
+        } else if let Some(mut left) = left {
+            // Because we're adding back `left` as the root node, we have to carefully update its
+            // position. However `left` was previously extracted, it is the furthest-to-the-right
+            // node in its subtree.
+            //
+            // We can therefore calculate its position by simply subtracting its size from the
+            // previously-stored `left_size`:
+            debug_assert!(left.right.is_none());
+
+            // delta_from(x, 0) = "convert x to type Delta"
+            left.offset_from_parent =
+                S::Idx::delta_from(left_size.sub(left.pair.size), S::Idx::ZERO);
+            self.size = left_size;
+            self.root = Some(left);
         }
-        root.left = left;
-        self.size.add_assign(left_size);
-        *self = self.temp_extract().try_join_left();
 
         // Add `right`:
-        let size = self.size;
-        root = self.root_mut();
-        Self::splay(root, size);
-        debug_assert!(root.right.is_none());
-        if let Some(n) = right.as_mut() {
-            S::Idx::delta_add_assign_idx(&mut n.offset_from_parent, root.pair.size);
-            root.total_accumulated += n.total_accumulated.clone();
+        if let Some(root) = self.root.as_mut() {
+            let size = self.size;
+            Self::splay(root, size);
+            debug_assert!(root.right.is_none());
+            if let Some(n) = right.as_mut() {
+                // right.offset_from_parent is always equal to zero, so this addition just sets it
+                // equal to `root.pair.size`.
+                S::Idx::delta_add_assign_idx(&mut n.offset_from_parent, root.pair.size);
+                root.total_accumulated += n.total_accumulated.clone();
+            }
+            root.right = right;
+            self.size.add_assign(right_size);
+            *self = self.temp_extract().try_join_right();
+        } else if let Some(mut right) = right {
+            // Similarly to adding left:
+            // We know that `right` is the left-most node in its subtree. Because there isn't
+            // already a root, we can just set its offset as zero, as it's now *globally* the
+            // left-most node.
+            debug_assert!(right.left.is_none());
+            right.offset_from_parent = S::Idx::ZERO_DELTA;
+            self.size = right_size;
+            self.root = Some(right);
         }
-        root.right = right;
-        self.size.add_assign(right_size);
-        *self = self.temp_extract().try_join_right();
 
         // And then we're done!
     }
@@ -530,8 +684,11 @@ where
         if left.right.is_some() {
             // If there is a right subchild, we need to move it so that the highest index is at the
             // root.
-
-            // Set the offset to start at zero
+            //
+            // We also need to *temporarily* increase the offset for `left` in order to provide the
+            // correct base indexes on calls to `AccumulatorSlice::accumulated`. After doing this,
+            // we'll subtract the same `offset_from_parent` in order to reset this temporary
+            // addition.
             S::Idx::delta_add_assign(&mut left.offset_from_parent, self.root().offset_from_parent);
             Self::splay(&mut left, root_pos.decrement());
             debug_assert!(left.right.is_none());
@@ -1214,13 +1371,11 @@ where
 {
     // Checks that the `Ranged` represents a valid set of ranges
     fn assert_valid(&self) {
-        let root = &self.root.as_ref().unwrap();
         if self.size != S::Idx::ZERO {
+            let root = &self.root.as_ref().unwrap();
             Self::assert_valid_node(root, true, S::Idx::ZERO..self.size, S::Idx::ZERO);
         } else {
-            assert_eq!(root.pair.size, S::Idx::ZERO);
-            assert!(root.left.is_none());
-            assert!(root.right.is_none());
+            assert!(self.root.is_none());
         }
     }
 
@@ -1291,7 +1446,7 @@ mod tests {
     type TestRanged = Ranged<u64, usize, isize, Slice>;
 
     #[derive(Copy, Clone)]
-    struct Slice(char);
+    struct Slice(char, usize); // Tuple of (value, size)
 
     impl Debug for Slice {
         fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -1327,10 +1482,20 @@ mod tests {
             assert!(acc % multiplier == 0);
             (acc / multiplier) as usize
         }
-        fn split_at(&mut self, _base: usize, _idx: usize) -> Self { *self }
+
+        fn split_at(&mut self, _base: usize, idx: usize) -> Self {
+            // These values are provided by the "Guarantees" section of AccumulatorSlice::split_at,
+            // which says that `split_at` is never called with 0 or size.
+            assert!(idx != 0);
+            assert!(idx != self.1);
+
+            let val = Slice(self.0, self.1 - idx);
+            self.1 = idx;
+            val
+        }
         fn try_join(self, other: Self) -> Result<Self, (Self, Self)> {
             if other.0 == self.0 {
-                Ok(self)
+                Ok(Slice(self.0, self.1 + other.1))
             } else {
                 Err((self, other))
             }
@@ -1339,14 +1504,14 @@ mod tests {
 
     // Define a couple helper methods for generating `Ranged`s and testing equality
     impl TestRanged {
-        fn from_sizes(default: char, sizes: &[(usize, char)]) -> TestRanged {
-            let mut this = Ranged::new(Slice(default), 0);
+        fn from_sizes(sizes: &[(usize, char)]) -> TestRanged {
+            let mut this = Ranged::new_empty();
 
             for &(s, x) in sizes {
                 println!("{}", this.print_tree());
 
                 let i = this.size();
-                this.replace(i..i, Ranged::new(Slice(x), s));
+                this.replace(i..i, Ranged::new(Slice(x, s), s));
             }
 
             this
@@ -1373,7 +1538,7 @@ mod tests {
     // This is to ensure that various tests pass, regardless of the input structure of the tree. We
     // do this by accessing each range after creating the tree, testing all permutations of the
     // access pattern.
-    fn do_all_perms<Func>(default: char, initial_sizes: &[(usize, char)], test: Func)
+    fn do_all_perms<Func>(initial_sizes: &[(usize, char)], test: Func)
     where
         Func: Fn(TestRanged),
         for<'a> &'a Func: UnwindSafe,
@@ -1385,7 +1550,7 @@ mod tests {
             "too many sizes to generate all permutations"
         );
 
-        let base = Ranged::from_sizes(default, initial_sizes);
+        let base = Ranged::from_sizes(initial_sizes);
 
         // The starting indexes of each size:
         let mut idx = 0;
@@ -1429,15 +1594,15 @@ mod tests {
     #[test]
     fn permuted_access() {
         let sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        do_all_perms('-', &sizes, |r| r.assert_matches(&sizes));
+        do_all_perms(&sizes, |r| r.assert_matches(&sizes));
     }
 
     #[test]
     fn empty_replace() {
-        let empty = Ranged::new(Slice('-'), 0);
+        let empty = Ranged::new_empty();
 
         let sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        do_all_perms('_', &sizes, |replacement| {
+        do_all_perms(&sizes, |replacement| {
             let mut e = empty.clone();
             e.replace(0..0, replacement).assert_matches(&[]);
             e.assert_matches(&sizes);
@@ -1447,8 +1612,8 @@ mod tests {
     #[test]
     fn insert_start() {
         let sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let insert = Ranged::from_sizes('-', &sizes[0..1]);
-        do_all_perms('-', &sizes[1..], |mut ranged| {
+        let insert = Ranged::from_sizes(&sizes[0..1]);
+        do_all_perms(&sizes[1..], |mut ranged| {
             ranged.replace(0..0, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(&sizes);
         });
@@ -1459,8 +1624,8 @@ mod tests {
         let start_sizes = vec![(4, 'a'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
 
-        let insert = Ranged::from_sizes('-', &[(3, 'b')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let insert = Ranged::from_sizes(&[(3, 'b')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged.replace(4..4, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(&end_sizes);
         });
@@ -1471,8 +1636,8 @@ mod tests {
         let start_sizes = vec![(5, 'c'), (2, 'd')];
         let end_sizes = vec![(3, 'c'), (3, 'b'), (2, 'c'), (2, 'd')];
 
-        let insert = Ranged::from_sizes('-', &[(3, 'b')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let insert = Ranged::from_sizes(&[(3, 'b')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged.replace(3..3, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(&end_sizes);
         });
@@ -1481,8 +1646,8 @@ mod tests {
     #[test]
     fn insert_end() {
         let sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let insert = Ranged::from_sizes('-', &sizes[3..4]);
-        do_all_perms('-', &sizes[..3], |mut ranged| {
+        let insert = Ranged::from_sizes(&sizes[3..4]);
+        do_all_perms(&sizes[..3], |mut ranged| {
             ranged.replace(12..12, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(&sizes);
         });
@@ -1492,8 +1657,8 @@ mod tests {
     fn replace_start_aligned() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(5, 'e'), (3, 'b'), (5, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes('-', &[(5, 'e')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(5, 'e')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(0..4, replacement.clone())
                 .assert_matches(&[(4, 'a')]);
@@ -1505,8 +1670,8 @@ mod tests {
     fn replace_start_unaligned() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(3, 'e'), (1, 'b'), (5, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes('-', &[(3, 'e')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(3, 'e')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(0..6, replacement.clone())
                 .assert_matches(&[(4, 'a'), (2, 'b')]);
@@ -1518,8 +1683,8 @@ mod tests {
     fn replace_middle_unaligned() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(4, 'a'), (2, 'b'), (3, 'e'), (3, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes('-', &[(3, 'e')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(3, 'e')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(6..9, replacement.clone())
                 .assert_matches(&[(1, 'b'), (2, 'c')]);
@@ -1531,8 +1696,8 @@ mod tests {
     fn replace_middle_aligned_left() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(4, 'a'), (3, 'b'), (3, 'e'), (3, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes('-', &[(3, 'e')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(3, 'e')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(7..9, replacement.clone())
                 .assert_matches(&[(2, 'c')]);
@@ -1544,8 +1709,8 @@ mod tests {
     fn replace_middle_aligned_right() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(4, 'a'), (2, 'b'), (3, 'e'), (5, 'c'), (2, 'd')];
-        let replacement = Ranged::from_sizes('-', &[(3, 'e')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(3, 'e')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(6..7, replacement.clone())
                 .assert_matches(&[(1, 'b')]);
@@ -1557,8 +1722,8 @@ mod tests {
     fn replace_middle_aligned_both() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(4, 'a'), (3, 'e'), (2, 'd')];
-        let replacement = Ranged::from_sizes('-', &[(3, 'e')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(3, 'e')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(4..12, replacement.clone())
                 .assert_matches(&[(3, 'b'), (5, 'c')]);
@@ -1570,8 +1735,8 @@ mod tests {
     fn replace_end_aligned() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(4, 'a'), (3, 'b'), (2, 'e')];
-        let replacement = Ranged::from_sizes('-', &[(2, 'e')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(2, 'e')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(7..14, replacement.clone())
                 .assert_matches(&[(5, 'c'), (2, 'd')]);
@@ -1583,8 +1748,8 @@ mod tests {
     fn replace_end_unaligned() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (5, 'c'), (2, 'd')];
         let end_sizes = vec![(4, 'a'), (3, 'b'), (2, 'c'), (2, 'e')];
-        let replacement = Ranged::from_sizes('-', &[(2, 'e')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(2, 'e')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(9..14, replacement.clone())
                 .assert_matches(&[(3, 'c'), (2, 'd')]);
@@ -1596,8 +1761,8 @@ mod tests {
     fn join_both_ends() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (2, 'c'), (1, 'b'), (2, 'd')];
         let end_sizes = vec![(4, 'a'), (5, 'b'), (2, 'd')];
-        let replacement = Ranged::from_sizes('-', &[(2, 'b')]);
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        let replacement = Ranged::from_sizes(&[(2, 'b')]);
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .replace(6..9, replacement.clone())
                 .assert_matches(&[(1, 'b'), (2, 'c')]);
@@ -1608,7 +1773,7 @@ mod tests {
     #[test]
     fn clone_range_unaligned() {
         let start_sizes = vec![(4, 'a'), (3, 'b'), (2, 'c'), (5, 'd')];
-        do_all_perms('-', &start_sizes, |mut ranged| {
+        do_all_perms(&start_sizes, |mut ranged| {
             ranged
                 .clone_range(5..8)
                 .assert_matches(&[(2, 'b'), (1, 'c')]);

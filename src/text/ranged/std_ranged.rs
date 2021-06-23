@@ -130,9 +130,22 @@ pub trait IndexedSlice: Sized {
 
 impl<S: IndexedSlice> StdRanged<S> {
     /// Creates a new `StdRanged` with the given size and initial filled range
+    ///
+    /// To create a `StdRanged` with a size of zero, refer to [`new_empty`].
+    ///
+    /// [`new_empty`]: Self::new_empty
     pub fn new(init: S, size: usize) -> Self {
         StdRanged {
             inner: Ranged::new(init, size),
+        }
+    }
+
+    /// Creates a new `StdRanged` with a size of zero
+    ///
+    /// To create a `StdRanged` with a non-zero initial size, see [`StdRanged::new`].
+    pub fn new_empty() -> Self {
+        StdRanged {
+            inner: Ranged::new_empty(),
         }
     }
 
