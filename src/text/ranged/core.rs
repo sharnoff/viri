@@ -110,9 +110,8 @@ struct Node<Acc, Idx, Delta, S> {
 ///
 /// This is a feature that only makes sense in certain contexts. For example: in a [`TextTree`], we
 /// want to have a way to go from byte indexes to line numbers. Our implementation of
-/// `AccumulatorSlice`
-/// there treats each slice as some number of lines, with the accumulator counting the number of
-/// lines before each slice.
+/// `AccumulatorSlice` there treats each slice as some number of lines, with the accumulator
+/// counting the number of lines before each slice.
 ///
 /// Fetching the accumulated value at a point is done with the [`accumulated_at`] method on
 /// [`Ranged`].
@@ -1306,6 +1305,22 @@ where
     }
 }
 
+trait CmpInRange: Sized {
+    fn cmp_in_range(self, range: Range<Self>) -> Ordering;
+}
+
+impl<T: Ord> CmpInRange for T {
+    fn cmp_in_range(self, range: Range<T>) -> Ordering {
+        if self < range.start {
+            Less
+        } else if self >= range.end {
+            Greater
+        } else {
+            Equal
+        }
+    }
+}
+
 #[cfg(test)]
 impl<S> Ranged<S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>
 where
@@ -1416,22 +1431,6 @@ where
         }
 
         assert_eq!(running_accumulator, node.total_accumulated);
-    }
-}
-
-trait CmpInRange: Sized {
-    fn cmp_in_range(self, range: Range<Self>) -> Ordering;
-}
-
-impl<T: Ord> CmpInRange for T {
-    fn cmp_in_range(self, range: Range<T>) -> Ordering {
-        if self < range.start {
-            Less
-        } else if self >= range.end {
-            Greater
-        } else {
-            Equal
-        }
     }
 }
 
