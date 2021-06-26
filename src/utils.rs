@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Formatter};
+use std::ops::{Deref, DerefMut};
 
 /// A trait similar to [`std::convert::Into`]; a companion to [`XFrom`]
 ///
@@ -171,5 +172,126 @@ impl<T> MaybeDbg for T {
 impl<T: Debug> MaybeDbg for T {
     fn maybe_dbg(&self) -> Option<String> {
         Some(format!("{:?}", self))
+    }
+}
+
+/// A mapped guard, produced by the [`map_guard`] method of [`MapDeref`]
+///
+/// Provides access via `F` to something in `G`. The implementation of `Deref` works in the
+/// expected way, given the bounds. For more information, refer to the documentation of
+/// [`MapDeref`].
+///
+/// A version of this type implementing `DerefMut` is available as [`MappedMutGuard`].
+///
+/// [`map_guard`]: MapDeref::map_guard
+pub struct MappedGuard<G, F> {
+    guard: G,
+    func: F,
+}
+
+/// A mutable mapped guard, produced by the [`map_mut_guard`] method of [`MapDerefMut`]
+///
+/// Provides mutable access via `Fm` to something in `G`, or immutable access via `Fi`. The
+/// implementations of `Deref` and `DerefMut` work in the expected way, given that knowledge and
+/// the bounds on the types. For more information, refer to the documentation of [`MapDerefMut`].
+///
+/// A version of this type that only implements `Deref` is available as [`MappedGuard`].
+///
+/// [`map_mut_guard`]: MapDerefMut::map_mut_guard
+pub struct MappedMutGuard<G, Fi, Fm> {
+    guard: G,
+    imut_func: Fi,
+    mut_func: Fm,
+}
+
+/// Extension trait for types implementing [`Deref`], allowing mapped access to the inner value(s)
+///
+/// Usage of this trait tends to involve various kinds of guards, e.g. `MutexGuard` or
+/// `cell::Ref`, in order to provide access to something within the types.
+///
+/// For a version of this trait providing mutable access, see [`MapDerefMut`].
+pub trait MapDeref: Deref + Sized {
+    /// Maps the guard, returning a value that implements `Deref` by calling the provided function
+    /// on each dereference
+    ///
+    /// The return of [`MappedGuard`] is only named as a concrete type because traits cannot use
+    /// the `impl Trait` syntax; usually it will not be possible to name the generic parameter `F`.
+    fn map_guard<T, F>(self, func: F) -> MappedGuard<Self, F>
+    where
+        F: Fn(&Self::Target) -> &T,
+    {
+        MappedGuard { guard: self, func }
+    }
+}
+
+/// Extension trait for types implementing [`DerefMut`], allowing mapped access to the inner
+/// value(s)
+///
+/// Usage of this trait tends to involve various kinds of guards, e.g. `MutexGuard` or
+/// `cell::RefMut`, in order to provide access to something within the types.
+///
+/// The reason we require two distinct types `Fi` and `Fm` is because we can't turn the reference
+/// mutable to pass to `Fm` in the implementation of `Deref` (that would be all kinds of
+/// unsafe), and we can't reasonably expect that someone provides a function from `&G -> &mut T`,
+/// which would either be unsafe or trivial. So the two separate functions handle the immutable and
+/// mutable cases individually.
+///
+/// For a version of this trait providing only immutable access, see [`MapDeref`].
+pub trait MapDerefMut: DerefMut + Sized {
+    /// Maps the guard, returning a value that implements `Deref` and `DerefMut` by calling the
+    /// appropriate provided function on each dereference.
+    ///
+    /// The return of [`MappedGuard`] is only named as a concrete type because traits cannot use
+    /// the `impl Trait` syntax; usually it will not be possible to name the generic parameter `F`.
+    fn map_mut_guard<T, Fi, Fm>(self, imut_func: Fi, mut_func: Fm) -> MappedMutGuard<Self, Fi, Fm>
+    where
+        Fi: Fn(&Self::Target) -> &T,
+        Fm: FnMut(&mut Self::Target) -> &mut T,
+    {
+        MappedMutGuard {
+            guard: self,
+            imut_func,
+            mut_func,
+        }
+    }
+}
+
+// Blanket implementations of `MapDeref[Mut]`
+impl<G: Deref> MapDeref for G {}
+impl<G: DerefMut> MapDerefMut for G {}
+
+// Implementations of `Deref`/`DerefMut` for `Mapped[Mut]Guard`
+impl<G, F, T> Deref for MappedGuard<G, F>
+where
+    G: Deref,
+    F: Fn(&G::Target) -> &T,
+{
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        (self.func)(&*self.guard)
+    }
+}
+
+impl<G, Fi, Fm, T> Deref for MappedMutGuard<G, Fi, Fm>
+where
+    G: Deref,
+    Fi: Fn(&G::Target) -> &T,
+{
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        (self.imut_func)(&*self.guard)
+    }
+}
+
+impl<G, Fi, Fm, T> DerefMut for MappedMutGuard<G, Fi, Fm>
+where
+    G: DerefMut,
+    Fi: Fn(&G::Target) -> &T, // Need to constrict Fi here so that we also implement Deref
+    Fm: FnMut(&mut G::Target) -> &mut T,
+{
+    fn deref_mut(&mut self) -> &mut T {
+        (self.mut_func)(&mut *self.guard)
     }
 }
