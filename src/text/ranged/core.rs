@@ -2,10 +2,15 @@
 //!
 //! Information about the purpose that [`Ranged`] serves is available in the type's documentation.
 
+use crate::utils::{DebugPtr, MapDeref, MapDerefMut, MappedGuard};
+use std::cell::{self, RefCell};
 use std::cmp::Ordering::{self, Equal, Greater, Less};
-use std::fmt::Debug;
-use std::mem;
-use std::ops::{AddAssign, Range, SubAssign};
+use std::collections::BTreeSet;
+use std::fmt::{self, Debug, Formatter};
+use std::marker::PhantomData;
+use std::ops::{AddAssign, Deref, DerefMut, Range, SubAssign};
+use std::rc::{Rc, Weak};
+use std::{mem, thread};
 
 use super::RangedIndex;
 
@@ -35,6 +40,7 @@ use super::RangedIndex;
 /// * Accumulators across ranges, with searching for the first index at a given accumulated value
 /// * Direct indexing to retrieve the value at a position
 /// * Custom index types -- not just `usize`
+/// * Stable node references to retrieve indexes after shifting
 ///
 /// Accumulators typically occur when there's something we're counting from each range. The best
 /// example of this is with newlines -- searching for the first index with a particular accumulated
@@ -45,7 +51,14 @@ use super::RangedIndex;
 /// [`TextTree`]. Using (line, byte index) pairs allow us to have values assigned to particular
 /// ranges or points within that.
 ///
-/// For more information, refer to the [`AccumulatorSlice`] and [`RangedIndex`] traits.
+/// Node references are a bit of a niche feature. There's some use cases where it's incredibly
+/// helpful (i.e. allows a reduction of `O(n)` to `O(log n)`) to be able to go in the reverse
+/// direction -- from a slice back to its position. Node references *can* be a little finnicky
+/// sometimes, if not used carefully. More details are available in the relevant
+/// [documentation](NodeRef).
+///
+/// For more information on any of the above, refer to the [`AccumulatorSlice`] and [`RangedIndex`]
+/// traits, or the [`NodeRef`] type.
 ///
 /// ## Defaults
 ///
@@ -65,13 +78,13 @@ use super::RangedIndex;
 /// [`Slice`]: super::Slice
 /// [`IndexedSlice`]: super::IndexedSlice
 /// [`Constant`]: super::Constant
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Ranged<Acc, Idx, Delta, S> {
     size: Idx,
     // The root is always `Some(_)` if `size != 0`. It's equal to `None` in certain cases, i.e.
     // whenever `size = 0`. We also will sometimes `.take()` it in order to temporarily extract an
     // owned `Ranged` from a `&mut Ranged`.
-    root: Option<Box<Node<Acc, Idx, Delta, S>>>,
+    root: Option<OwnedNode<Acc, Idx, Delta, S>>,
     // Helper value to store the default accumulator. This is kept in case the accumulator happens
     // to be particularly expensive to construct -- we want to minimize unnecessary calls to
     // `Acc::default()`
@@ -81,26 +94,695 @@ pub struct Ranged<Acc, Idx, Delta, S> {
     default_acc: Option<Acc>,
 }
 
-/// (*Internal*) A helper type for a [`Node`]; a value paired with its size
-///
-/// This really could have been flattened into the [`Node`] struct itself; the reason it isn't is
-/// because having a `size` field in a node might cause confusion; it could be misinterpreted as
-/// the total size of all children, which it is not.
-#[derive(Debug, Clone)]
-struct SizePair<S, Idx> {
-    val: S,
-    size: Idx,
+impl<Acc, Idx, Delta, S> Clone for Ranged<Acc, Idx, Delta, S>
+where
+    Acc: Clone,
+    Idx: Clone,
+    Delta: Clone,
+    S: Clone,
+{
+    fn clone(&self) -> Self {
+        Ranged {
+            size: self.size.clone(),
+            root: self.root.as_ref().map(|r| r.deep_clone(None)),
+            default_acc: self.default_acc.clone(),
+        }
+    }
 }
 
+/// A stable reference to a particular node in a [`Ranged`]
+///
+/// These are produced by the [`insert_ref`] or [`index_ref`] methods on `Ranged`, and remain valid
+/// so long as range corresponding to the node is not fully removed from the tree. In the case
+/// where the node *is* removed from the tree, it can be easy to accidentally keep the node as
+/// valid, but in a different tree.
+///
+/// `NodeRef`s essentially act as weak pointers to a node in the tree. Significant effort is made
+/// to ensure that they continue to be valid when the tree changes, however the reference will
+/// immediately become invalid if or when the owning `Ranged` is dropped.
+///
+/// The remainder of this documentation covers a few implementation details.
+///
+/// ## Redirection
+///
+/// In the event that two nodes in the tree are joined, `NodeRef`s to either will be changed to
+/// point to the same node. This is internally implemented with temporary redirection, and so
+/// accessing the node behind a `NodeRef` may incur a one-time cost of one additional dereference
+/// for each joining. Accessing a redirected node will overwrite the `NodeRef` to point to the new
+/// one.
+///
+/// Please note that it *is* possible for a sequence of node joins and splits to cause a `NodeRef`
+/// to point to a different but equal (i.e. `join`-able) node in an equal version of the tree. This
+/// can occur even in simple cases -- to demonstrate let's see an example, with distinct node given
+/// unqiue names:
+///
+/// ```text
+/// initial state:
+///   |---- A ----|-- B --|---- C ----|
+/// remove B, causing A & C join:
+///   |----------- A -----------|
+/// insert B again, D splits off from A:
+///   |---- A ----|-- B --|---- D ----|
+/// ```
+///
+/// In this example, any references that originally pointed to `C` will finish by pointing to `A`.
+/// The new node, `D` is viewed as distinct from the `C` that was originally joined into `A`.
+///
+/// There are no plans to change this behavior -- your best option is to just be careful about any
+/// usage of `NodeRef`s if this could affect you.
+///
+/// ## Deallocation
+///
+/// Much work has gone into ensuring that `NodeRef`s do not keep the full tree alive. Any remaining
+/// node references that exist when the base `Ranged` is dropped will prevent the individual
+/// *allocations* for their nodes from being deallocated, but the entire contents of the tree will
+/// otherwise drop. This is essentially the same as what you can expect using either of the
+/// standard library's weak pointers.
+///
+/// ## Send/Sync bounds
+///
+/// This type does not implement `Send` or `Sync` because it internally uses an [`rc::Weak`]. If
+/// your usage of this type restricts access so that only a single thread at a time may own **all**
+/// node references for a particular tree (including the tree itself!), then it is safe to
+/// implement `Send` or `Sync` on a wrapper type. [`StdRanged`] does this, because `NodeRef`s are
+/// not exposed there. There are no checks here that this invariant is upheld, aside from the racy
+/// runtime borrow checks from [`RefCell`].
+///
+/// It is not possible to safely expose any of the functionality from a `NodeRef` in a concurrent
+/// fashion directly. Do not attempt to do so. If this functionality is required, wrap the entire
+/// data structure in a `Mutex` and implement your own node references using that, that *are*
+/// thread-safe.
+///
+/// [`StdRanged`]: super::StdRanged
+/// [`insert_ref`]: Ranged::insert_ref
+/// [`index_ref`]: Ranged::index_ref
+/// [`rc::Weak`]: Weak
+//
+// Internal notes:
+//
+// We always guarantee that - if a `NodeRef` is still valid - the node it points to will contain
+// the address of reference in its `RefSet`. This means we can always confidently remove the
+// reference from a redirected node when we update.
+#[derive(Clone)]
+pub struct NodeRef<Acc, Idx, Delta, S> {
+    inner: Weak<RefCell<MaybeNode<Acc, Idx, Delta, S>>>,
+}
+
+impl<Acc, Idx, Delta, S> Drop for NodeRef<Acc, Idx, Delta, S> {
+    fn drop(&mut self) {
+        // The implementation of `Drop` serves to clean up any redirected nodes if there's no more
+        // references pointing to them. Because redirected nodes internally use `NodeRef`s as well
+        // to redirect, this will occur all the way down a chain of unused redirects.
+        //
+        // The central idea here is that -- if our NodeRef happens to point to a redirected node,
+        // AND there's no other NodeRefs remaining that point to it, then we can remove the last
+        // strong reference for that node from the node it points to.
+
+        match self.inner.weak_count() {
+            // weak_count = 0 if the node has already been deallocated already
+            0 => return,
+            // weak_count = 1 if this `NodeRef` is the last thing referencing it
+            1 => (),
+            // weak_count > 1 if there's other active `NodeRef`s. We should allow this to stay
+            // as-is
+            _ => return,
+        }
+
+        if let Some(node_rc) = self.inner.upgrade() {
+            // We want to avoid double-panicking in the destructor here. If we aren't already
+            // panicking, then we can go ahead and just grab the guard, but if we are we'll just
+            // silently exit -- it could be that some other invariant already messed this up.
+            //
+            // Helper macro to panic if the thread isn't already panicking.
+            macro_rules! ensure_panic {
+                ($($ts:tt)*) => {{
+                    if !thread::panicking() {
+                        panic!($($ts)*);
+                    } else {
+                        return;
+                    }
+                }};
+            }
+
+            let guard = match node_rc.try_borrow() {
+                Ok(g) => g,
+                Err(e) => ensure_panic!("failed to borrow node: {}", e),
+            };
+
+            let redirect_ref = match &*guard {
+                MaybeNode::Redirected(r, _) => r,
+                // Don't worry about counts for nodes that aren't redirected
+                MaybeNode::Base(_) => return,
+                MaybeNode::Temp => ensure_panic!("dropped invalid `NodeRef`: points to `Temp`"),
+            };
+
+            let redirect_rc = match redirect_ref.inner.upgrade() {
+                Some(rc) => rc,
+                None => ensure_panic!("redirect points to dropped node"),
+            };
+
+            let mut r_guard = match redirect_rc.try_borrow_mut() {
+                Ok(g) => g,
+                Err(e) => ensure_panic!("failed to borrow node: {}", e),
+            };
+
+            match &mut *r_guard {
+                MaybeNode::Redirected(_, refs) | MaybeNode::Base(Node { refs, .. }) => {
+                    refs.set.remove(&RefSetItem(node_rc.clone()));
+                }
+                MaybeNode::Temp => ensure_panic!("redirect points to `Temp`"),
+            }
+        }
+    }
+}
+
+impl<S> NodeRef<S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>
+where
+    S: AccumulatorSlice,
+    S::Idx: Debug,
+{
+    /// Returns whether the `NodeRef` points to a currently valid node
+    ///
+    /// In general, we call a node valid if the [`Ranged`] containing it has not been dropped.
+    ///
+    /// If the `NodeRef` is invalid, most other methods on it may panic as a result. When accessing
+    /// the `NodeRef` separately from the `Ranged` containing its node, it's generally a good idea
+    /// to call this method first to check that the `NodeRef` is still valid.
+    pub fn is_valid(&self) -> bool {
+        // If the strong count is > 0, we'll be able to upgrade the pointer -- that's all that's
+        // required for us to know that it's valid
+        self.inner.strong_count() > 0
+    }
+
+    /// Returns the current global index corresponding to the start of the node
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the [`Ranged`] containing the node has been dropped or if the node
+    /// has been removed. This can be checked with the [`is_valid`] method.
+    ///
+    /// [`is_valid`]: Self::is_valid
+    pub fn current_index(&mut self) -> S::Idx {
+        assert!(self.is_valid());
+        self.collapse_redirects();
+
+        let mut node_ref = self.inner.upgrade().unwrap();
+
+        let mut delta = S::Idx::ZERO_DELTA;
+        loop {
+            let guard = node_ref.borrow();
+            let node = guard.as_node_ref();
+            S::Idx::delta_add_assign(&mut delta, node.offset_from_parent);
+            match &node.parent {
+                None => break,
+                Some(p) => {
+                    let r = p.upgrade().unwrap();
+                    drop(guard);
+                    node_ref = r;
+                }
+            }
+        }
+
+        // We'd really *like* to perform a splay operation here after getting the index. But
+        // unfortunately, the splay operation requires a &mut OwnedNode, usually coming from the
+        // actual field of `Ranged` itself, through a `&mut Ranged`. We don't currently have the
+        // facilities for that, and adding it in would require some kind of redirection for the
+        // root node, which is a not-insignificant cost that would have to be evaluated.
+        //
+        // So for now, we accept that we don't splay on this operation. This will eventually change
+        // in the future. (TODO-ALG)
+        S::Idx::from_delta(delta)
+    }
+
+    /// Returns the current size of the referenced node
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the [`Ranged`] containing the node has been dropped or if the node
+    /// has been removed. This can be checked with the [`is_valid`] method.
+    ///
+    /// [`is_valid`]: Self::is_valid
+    pub fn size(&self) -> S::Idx {
+        self.inner
+            .upgrade()
+            .expect("invalid node reference")
+            .borrow()
+            .as_node_ref()
+            .size
+    }
+
+    /// (*Internal*) Collapses any redirection that might be present in a node that this one
+    /// references
+    fn collapse_redirects(&mut self) {
+        let this_rc = self.inner.upgrade().unwrap();
+
+        let mut initial_guard = this_rc.borrow_mut();
+
+        // A list of the redirected nodes that we'll change to point to the final node we find.
+        // In the case that there's a long chain of redirections (or: if this has been cloned),
+        // this helps to ensure that multiple calls to `collapse_redirects` have a smaller number
+        // of total operations that are actually required.
+        let mut final_overwrite = Vec::new();
+
+        // We keep `last` around so that we can remove it from the `RefSet` in the next node;
+        // it'll be redirected with `final_overwrite`.
+        //
+        // In the case that `next` is our final node, we might just end up removing `last` and
+        // adding it back when we add everything from `final_overwrite`.
+        let (mut last, mut next) = match &mut *initial_guard {
+            MaybeNode::Base(_) => return,
+            MaybeNode::Temp => panic!("`NodeRef` points to temp node"),
+            MaybeNode::Redirected(n, _) => {
+                match Rc::weak_count(&this_rc) {
+                    // We know that there has to be at least one weak reference, because `self`
+                    // contains one.
+                    0 => unreachable!(),
+                    // If there's only one weak reference, we won't do anything.
+                    1 => (),
+                    // But if there's more than one, we want to change this node to point to the
+                    // eventual target that we find in this method.
+                    _ => final_overwrite.push(this_rc.clone()),
+                }
+
+                (
+                    this_rc.clone(),
+                    n.inner.upgrade().expect("redirected to invalid node"),
+                )
+            }
+        };
+
+        loop {
+            let mut guard = next.borrow_mut();
+            match &mut *guard {
+                MaybeNode::Base(n) => {
+                    *self = NodeRef {
+                        inner: Rc::downgrade(&next),
+                    };
+                    for rc in final_overwrite {
+                        let mut guard = rc.borrow_mut();
+                        match mem::replace(&mut *guard, MaybeNode::Temp) {
+                            MaybeNode::Redirected(_, refs) => n.refs.set.extend(refs.set),
+                            _ => unreachable!(),
+                        }
+                    }
+                    return;
+                }
+                MaybeNode::Temp => panic!("`NodeRef` redirected to temp node"),
+                MaybeNode::Redirected(n, refs) => {
+                    match Rc::weak_count(&next) {
+                        // Again: we know that this can't have zero weak references, because `last`
+                        // contains one, and it must still be alive because we're about to remove
+                        // it from `refs.set`.
+                        0 => unreachable!(),
+                        1 => (),
+                        // And we only move along the redirected node if we actually have to.
+                        _ => final_overwrite.push(next.clone()),
+                    }
+
+                    refs.set.remove(&RefSetItem(last));
+                    let new_next = n.inner.upgrade().expect("redirected to invalid node");
+                    drop(guard);
+                    last = next;
+                    next = new_next;
+                }
+            }
+        }
+    }
+
+    /// (*Internal*) Constructs a `NodeRef` from an owned reference to the `Node`
+    fn from_owned(owned: &OwnedSNode<S>) -> Self {
+        NodeRef {
+            inner: owned.weak(),
+        }
+    }
+}
+
+/// (*Internal*) Singular, "owned" references to [`Node`]s for use only as child pointers in the
+/// tree
+///
+/// This type is only used within the tree to represent child nodes. It's similar to the
+/// publicly-exposd [`NodeRef`], but the guaranteed semantics are significantly different. While
+/// `NodeRef` permits some redirection (and thus accessing takes a `&mut NodeRef` to overwrite the
+/// pointer), we expect all `OwnedNode`s to have no redirection. The methods on this type therefore
+/// reflect that difference.
+struct OwnedNode<Acc, Idx, Delta, S> {
+    inner: Rc<RefCell<MaybeNode<Acc, Idx, Delta, S>>>,
+}
+
+impl<Acc, Idx, Delta, S> Debug for OwnedNode<Acc, Idx, Delta, S>
+where
+    Acc: Debug,
+    Idx: Debug,
+    Delta: Debug,
+    S: Debug,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        // We're essentially implementing the debug info for `Node` here as well, because we want
+        // to be able to give the correct address for the node.
+        //
+        // The reason we have to do this (and why we can't just use the &Node that gets passed to
+        // `Debug`) is because the address given for Rc/Weak::as_ptr is offset from the address
+        // inside of the `RefCell`. We could ignore that and output addresses that aren't *quite*
+        // right, but it's not worth the possibility of getting all confused about why the
+        // addresses are slightly off (again).
+
+        let this = self.get();
+        f.debug_struct("Node")
+            .field("<addr>", &DebugPtr(Rc::as_ptr(&self.inner)))
+            .field(
+                "parent",
+                &this.parent.as_ref().map(|p| DebugPtr(p.as_ptr())),
+            )
+            .field("offset_from_parent", &this.offset_from_parent)
+            .field("size", &this.size)
+            .field("val", &this.val)
+            .field("acc", &this.acc)
+            .field("total_accumulated", &this.total_accumulated)
+            .field("left", &this.left)
+            .field("right", &this.right)
+            .finish()
+    }
+}
+
+// Helper type for `OwnedNode::get`. It's extracted out here because it's... a bit big.
+type OwnedNodeRef<'r, Acc, Idx, Delta, S> = MappedGuard<
+    cell::Ref<'r, MaybeNode<Acc, Idx, Delta, S>>,
+    fn(&MaybeNode<Acc, Idx, Delta, S>) -> &Node<Acc, Idx, Delta, S>,
+>;
+
+impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
+    /// Creates a new `OwnedNode` from the given `Node`
+    fn new(node: Node<Acc, Idx, Delta, S>) -> Self {
+        OwnedNode {
+            inner: Rc::new(RefCell::new(MaybeNode::Base(node))),
+        }
+    }
+
+    /// Creates a new, temporary `OwnedNode` that can be set by [`set_temp`].
+    ///
+    /// [`set_temp`]: Self::set_temp
+    fn temporary() -> Self {
+        OwnedNode {
+            inner: Rc::new(RefCell::new(MaybeNode::Temp)),
+        }
+    }
+
+    /// Sets the value of a temporary node (created by [`temporary`])
+    ///
+    /// [`temporary`]: Self::temporary
+    fn set_temp(&mut self, node: Node<Acc, Idx, Delta, S>) {
+        let mut guard = self.inner.borrow_mut();
+
+        match &*guard {
+            MaybeNode::Temp => (),
+            _ => panic!("called `OwnedNode::set_temp` on non-temp node"),
+        }
+
+        *guard = MaybeNode::Base(node);
+    }
+
+    /// Performs a "shallow" clone of the reference, returning another `OwnedNode` pointing to the
+    /// same allocation
+    fn shallow_clone(&self) -> Self {
+        OwnedNode {
+            inner: self.inner.clone(),
+        }
+    }
+
+    /// Returns a weak reference to the underlying allocation. Analagous to [`Rc::downgrade`].
+    fn weak(&self) -> Weak<RefCell<MaybeNode<Acc, Idx, Delta, S>>> {
+        Rc::downgrade(&self.inner)
+    }
+
+    /// Provides a reference to the inner [`Node`]
+    ///
+    /// We can't return `impl Deref` here because usage in `Ranged::iter` requires being able to
+    /// name the type.
+    #[track_caller]
+    fn get<'a>(&'a self) -> OwnedNodeRef<'a, Acc, Idx, Delta, S> {
+        let guard = self.inner.borrow();
+
+        // We could just directly map the guard, but it's better to panic early if we're given bad
+        // input, so we check that first.
+        match &*guard {
+            MaybeNode::Base(_) => guard.map_guard(MaybeNode::as_node_ref),
+            MaybeNode::Redirected(_, _) => panic!("called `get` on `Redirected` node"),
+            MaybeNode::Temp => panic!("called `get` on `Temp` node"),
+        }
+    }
+
+    /// Provides a mutable reference to the inner [`Node`]
+    #[track_caller]
+    fn get_mut<'a>(&'a mut self) -> impl 'a + DerefMut<Target = Node<Acc, Idx, Delta, S>> {
+        let guard = self.inner.borrow_mut();
+
+        // We could just directly map the guard, but it's better to panic early if we're given bad
+        // input, so we check that first.
+        match &*guard {
+            MaybeNode::Base(_) => {
+                guard.map_mut_guard(MaybeNode::as_node_ref, MaybeNode::as_node_mut)
+            }
+            MaybeNode::Redirected(_, _) => panic!("called `get_mut` on `Redirected` node"),
+            MaybeNode::Temp => panic!("called `get_mut` on `Temp` node"),
+        }
+    }
+
+    /// Extracts the inner [`Node`], replacing it with a [`MaybeNode::Temp`]
+    ///
+    /// Taking the value out of the node puts it in an invalid state. Before using any other
+    /// methods, *some* value must be returned with the [`set`] method.
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the current value of the node is not `MaybeNode::Base`.
+    ///
+    /// [`set`]: Self::set
+    #[track_caller]
+    fn take(&mut self) -> Node<Acc, Idx, Delta, S> {
+        match self.inner.replace(MaybeNode::Temp) {
+            MaybeNode::Base(n) => n,
+            MaybeNode::Redirected(_, _) => panic!("called `take` on `Redirected` node"),
+            MaybeNode::Temp => panic!("called `take` on `Temp` node"),
+        }
+    }
+
+    /// Sets the value of the inner [`Node`]; the counterpart to [`take`]
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the current value of the node is not `MaybeNode::Temp`.
+    ///
+    /// [`take`]: Self::take
+    fn set(&mut self, node: MaybeNode<Acc, Idx, Delta, S>) {
+        match self.inner.replace(node) {
+            MaybeNode::Temp => (),
+            MaybeNode::Redirected(_, _) => panic!("called `set` on `Redirected` node"),
+            MaybeNode::Base(_) => panic!("called `set` on `Base` node"),
+        }
+    }
+
+    /// Helper method for mapping an `Option<OwnedNode>` to `Option<&Node>`
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the node is in an invalid state, as described by [`get`].
+    ///
+    /// [`get`]: Self::get
+    fn map_ref(this: &Option<Self>) -> Option<impl '_ + Deref<Target = Node<Acc, Idx, Delta, S>>> {
+        this.as_ref().map(Self::get)
+    }
+
+    /// Helper method for mapping an `Option<OwnedNode>` to `Option<&mut Node>`
+    ///
+    /// Technically speaking, we don't actually need `this` to be a mutable reference, because
+    /// everything's behind `RefCell`s anyways. But there's utility in opting-in to the borrow
+    /// checking that `RefCell`s allow us to ignore, so that's why we have this.
+    ///
+    /// ## Panics
+    ///
+    /// This method panics if the node is in an invalid state, as described by [`get_mut`].
+    ///
+    /// [`get_mut`]: Self::get_mut
+    fn map_mut(
+        this: &mut Option<Self>,
+    ) -> Option<impl '_ + DerefMut<Target = Node<Acc, Idx, Delta, S>>> {
+        this.as_mut().map(Self::get_mut)
+    }
+}
+
+/// (*Internal*) The representation of a node that's expected to be present
+///
+/// We use this type to support all of the different operations that we've already described at
+/// length, in the documentation of [`NodeRef`]. Briefly: in most cases, accessing the inner node
+/// will be done simply with `MaybeNode::Base`. If a node is joined with another, the removed node
+/// is replaced by `MaybeNode::Redirected` to give access to the new node.
+///
+/// Under certain conditions, we also replace the value with `Temp` in order to temporarily take
+/// ownership of the underlying `Node`, e.g. to pass the underlying `AccumulatorSlice` by value to
+/// some other method.
+enum MaybeNode<Acc, Idx, Delta, S> {
+    // The actual node itself
+    Base(Node<Acc, Idx, Delta, S>),
+    // A node that has since been joined with another; this reference now gives the address of that
+    // node.
+    //
+    // Note that, to keep with the restrictions on `NodeRef` in its internal documentation, the
+    // node that we have a reference to here *also* contains a pointer to this value in its
+    // `RefSet`.
+    Redirected(NodeRef<Acc, Idx, Delta, S>, RefSet<Acc, Idx, Delta, S>),
+    // A temporary value that's sometimes used in order to take ownership over the contents of a
+    // `Node` without requiring any memory-unsafe operations.
+    Temp,
+}
+
+// A `RefSet` is our method of storing the set of redirected nodes that are pointing at this one,
+// so that they cannot be dropped with `NodeRef`s pointing to them
+struct RefSet<Acc, Idx, Delta, S> {
+    set: BTreeSet<RefSetItem<MaybeNode<Acc, Idx, Delta, S>>>,
+}
+
+impl<Acc, Idx, Delta, S> Default for RefSet<Acc, Idx, Delta, S> {
+    fn default() -> Self {
+        RefSet {
+            set: BTreeSet::new(),
+        }
+    }
+}
+
+// A single item in a `RefSet`.
+//
+// This is a newtype so that we can have a special implementation of `Ord` that simply compares the
+// addresses of the pointers.
+struct RefSetItem<N>(Rc<RefCell<N>>);
+
+impl<N> PartialEq for RefSetItem<N> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<N> Eq for RefSetItem<N> {}
+
+impl<N> PartialOrd for RefSetItem<N> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<N> Ord for RefSetItem<N> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // The inner type of `self.0` is `Rc<RefCell<N>>`, so we want to compare the references to
+        // the `RefCell<N>`.
+        ((&*self.0) as *const RefCell<N>).cmp(&((&*other.0) as *const RefCell<N>))
+    }
+}
+
+impl<Acc, Idx, Delta, S> MaybeNode<Acc, Idx, Delta, S> {
+    /// Returns a reference to the underlying `Node`, assuming that this is a `MaybeNode::Base`
+    ///
+    /// ## Panics
+    ///
+    /// This method *assumes* that the value is a `MaybeNode::Base`. It will still panic if that is
+    /// not the case, but does not make it particularly informative.
+    fn as_node_ref(&self) -> &Node<Acc, Idx, Delta, S> {
+        match self {
+            MaybeNode::Base(n) => n,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Returns a mutable reference to the underlyig `Node`, assuming that this is a
+    /// `MaybeNode::Base`
+    ///
+    /// ## Panics
+    ///
+    /// This method *assumes* that the value is a `MaybeNode::Base`. It will still panic if that is
+    /// not the case, but does not make it particularly informative.
+    fn as_node_mut(&mut self) -> &mut Node<Acc, Idx, Delta, S> {
+        match self {
+            MaybeNode::Base(n) => n,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// (*Internal*) Helper type alias for the type of pointers to a parent node
+type ParentPointer<Acc, Idx, Delta, S> = Weak<RefCell<MaybeNode<Acc, Idx, Delta, S>>>;
+
 /// (*Internal*) An individual node in the [`Ranged`] splay tree
-#[derive(Debug, Clone)]
 struct Node<Acc, Idx, Delta, S> {
-    left: Option<Box<Node<Acc, Idx, Delta, S>>>,
-    right: Option<Box<Node<Acc, Idx, Delta, S>>>,
-    pair: SizePair<S, Idx>,
+    left: Option<OwnedNode<Acc, Idx, Delta, S>>,
+    right: Option<OwnedNode<Acc, Idx, Delta, S>>,
+
+    // All of the external `NodeRef`s that are referencing this node
+    refs: RefSet<Acc, Idx, Delta, S>,
+
+    // The parent of this node, if it exists. We only use a `Weak` here in order to allow
+    // deallocation; the reference should always be valid.
+    //
+    // Additionally, the `MaybeNode` will always be `MaybeNode::Base`
+    parent: Option<ParentPointer<Acc, Idx, Delta, S>>,
+    // The offset from this node's parent, if it exists. If this node has no parent, then
+    // `offset_from_parent` corresponds to the absolute position of the node.
     offset_from_parent: Delta,
-    // The total accumulated value from `pair.val` and both subtrees.
+
+    // The size of the range contained by this node -- not including `left` or `right`.
+    size: Idx,
+    // The `AccumulatorSlice` itself
+    val: S,
+    // The accumulated value across the full range
+    acc: Acc,
+
+    // The total accumulated value from `acc` and both the left and right subtree.
+    // Essentially: left.total_accumulated + acc + right.total_accumulated
     total_accumulated: Acc,
+}
+
+impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S>
+where
+    Acc: Clone,
+    Idx: Clone,
+    Delta: Clone,
+    S: Clone,
+{
+    /// Creates a "deep clone" of the `Node`, copying the entire subtree rooted at the node with
+    /// fresh allocations
+    ///
+    /// This method is only intended to be called from within the implementation of [`Clone`] for
+    /// [`Ranged`] (or recursively, as part of this method).
+    ///
+    /// Because of the way this method uses itself, `parent` is not expected to point to a valid
+    /// node at first (i.e. it may be a `Temp` node).
+    fn deep_clone(&self, parent: Option<ParentPointer<Acc, Idx, Delta, S>>) -> Self {
+        // We start by creating a temporary node to pass as a parent pointer.
+        //
+        // After cloning the left and right subtrees, we replace the actual contents of the node.
+        let mut new = OwnedNode::temporary();
+        let this_ptr = Some(new.weak());
+
+        let this = self.get();
+
+        // Actually clone the node. We don't have to worry about borrow conflicts with `new`
+        // because cloning children doesn't actually access the parent pointer.
+        new.set_temp(Node {
+            left: this.left.as_ref().map(|n| n.deep_clone(this_ptr.clone())),
+            right: this.right.as_ref().map(|n| n.deep_clone(this_ptr)),
+            // Note: `refs` is empty because the cloned node is fundamentally a different node --
+            // references to it *shouldn't* transfer.
+            refs: RefSet::default(),
+            parent,
+            // In general, setting `offset_from_parent` to the same is correct. Because cloning
+            // `OwnedNode`s never exists in a vacuum -- it's always as part of another call to
+            // `deep_clone` or cloning the tree itself.
+            offset_from_parent: this.offset_from_parent.clone(),
+            size: this.size.clone(),
+            val: this.val.clone(),
+            acc: this.acc.clone(),
+            total_accumulated: this.total_accumulated.clone(),
+        });
+
+        new
+    }
 }
 
 /// An abstraction over values that can represent a single region in a [`Ranged`]
@@ -222,7 +904,7 @@ pub trait AccumulatorSlice: Sized {
     }
 }
 
-// Helper type alias for talking about nodes, because they have many parameters
+// Helper type alias for talking about owned nodes, because they have many type parameters
 //
 // The reason we have <S as AccumulatorSlice> throughout instead of S: AccumulatorSlice at the
 // beginning is because the compiler gives us a warning otherwise:
@@ -230,6 +912,14 @@ pub trait AccumulatorSlice: Sized {
 //     ...
 //   help: the bound will not be checked when the type alias is used, and should be removed
 // We're sacrificing a little cleanliness to get rid of warnings.
+type OwnedSNode<S> = OwnedNode<
+    <S as AccumulatorSlice>::Accumulator,
+    <S as AccumulatorSlice>::Idx,
+    <<S as AccumulatorSlice>::Idx as RangedIndex>::Delta,
+    S,
+>;
+
+// Same as `OwnedSNode`, but for the nodes themselves.
 type SNode<S> = Node<
     <S as AccumulatorSlice>::Accumulator,
     <S as AccumulatorSlice>::Idx,
@@ -249,19 +939,26 @@ where
     ///
     /// [`new_empty`]: Self::new_empty
     pub fn new(init: S, size: S::Idx) -> Self {
+        // In general, we expect that node sizes are non-zero. We need to explicitly check for that
+        // here to ensure that we don't mess up the tree as a result.
         if size == S::Idx::ZERO {
-            // We expect that sizes are non-zero. We need to explicitly
             return Self::new_empty();
         }
 
+        let acc = init.accumulated(S::Idx::ZERO, size);
+
         Ranged {
             size,
-            root: Some(Box::new(Node {
+            root: Some(OwnedNode::new(Node {
                 left: None,
                 right: None,
-                pair: SizePair { val: init, size },
+                refs: RefSet::default(),
+                parent: None,
                 offset_from_parent: S::Idx::ZERO_DELTA,
-                total_accumulated: S::Accumulator::default(),
+                size,
+                val: init,
+                acc: acc.clone(),
+                total_accumulated: acc,
             })),
             default_acc: Some(S::Accumulator::default()),
         }
@@ -284,8 +981,35 @@ where
         self.size
     }
 
-    // Provides an immutable reference to the root nod
-    fn root(&self) -> &SNode<S> {
+    // Provides an immutable reference to the root node
+    fn root(&self) -> impl '_ + Deref<Target = SNode<S>> {
+        #[cfg(debug_assertions)]
+        if self.size == S::Idx::ZERO {
+            panic!("cannot get root node while tree is empty");
+        }
+
+        self.root
+            .as_ref()
+            .expect("root node is in invalid state")
+            .get()
+    }
+
+    // Provides a mutable guard for the contents of the root node
+    fn root_mut(&mut self) -> impl '_ + DerefMut<Target = SNode<S>> {
+        #[cfg(debug_assertions)]
+        if self.size == S::Idx::ZERO {
+            panic!("cannot get root node while tree is empty");
+        }
+
+        self.root
+            .as_mut()
+            .expect("root node is in invalid state")
+            .get_mut()
+    }
+
+    // Returns an immutable reference to the `OwnedNode` at the root of the tree, panicking if the
+    // tree is empty.
+    fn root_ref(&self) -> &OwnedSNode<S> {
         #[cfg(debug_assertions)]
         if self.size == S::Idx::ZERO {
             panic!("cannot get root node while tree is empty");
@@ -294,8 +1018,9 @@ where
         self.root.as_ref().expect("root node is in invalid state")
     }
 
-    // Provides a mutable reference to the root node
-    fn root_mut(&mut self) -> &mut Box<SNode<S>> {
+    // Returns a mutable reference to the `OwnedNode` at the root of the tree, panicking if the
+    // tree is empty.
+    fn root_ref_mut(&mut self) -> &mut OwnedSNode<S> {
         #[cfg(debug_assertions)]
         if self.size == S::Idx::ZERO {
             panic!("cannot get root node while tree is empty");
@@ -312,7 +1037,7 @@ where
         }
 
         let start = self.root_pos();
-        let end = start.add(self.root().pair.size);
+        let end = start.add(self.root().size);
 
         (start..end).contains(&idx)
     }
@@ -356,6 +1081,29 @@ where
     pub fn insert(&mut self, index: S::Idx, size: S::Idx, values: S) {
         let insertion = Ranged::new(values, size);
         self.replace(index..index, insertion);
+    }
+
+    /// Inserts the slice, returning a reference to the inserted values
+    ///
+    /// If `size` is zero, the returned [`NodeRef`] will always be invalid.
+    ///
+    /// For more information, refer to [`insert`](Self::insert) and [`NodeRef`].
+    pub fn insert_ref(
+        &mut self,
+        index: S::Idx,
+        size: S::Idx,
+        values: S,
+    ) -> NodeRef<S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S> {
+        let insertion = Ranged::new(values, size);
+        let weak = insertion
+            .root
+            .as_ref()
+            .map(OwnedNode::weak)
+            .unwrap_or_else(Weak::new);
+
+        self.replace(index..index, insertion);
+
+        NodeRef { inner: weak }
     }
 
     /// Replaces the given range with a new set of values, shifting all later indexes by the
@@ -425,7 +1173,7 @@ where
         // that's not the case, then we should just return quickly.
         if self.root.is_none() {
             // We already know that `self` empty; there's no use trying to extract out the specific
-            // value in `self` to pass to `func` if `new_empty()` will to just as well.
+            // value in `self` to pass to `func` if `new_empty()` will do just as well.
             *self = func(Self::new_empty());
             return;
         }
@@ -444,19 +1192,21 @@ where
         let right_size = self.size.sub(range.end);
 
         // Extract the values from before the range:
-        Self::splay(self.root_mut(), range.start, &mut default_acc);
+        Self::splay(self.root_ref_mut(), range.start, &mut default_acc);
 
         // We always set `left.offset_from_parent` to be equal to `-left.size`, which will be
         // correct if it's being added to an existing root node.
-        let left = if range.start == S::Idx::ZERO {
+        let mut left = if range.start == S::Idx::ZERO {
             None
         } else if range.start == self.size {
             // If the range *starts* at the end of the set of values, then we can just take the
             // entire root as `left`. We'll have to check for this later.
             self.size = S::Idx::ZERO;
             self.root.take().map(|mut n| {
+                let mut g = n.get_mut();
                 // left.offset_from_parent = -left_size; -- as given above
-                n.offset_from_parent = S::Idx::delta_from(S::Idx::ZERO, n.pair.size);
+                g.offset_from_parent = S::Idx::delta_from(S::Idx::ZERO, g.size);
+                drop(g);
                 n
             })
         } else if self.root_contains(range.start.decrement()) {
@@ -469,12 +1219,12 @@ where
 
             let root_pos = self.root_pos();
 
-            let sub_left = self.root_mut().left.take();
+            let mut sub_left = self.root_mut().left.take();
             let left_size = range.start.sub(self.root_pos());
 
             self.size.sub_assign(range.start);
-            let root = self.root_mut();
-            root.pair.size.sub_assign(left_size);
+            let mut root = self.root_mut();
+            root.size.sub_assign(left_size);
 
             // we set offset_from_parent to zero here because we just removed all of the nodes up
             // to range.start
@@ -482,53 +1232,70 @@ where
 
             // Because we're removing part of the root, we need to shift the location of
             // root.right:
-            if let Some(n) = root.right.as_mut() {
+            if let Some(mut n) = OwnedNode::map_mut(&mut root.right) {
                 S::Idx::delta_sub_assign_idx(&mut n.offset_from_parent, left_size);
             }
 
             // Split the left off from the root:
-            let mut left_val = root.pair.val.split_at(root_pos, left_size);
-            mem::swap(&mut left_val, &mut root.pair.val);
+            let mut left_val = root.val.split_at(root_pos, left_size);
+            mem::swap(&mut left_val, &mut root.val);
+            // Transfer all of the node references to the new left node
+            let left_refs = mem::take(&mut root.refs);
 
             // Acknowledge that we've taken some of the accumulated value out of the root - we're
-            // putting it into `lhs_accumulated`.
-            let mut lhs_accumulated = left_val.accumulated(root_pos, left_size);
+            // putting it into `lhs_acc`.
+            let lhs_acc = left_val.accumulated(root_pos, left_size);
+            root.acc -= lhs_acc.clone();
 
-            if let Some(l) = sub_left.as_ref() {
+            let mut lhs_total_accumulated = lhs_acc.clone();
+
+            let mut temp_return = OwnedNode::temporary();
+
+            if let Some(mut l) = OwnedNode::map_mut(&mut sub_left) {
                 // > lhs_accumulated += l.total_accumulated.clone();
                 Self::add_acc(
                     l.total_accumulated.clone(),
-                    &mut lhs_accumulated,
+                    &mut lhs_total_accumulated,
                     &mut default_acc,
                 );
+                l.parent = Some(temp_return.weak());
             }
-            root.total_accumulated -= lhs_accumulated.clone();
+            root.total_accumulated -= lhs_total_accumulated.clone();
 
             // offset_from_parent = -left_size
             let mut offset_from_parent = S::Idx::ZERO_DELTA;
             S::Idx::delta_sub_assign_idx(&mut offset_from_parent, left_size);
 
-            Some(Box::new(Node {
-                pair: SizePair {
-                    size: left_size,
-                    val: left_val,
-                },
+            temp_return.set_temp(Node {
                 left: sub_left,
                 right: None,
+                refs: left_refs,
+                // We don't know what the new root will be, so we leave this as `None` for the time
+                // being. If we end up placing this as the new root, `None` will be correct.
+                // Otherwise, we'll have to set the parent anyways.
+                parent: None,
                 offset_from_parent,
-                total_accumulated: lhs_accumulated,
-            }))
+                size: left_size,
+                val: left_val,
+                acc: lhs_acc,
+                total_accumulated: lhs_total_accumulated,
+            });
+
+            Some(temp_return)
         } else {
             // This branch corresponds to the case where `range.start` is aligned with the starting
             // index of a node. We want to leave `self` containing the set of values corresonding
             // to `range`, so we extract out the left-hand side, which we know corresponds to
             // indexes below `range.start`.
             self.size.sub_assign(self.root_pos());
-            let root = self.root_mut();
+            let mut root = self.root_mut();
             root.offset_from_parent = S::Idx::ZERO_DELTA;
 
-            root.left.take().map(|n| {
-                root.total_accumulated -= n.total_accumulated.clone();
+            root.left.take().map(|mut n| {
+                let mut g = n.get_mut();
+                root.total_accumulated -= g.total_accumulated.clone();
+                g.parent = None;
+                drop(g);
                 n
             })
         };
@@ -543,8 +1310,7 @@ where
 
         if self.root.is_some() {
             // Extract the values from after the range
-            let r = self.root_mut();
-            Self::splay(r, end, &mut default_acc);
+            Self::splay(self.root_ref_mut(), end, &mut default_acc);
 
             right = if end == self.size {
                 None
@@ -555,7 +1321,7 @@ where
                 // of the root node it's being assigned to, we'll just set it to zero. We'll use
                 // this fact later.
                 self.root.take().map(|mut n| {
-                    n.offset_from_parent = S::Idx::ZERO_DELTA;
+                    n.get_mut().offset_from_parent = S::Idx::ZERO_DELTA;
                     n
                 })
             } else if self.root_contains(end.decrement()) {
@@ -571,34 +1337,43 @@ where
                 let root_pos = self.root_pos().add(range.start);
 
                 // right_size = self.root_pos() + self.root().pair.size - end
-                let right_size = self.root_pos().add(self.root().pair.size).sub(end);
-                let root = self.root_mut();
-                let rhs_in_node = root.pair.size.sub(right_size);
+                let right_size = self.root_pos().add(self.root().size).sub(end);
+                let mut root = self.root_mut();
+                let rhs_in_node = root.size.sub(right_size);
 
-                let rhs_val = root.pair.val.split_at(root_pos, rhs_in_node);
-                let mut rhs_accumulated =
-                    rhs_val.accumulated(root_pos.add(rhs_in_node), right_size);
+                let rhs_val = root.val.split_at(root_pos, rhs_in_node);
+                let rhs_acc = rhs_val.accumulated(root_pos.add(rhs_in_node), right_size);
+                root.acc -= rhs_acc.clone();
 
-                if let Some(n) = sub_right.as_mut() {
+                let mut rhs_total_accumulated = rhs_acc.clone();
+
+                let mut temp_return = OwnedNode::temporary();
+
+                if let Some(mut n) = OwnedNode::map_mut(&mut sub_right) {
                     S::Idx::delta_sub_assign_idx(&mut n.offset_from_parent, rhs_in_node);
-                    rhs_accumulated += n.total_accumulated.clone();
+                    rhs_total_accumulated += n.total_accumulated.clone();
+                    n.parent = Some(temp_return.weak());
                 }
-                root.total_accumulated -= rhs_accumulated.clone();
+                root.total_accumulated -= rhs_total_accumulated.clone();
 
-                root.pair.size = rhs_in_node;
+                root.size = rhs_in_node;
 
-                Some(Box::new(Node {
-                    pair: SizePair {
-                        size: right_size,
-                        val: rhs_val,
-                    },
+                temp_return.set_temp(Node {
                     left: None,
                     right: sub_right,
+                    refs: RefSet::default(),
+                    // We'll set the parent later if we need to, once we know the new root
+                    parent: None,
                     // The offset doesn't actually matter here - we just set it to zero as a
                     // temporary value.
                     offset_from_parent: S::Idx::ZERO_DELTA,
-                    total_accumulated: rhs_accumulated,
-                }))
+                    size: right_size,
+                    val: rhs_val,
+                    acc: rhs_acc,
+                    total_accumulated: rhs_total_accumulated,
+                });
+
+                Some(temp_return)
             } else {
                 // This branch corresponds to the case where the the index corresponding to the end
                 // of the range occurs *just* beyond the current root.
@@ -611,8 +1386,10 @@ where
                 // we at least have something to work with here. We also don't need to bother about
                 // setting the size of `self`, because we're just about to do that below this
                 // block.
-                let root = self.root_mut();
+                let mut root = self.root_mut();
                 let lhs = root.left.take().map(|mut lhs| {
+                    // Guard for lhs:
+                    let mut l_g = lhs.get_mut();
                     // The new root's offset can be calculated based on the current root:
                     //
                     //    |---------- current root position ----------|
@@ -623,8 +1400,10 @@ where
                     // We want to go from lhs.offset_from_parent = "lhs offset" to "lhs position",
                     // so we can just subtract the offset from the current root's position. In this
                     // case though, the offset is negative, so we're actually adding it.
-                    S::Idx::delta_add_assign(&mut lhs.offset_from_parent, root.offset_from_parent);
-                    root.total_accumulated -= lhs.total_accumulated.clone();
+                    S::Idx::delta_add_assign(&mut l_g.offset_from_parent, root.offset_from_parent);
+                    root.total_accumulated -= l_g.total_accumulated.clone();
+                    l_g.parent = None;
+                    drop(l_g);
                     lhs
                 });
 
@@ -634,6 +1413,7 @@ where
 
                 // Then, just swap in `lhs` as the new root and return the right-hand side as
                 // `right`.
+                drop(root);
                 mem::replace(&mut self.root, lhs)
             };
         }
@@ -658,63 +1438,93 @@ where
 
         // Add `left`:
         if let Some(root) = self.root.as_mut() {
-            // We have to add to the root position before calling `splay` in order for the base
-            // indexes passed to calls to `AccumulatorSlice::accumulated` to be valid.
-            //
-            // Otherwise, this would really just be `Self::splay(root, 0, ..)`, in order to align the
-            // tree so that there's nothing to the left of the root.
-            S::Idx::delta_add_assign_idx(&mut root.offset_from_parent, left_size);
-            Self::splay(root, left_size, &mut default_acc);
-            debug_assert!(root.left.is_none());
+            // We only actually want to modify the root if we have a `left` side to add back.
+            // Otherwise, there isn't much to do.
+            let mut maybe_guard = OwnedNode::map_mut(&mut left);
+            if let Some(left_guard) = maybe_guard.as_mut() {
+                // We have to add to the root position before calling `splay` in order for the base
+                // indexes passed to calls to `AccumulatorSlice::accumulated` to be valid.
+                //
+                // Otherwise, this would really just be `Self::splay(root, 0, ..)`, in order to align the
+                // tree so that there's nothing to the left of the root.
+                S::Idx::delta_add_assign_idx(&mut root.get_mut().offset_from_parent, left_size);
+                Self::splay(root, left_size, &mut default_acc);
 
-            if let Some(n) = left.as_ref() {
-                // > root.total_accumulated += n.total_accumulated.clone();
+                let root_weak_ref = root.weak();
+                left_guard.parent = Some(root_weak_ref);
+
+                let mut root_guard = root.get_mut();
+                debug_assert!(root_guard.left.is_none());
+
+                // > root.total_accumulated += left.total_accumulated.clone();
                 Self::add_acc(
-                    n.total_accumulated.clone(),
-                    &mut root.total_accumulated,
+                    left_guard.total_accumulated.clone(),
+                    &mut root_guard.total_accumulated,
                     &mut default_acc,
                 );
+
+                // Finally add `left` to the root:
+                drop(maybe_guard);
+                root_guard.left = left;
+                drop(root_guard);
+                self.size.add_assign(left_size);
+                *self = self.temp_extract().try_join_left(&mut default_acc);
             }
-            root.left = left;
-            self.size.add_assign(left_size);
-            *self = self.temp_extract().try_join_left();
         } else if let Some(mut left) = left {
+            let mut left_guard = left.get_mut();
+
             // Because we're adding back `left` as the root node, we have to carefully update its
             // position. However `left` was previously extracted, it is the furthest-to-the-right
             // node in its subtree.
             //
             // We can therefore calculate its position by simply subtracting its size from the
             // previously-stored `left_size`:
-            debug_assert!(left.right.is_none());
+            debug_assert!(left_guard.right.is_none());
 
             // delta_from(x, 0) = "convert x to type Delta"
-            left.offset_from_parent =
-                S::Idx::delta_from(left_size.sub(left.pair.size), S::Idx::ZERO);
+            left_guard.offset_from_parent =
+                S::Idx::delta_from(left_size.sub(left_guard.size), S::Idx::ZERO);
+            drop(left_guard);
             self.size = left_size;
             self.root = Some(left);
         }
 
         // Add `right`:
         if let Some(root) = self.root.as_mut() {
-            let size = self.size;
-            Self::splay(root, size, &mut default_acc);
-            debug_assert!(root.right.is_none());
-            if let Some(n) = right.as_mut() {
+            // Same deal as with `left`: we only need to do something if there is actually a right
+            // node to add
+            let mut maybe_guard = OwnedNode::map_mut(&mut right);
+            if let Some(right_guard) = maybe_guard.as_mut() {
+                let size = self.size;
+                Self::splay(root, size, &mut default_acc);
+
+                let root_weak_ref = root.weak();
+                right_guard.parent = Some(root_weak_ref);
+
+                let mut root_guard = root.get_mut();
+                debug_assert!(root_guard.right.is_none());
+
                 // right.offset_from_parent is always equal to zero, so this addition just sets it
                 // equal to `root.pair.size`.
-                S::Idx::delta_add_assign_idx(&mut n.offset_from_parent, root.pair.size);
-                root.total_accumulated += n.total_accumulated.clone();
+                S::Idx::delta_add_assign_idx(&mut right_guard.offset_from_parent, root_guard.size);
+                root_guard.total_accumulated += right_guard.total_accumulated.clone();
+
+                drop(maybe_guard);
+                root_guard.right = right;
+                drop(root_guard);
+                self.size.add_assign(right_size);
+                *self = self.temp_extract().try_join_right(&mut default_acc);
             }
-            root.right = right;
-            self.size.add_assign(right_size);
-            *self = self.temp_extract().try_join_right();
         } else if let Some(mut right) = right {
+            let mut right_guard = right.get_mut();
+
             // Similarly to adding left:
             // We know that `right` is the left-most node in its subtree. Because there isn't
             // already a root, we can just set its offset as zero, as it's now *globally* the
             // left-most node.
-            debug_assert!(right.left.is_none());
-            right.offset_from_parent = S::Idx::ZERO_DELTA;
+            debug_assert!(right_guard.left.is_none());
+            right_guard.offset_from_parent = S::Idx::ZERO_DELTA;
+            drop(right_guard);
             self.size = right_size;
             self.root = Some(right);
         }
@@ -725,7 +1535,10 @@ where
     }
 
     /// (*Internal*)
-    fn try_join_left(mut self) -> Self {
+    //
+    // We pass in `default_acc` because this method is called at a point in `Ranged::replace_with`
+    // where the accumulator is temporarily extracted outside of `self.default_acc`.
+    fn try_join_left(mut self, default_acc: &mut Option<S::Accumulator>) -> Self {
         if self.root().left.is_none() {
             return self;
         }
@@ -738,9 +1551,9 @@ where
         //
         // It's often going to be the case that, when this method is called, the left-hand node is
         // already going to be without any right child.
-        let mut left = self.root_mut().left.take().unwrap();
+        let mut left: OwnedSNode<_> = self.root_mut().left.take().unwrap();
 
-        if left.right.is_some() {
+        if left.get().right.is_some() {
             // If there is a right subchild, we need to move it so that the highest index is at the
             // root.
             //
@@ -748,45 +1561,80 @@ where
             // correct base indexes on calls to `AccumulatorSlice::accumulated`. After doing this,
             // we'll subtract the same `offset_from_parent` in order to reset this temporary
             // addition.
-            S::Idx::delta_add_assign(&mut left.offset_from_parent, self.root().offset_from_parent);
+            S::Idx::delta_add_assign(
+                &mut left.get_mut().offset_from_parent,
+                self.root().offset_from_parent,
+            );
             Self::splay(&mut left, root_pos.decrement(), &mut self.default_acc);
-            debug_assert!(left.right.is_none());
+
+            let mut left_guard = left.get_mut();
+            debug_assert!(left_guard.right.is_none());
 
             // And then return the (new) left node's offset to be relative to the root
-            S::Idx::delta_sub_assign(&mut left.offset_from_parent, self.root().offset_from_parent)
+            S::Idx::delta_sub_assign(
+                &mut left_guard.offset_from_parent,
+                self.root().offset_from_parent,
+            )
         }
 
-        let mut root = self.root.take().expect("root node is in invalid state");
-        match left.pair.val.try_join(root.pair.val) {
+        let root_ref: &mut OwnedSNode<_> = self.root_ref_mut();
+
+        let mut temp_root: SNode<_> = root_ref.take();
+        let mut temp_left: SNode<_> = left.take();
+
+        match temp_left.val.try_join(temp_root.val) {
             // If there's an error, we just put things back to where they were before
             Err((left_val, root_val)) => {
-                left.pair.val = left_val;
-                root.pair.val = root_val;
-                root.left = Some(left);
+                temp_left.val = left_val;
+                left.set(MaybeNode::Base(temp_left));
+
+                temp_root.val = root_val;
+                temp_root.left = Some(left);
+                root_ref.set(MaybeNode::Base(temp_root));
             }
             // If they *do* join, we have to stick the nodes back together
             Ok(single) => {
-                let left_size = left.pair.size;
-                S::Idx::delta_sub_assign_idx(&mut root.offset_from_parent, left_size);
+                let left_size = temp_left.size;
+                S::Idx::delta_sub_assign_idx(&mut temp_root.offset_from_parent, left_size);
 
                 // Because we've shifted the position of the root back, we need to also need to
                 // shift the right child
-                if let Some(n) = root.right.as_mut() {
+                if let Some(mut n) = OwnedNode::map_mut(&mut temp_root.right) {
                     S::Idx::delta_add_assign_idx(&mut n.offset_from_parent, left_size);
                 }
 
-                root.pair.size.add_assign(left_size);
-                root.pair.val = single;
-                root.left = left.left;
+                temp_root.size.add_assign(left_size);
+                temp_root.val = single;
+                Self::add_acc(temp_left.acc, &mut temp_root.acc, default_acc);
+
+                temp_root.left = temp_left.left.map(|mut n| {
+                    n.get_mut().parent = Some(root_ref.weak());
+                    n
+                });
+
+                // Set up `left` as redirecting to `root` -- we need to ensure that any `NodeRef`s
+                // that point to `left` will continue to function as intended.
+                //
+                // We only need to do this if there are existing `NodeRef`s to `left`, which we can
+                // detect by the weak count. At this point, both of the node's children should be
+                // dropped or `None`,
+                if Rc::weak_count(&left.inner) != 0 {
+                    debug_assert!(temp_left.right.is_none());
+
+                    temp_root.refs.set.insert(RefSetItem(left.inner.clone()));
+                    let root_node_ref = NodeRef::from_owned(&root_ref);
+                    left.set(MaybeNode::Redirected(root_node_ref, temp_left.refs));
+                }
+
+                root_ref.set(MaybeNode::Base(temp_root));
             }
         }
 
-        self.root = Some(root);
         self
     }
 
     /// (*Internal*)
-    fn try_join_right(mut self) -> Self {
+    fn try_join_right(mut self, default_acc: &mut Option<S::Accumulator>) -> Self {
         // This method is essentially the same as `try_join_left`, where the only changes are to
         // account for being to the right, not to the left of the root node. For a commentary on
         // the structure, refer to that method immediately above.
@@ -796,44 +1644,61 @@ where
         }
 
         let root_pos = self.root_pos();
-        let mut right = self.root_mut().right.take().unwrap();
+        let mut right: OwnedSNode<_> = self.root_mut().right.take().unwrap();
 
-        if right.left.is_some() {
+        if right.get().left.is_some() {
+            let root = self.root();
             S::Idx::delta_add_assign(
-                &mut right.offset_from_parent,
-                self.root().offset_from_parent,
+                &mut right.get_mut().offset_from_parent,
+                root.offset_from_parent,
             );
-            Self::splay(
-                &mut right,
-                root_pos.add(self.root().pair.size),
-                &mut self.default_acc,
-            );
-            debug_assert!(right.left.is_none());
-            S::Idx::delta_sub_assign(
-                &mut right.offset_from_parent,
-                self.root().offset_from_parent,
-            );
+            Self::splay(&mut right, root_pos.add(root.size), default_acc);
+
+            let mut right_guard = right.get_mut();
+            debug_assert!(right_guard.left.is_none());
+            S::Idx::delta_sub_assign(&mut right_guard.offset_from_parent, root.offset_from_parent);
         }
 
-        let mut root = self.root.take().expect("root node is in invalid state");
-        match (root.pair.val).try_join(right.pair.val) {
+        let root_ref: &mut OwnedSNode<_> = self.root_ref_mut();
+
+        let mut temp_root: SNode<_> = root_ref.take();
+        let mut temp_right: SNode<_> = right.take();
+
+        match (temp_root.val).try_join(temp_right.val) {
             Err((root_val, right_val)) => {
-                root.pair.val = root_val;
-                right.pair.val = right_val;
-                root.right = Some(right);
+                temp_right.val = right_val;
+                right.set(MaybeNode::Base(temp_right));
+
+                temp_root.val = root_val;
+                temp_root.right = Some(right);
+                root_ref.set(MaybeNode::Base(temp_root));
             }
             Ok(single) => {
-                let root_size = root.pair.size;
-                root.pair.size.add_assign(right.pair.size);
-                root.pair.val = single;
-                root.right = right.right.map(|mut n| {
-                    S::Idx::delta_add_assign_idx(&mut n.offset_from_parent, root_size);
+                let root_size = temp_root.size;
+                temp_root.size.add_assign(temp_right.size);
+                temp_root.val = single;
+                temp_root.acc.add_assign(temp_right.acc);
+
+                temp_root.right = temp_right.right.map(|mut n| {
+                    let mut guard = n.get_mut();
+                    S::Idx::delta_add_assign_idx(&mut guard.offset_from_parent, root_size);
+                    guard.parent = Some(root_ref.weak());
+                    drop(guard);
                     n
                 });
+
+                if Rc::weak_count(&right.inner) != 0 {
+                    debug_assert!(temp_right.left.is_none());
+
+                    temp_root.refs.set.insert(RefSetItem(right.inner.clone()));
+                    let root_node_ref = NodeRef::from_owned(&root_ref);
+                    right.set(MaybeNode::Redirected(root_node_ref, temp_right.refs));
+                }
+
+                root_ref.set(MaybeNode::Base(temp_root));
             }
         }
 
-        self.root = Some(root);
         self
     }
 
@@ -841,62 +1706,113 @@ where
     ///
     /// This function can be used with [`clone_range`](Self::clone_range) to iterate over a smaller
     /// range.
-    pub fn iter<'a>(&'a self) -> impl 'a + Iterator<Item = (&'a S, Range<S::Idx>)> {
-        struct Iter<'a, S: AccumulatorSlice> {
+    pub fn iter<'a>(
+        &'a self,
+    ) -> impl 'a + Iterator<Item = (impl 'a + Deref<Target = S>, Range<S::Idx>)> {
+        struct Iter<'r, Acc, Idx, Delta, S> {
             // The root is `Some` only on the first iteration
-            root: Option<&'a SNode<S>>,
+            root: Option<OwnedNode<Acc, Idx, Delta, S>>,
             // Stack of nodes and their position
-            stack: Vec<(S::Idx, &'a SNode<S>)>,
+            stack: Vec<(Idx, OwnedNode<Acc, Idx, Delta, S>)>,
+            // We attach a lifetime to the iterator in order to ensure that the structure of the
+            // tree doesn't change out from underneath us
+            marker: PhantomData<&'r ()>,
         }
 
-        impl<'a, S> Iter<'a, S>
+        // Helper type for implmenting deref going `OwnedNode` -> `S`.
+        //
+        // This uses unsafety in the implementation, because `borrow` conceptually borrows from
+        // `owned`, even though it is only accessing *through* `owned`.
+        //
+        // It's theoretically possible to implement this in safe rust, but only if you traverse the
+        // entire tree to get to each referenced node. That solution would be O(n^2), which is
+        // obviously not acceptable, unfortunately.
+        //
+        // So we're using this for now, though we may later create a custom `RefCell`
+        // implementation that directly supports guards that go through common pointer types by
+        // accessing their values each time. (TODO-ALG/TODO-FEATURE)
+        //
+        // We could also instead just include `borrow`: we know that the tree shouldn't change out
+        // from underneath us, so we could embrace the unsafety even more and do away with all of
+        // the refcounts. But... single-threaded refcounts are pretty fast anyways, and so it
+        // probably wouldn't matter much.
+        struct NodeDeref<'r, Acc, Idx, Delta, S> {
+            owned: OwnedNode<Acc, Idx, Delta, S>,
+            // Invariant: `borrow` always points to the same node as `owned`. Because `owned` has a
+            // strong reference to the data, we know that `borrow` will remain valid at least as
+            // long as `owned` is alive.
+            borrow: OwnedNodeRef<'r, Acc, Idx, Delta, S>,
+        }
+
+        impl<'r, Acc, Idx, Delta, S> Deref for NodeDeref<'r, Acc, Idx, Delta, S> {
+            type Target = S;
+
+            fn deref(&self) -> &S {
+                &self.borrow.val
+            }
+        }
+
+        impl<'r, S> Iter<'r, S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>
         where
             S: AccumulatorSlice,
             S::Idx: Debug,
         {
-            fn push_lefts(&mut self, root_parent_pos: S::Idx, root: &'a SNode<S>) {
+            fn push_lefts(
+                &mut self,
+                root_parent_pos: S::Idx,
+                root: OwnedNode<S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>,
+            ) {
                 let mut pos = root_parent_pos;
                 let mut r = Some(root);
                 while let Some(n) = r {
-                    pos = <Ranged<_, _, _, _>>::stack_pos(pos, &*n);
+                    pos = Ranged::stack_pos(pos, &*n.get());
+                    r = n.get().left.as_ref().map(|n| n.shallow_clone());
                     self.stack.push((pos, n));
-                    r = n.left.as_ref().map(|b| b.as_ref());
                 }
             }
         }
 
-        impl<'a, S> Iterator for Iter<'a, S>
+        impl<'r, S> Iterator for Iter<'r, S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>
         where
-            S: AccumulatorSlice,
+            S: 'r + AccumulatorSlice,
             S::Idx: Debug,
         {
-            type Item = (&'a S, Range<S::Idx>);
+            type Item = (
+                NodeDeref<'r, S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>,
+                Range<S::Idx>,
+            );
 
             fn next(&mut self) -> Option<Self::Item> {
-                if let Some(r) = self.root {
-                    self.push_lefts(S::Idx::ZERO, &r);
-                    self.root = None;
+                if let Some(r) = self.root.take() {
+                    self.push_lefts(S::Idx::ZERO, r);
                 }
 
                 match self.stack.pop() {
-                    Some((pos, n)) => {
-                        if let Some(r) = n.right.as_ref() {
-                            self.push_lefts(pos, r);
+                    Some((pos, owned)) => {
+                        let g = owned.get();
+                        if let Some(r) = g.right.as_ref() {
+                            self.push_lefts(pos, r.shallow_clone());
                         }
-                        let range = pos..pos.add(n.pair.size);
-                        Some((&n.pair.val, range))
+
+                        let range = pos..pos.add(g.size);
+                        // SAFETY: We've described above, in the comments for `NodeDeref` why this
+                        // has to be unsafe. This is simply lifetime extension, so that the
+                        // original lifetime (which is tied to `owned`) doesn't get tied up when we
+                        // try to place `borrow` into a struct alongside `owned`.
+                        let borrow = unsafe {
+                            mem::transmute::<OwnedNodeRef<_, _, _, _>, OwnedNodeRef<_, _, _, _>>(g)
+                        };
+                        Some((NodeDeref { owned, borrow }, range))
                     }
                     None => None,
                 }
             }
         }
 
-        let iter: Iter<S> = Iter {
-            root: match self.size == S::Idx::ZERO {
-                true => None,
-                false => Some(self.root()),
-            },
+        let iter: Iter<'a, _, _, _, _> = Iter {
+            root: self.root.as_ref().map(|n| n.shallow_clone()),
             stack: Vec::new(),
+            marker: PhantomData,
         };
 
         iter
@@ -935,9 +1851,9 @@ where
         let root_pos = self.root_pos();
         idx.sub_assign(root_pos);
 
-        let r = self.root();
-        let mut acc = r.pair.val.accumulated(root_pos, idx);
-        if let Some(lhs) = r.left.as_ref() {
+        let r = OwnedNode::map_ref(&mut self.root).unwrap();
+        let mut acc = r.val.accumulated(root_pos, idx);
+        if let Some(lhs) = OwnedNode::map_ref(&r.left) {
             // > acc += lhs.total_accumulated.clone();
             Self::add_acc(
                 lhs.total_accumulated.clone(),
@@ -974,17 +1890,81 @@ where
     // Performs the 'splay' operation to bubble the region containing the index to the root This is
     // pretty much just adapted from the implementation in Alex Crichton's splay-rs
     //
-    // The `root_offset` parameter gives us an amount to add to the position of the root node. We
-    // typically use this mid-replacement, so that it's still a valid tree passed to `splay`, but
-    // we can pass the correct index of each slice to their functions.
-    fn splay(node: &mut Box<SNode<S>>, idx: S::Idx, default_acc: &mut Option<S::Accumulator>) {
-        let mut newleft: Option<Box<SNode<S>>> = None;
-        let mut newright: Option<Box<SNode<S>>> = None;
+    // Note that we largely don't use any of the interior mutability provided by the `RefCell`s
+    // here -- we swap around what's being referenced instead of swapping the things at those
+    // references. It's why we take a `&mut OwnedNode` to replace instead of just writing to what's
+    // at that node. This distinction means that `NodeRef`s *are* actually guaranteed to be stable,
+    // instead of just
+    fn splay(node: &mut OwnedSNode<S>, idx: S::Idx, default_acc: &mut Option<S::Accumulator>) {
+        let original_parent = node.get_mut().parent.take();
 
-        // Parameterized by `N` here for the node;
-        struct Entry<'a, I, N> {
-            node: &'a mut Option<Box<N>>,
-            parent_pos: I,
+        let mut newleft: Option<OwnedSNode<S>> = None;
+        let mut newright: Option<OwnedSNode<S>> = None;
+
+        struct Entry<'a, S: AccumulatorSlice> {
+            kind: EntryKind<'a, S>,
+            parent_pos: S::Idx,
+        }
+
+        enum EntryKind<'a, S: AccumulatorSlice> {
+            Base(&'a mut Option<OwnedSNode<S>>),
+            Left(OwnedSNode<S>),
+            Right(OwnedSNode<S>),
+        }
+
+        impl<'a, S: AccumulatorSlice> Entry<'a, S> {
+            // fills in the "hole" in the entry, in the appropriate place. panics if it already has
+            // a node there
+            fn set_node(&mut self, mut node: Option<OwnedSNode<S>>) {
+                match &mut self.kind {
+                    EntryKind::Base(hole) => {
+                        if let Some(mut n) = OwnedNode::map_mut(&mut node) {
+                            n.parent = None;
+                        }
+
+                        debug_assert!(hole.is_none());
+                        // double-dereference because we matched on `&mut EntryKind::Base(&mut _)`.
+                        **hole = node;
+                    }
+                    EntryKind::Left(n) => {
+                        if let Some(mut l) = OwnedNode::map_mut(&mut node) {
+                            l.parent = Some(n.weak());
+                        }
+
+                        let mut g = n.get_mut();
+                        debug_assert!(g.left.is_none());
+                        g.left = node;
+                    }
+                    EntryKind::Right(n) => {
+                        if let Some(mut r) = OwnedNode::map_mut(&mut node) {
+                            r.parent = Some(n.weak());
+                        }
+
+                        let mut g = n.get_mut();
+                        debug_assert!(g.right.is_none());
+                        g.right = node;
+                    }
+                }
+            }
+
+            // Moves the hole the entry corresponds to
+            fn shift_with(&mut self, kind: impl FnOnce(OwnedSNode<S>) -> EntryKind<'a, S>) {
+                let node = match &self.kind {
+                    EntryKind::Base(n) => n.as_ref().unwrap().shallow_clone(),
+                    EntryKind::Left(n) => n.get().left.as_ref().unwrap().shallow_clone(),
+                    EntryKind::Right(n) => n.get().right.as_ref().unwrap().shallow_clone(),
+                };
+
+                self.kind = kind(node);
+            }
+
+            fn has_hole(&self) -> bool {
+                match &self.kind {
+                    EntryKind::Base(opt) => opt.is_none(),
+                    EntryKind::Left(n) => n.get().left.is_none(),
+                    EntryKind::Right(n) => n.get().right.is_none(),
+                }
+            }
         }
 
         // We need to set `parent_pos` equal to `usize::MAX / 2` because adjusting positions down
@@ -992,192 +1972,258 @@ where
         //
         // @req "Ranged::replace requires less than usize::MAX / 2" v0
         let mut l = Entry {
-            node: &mut newleft,
+            kind: EntryKind::Base(&mut newleft),
             parent_pos: S::Idx::MAX_SIZE,
         };
         let mut r = Entry {
-            node: &mut newright,
+            kind: EntryKind::Base(&mut newright),
             parent_pos: S::Idx::MAX_SIZE,
         };
 
         macro_rules! assert_valid {
             ($node:expr) => {{
-                if let Some(left) = $node.left.as_ref() {
+                if let Some(left) = OwnedNode::map_ref(&$node.left) {
                     debug_assert!(left.offset_from_parent < S::Idx::ZERO_DELTA);
                 }
-                if let Some(right) = $node.right.as_ref() {
-                    debug_assert!(S::Idx::from_delta(right.offset_from_parent) >= $node.pair.size);
+                if let Some(right) = OwnedNode::map_ref(&$node.right) {
+                    debug_assert!(S::Idx::from_delta(right.offset_from_parent) >= $node.size);
                 }
             }};
         }
 
         macro_rules! swap_option_parents {
             ($($n:expr, $old:expr => $new:expr;)+) => {{
-                $($n.as_mut().map(|n| Self::swap_parent(n, $old, $new));)+
+                $($n.as_mut().map(|n| Self::swap_parent(&mut *n.get_mut(), $old, $new));)+
             }}
         }
 
-        loop {
-            let mut node_pos = S::Idx::from_delta(node.offset_from_parent);
+        // helper macro for setting the parent of a node
+        macro_rules! setp {
+            ($node:expr, $parent:expr) => {{
+                let mut n = $node;
+                if let Some(mut node) = OwnedNode::map_mut(&mut n) {
+                    node.parent = $parent;
+                }
+                n
+            }};
+        }
 
-            match idx.cmp_in_range(node_pos..node_pos.add(node.pair.size)) {
+        loop {
+            // "node_g" stands for "node guard". We use the "_g" suffix here to indicate guards,
+            // for simplicity.
+            let mut node_g = node.get_mut();
+            let mut node_pos = S::Idx::from_delta(node_g.offset_from_parent);
+
+            match idx.cmp_in_range(node_pos..node_pos.add(node_g.size)) {
                 Equal => break,
                 Less => {
                     // Note: the "parent" of `left` is expected to be `node_pos`.
-                    let mut left = node.left.take().expect("expected lower value");
-                    node.total_accumulated -= left.total_accumulated.clone();
-                    let mut left_pos = Self::stack_pos(node_pos, &left);
+                    let mut left = node_g.left.take().expect("expected lower value");
+                    let mut left_g = left.get_mut();
+                    left_g.parent = None;
+
+                    node_g.total_accumulated -= left_g.total_accumulated.clone();
+                    let mut left_pos = Self::stack_pos(node_pos, &*left_g);
+                    drop((left_g, node_g));
 
                     // rotate this node right if necessary
                     if idx < left_pos {
+                        let node_weak = node.weak();
+                        let (mut left_g, mut node_g) = (left.get_mut(), node.get_mut());
+
                         // set node.left = left.right
-                        let left_acc = &mut left.total_accumulated; // TODO-RFC#2229
-                        left.right.as_mut().map(|n| {
-                            Self::swap_parent(n, left_pos, node_pos);
-                            *left_acc -= n.total_accumulated.clone();
+                        let mut maybe_guard = OwnedNode::map_mut(&mut left_g.right);
+                        if let Some(n) = maybe_guard.as_mut() {
+                            Self::swap_parent(&mut *n, left_pos, node_pos);
                             // > node.total_accumulated += n.total_accumulated.clone();
                             Self::add_acc(
                                 n.total_accumulated.clone(),
-                                &mut node.total_accumulated,
+                                &mut node_g.total_accumulated,
                                 default_acc,
                             );
-                        });
-                        node.left = left.right.take();
-                        assert_valid!(node);
+                            let n_acc = n.total_accumulated.clone();
+                            drop(maybe_guard);
+                            left_g.total_accumulated -= n_acc;
+                        } else {
+                            // Need to ensure that `maybe_guard` is adequately dropped in both
+                            // cases.
+                            drop(maybe_guard);
+                        }
+                        node_g.left = setp!(left_g.right.take(), Some(node_weak));
+                        assert_valid!(node_g);
 
                         // swap left & node:
                         //
                         // node.offset_from_parent = -left.offset_from_parent;
-                        node.offset_from_parent = S::Idx::ZERO_DELTA;
+                        node_g.offset_from_parent = S::Idx::ZERO_DELTA;
                         S::Idx::delta_sub_assign(
-                            &mut node.offset_from_parent,
-                            left.offset_from_parent,
+                            &mut node_g.offset_from_parent,
+                            left_g.offset_from_parent,
                         );
                         // left.offset_from_parent = left_pos as Idx;
-                        left.offset_from_parent = left_pos.delta_from(S::Idx::ZERO);
+                        left_g.offset_from_parent = left_pos.delta_from(S::Idx::ZERO);
+
+                        drop((left_g, node_g));
+
                         mem::swap(&mut left, node);
                         mem::swap(&mut node_pos, &mut left_pos);
-                        assert_valid!(node);
+                        let node_weak = node.weak();
+                        let mut node_g = node.get_mut();
+                        let mut left_g = left.get_mut();
+                        assert_valid!(node_g);
 
                         // set node.right = left; node.right is currently None because we took
                         // left.right earlier
-                        debug_assert!(node.right.is_none());
-                        // `left`'s "parent" is still correct; we don't need to update it here.
-                        node.total_accumulated += left.total_accumulated.clone();
-                        node.right = Some(left);
+                        debug_assert!(node_g.right.is_none());
+                        // `left`'s parent position is still correct; we don't need to update it
+                        // here. We *do* need to update the actual parent, though.
+                        node_g.total_accumulated += left_g.total_accumulated.clone();
+                        left_g.parent = Some(node_weak);
+                        drop(left_g);
+                        node_g.right = Some(left);
 
-                        match mem::replace(&mut node.left, None) {
-                            Some(l) => {
-                                #[allow(unused_assignments)]
-                                {
-                                    // Here, left_pos is never read -- that's mostly fine, but we
-                                    // want to have this statement here either way for consistency.
-                                    left_pos = Self::stack_pos(node_pos, &l);
-                                }
-                                node.total_accumulated -= l.total_accumulated.clone();
+                        match mem::replace(&mut node_g.left, None) {
+                            Some(mut l) => {
+                                let mut g = l.get_mut();
+                                g.parent = None;
+                                node_g.total_accumulated -= g.total_accumulated.clone();
+                                drop(g);
                                 left = l;
                             }
                             None => break,
                         }
                     }
 
+                    let (mut left_g, mut node_g) = (left.get_mut(), node.get_mut());
+
                     // Broadly: *r = Some(replace(node, left));
                     //          r = &mut r.as_mut().unwrap().left;
                     //
                     // Prepare `left` to replace `node`.
-                    Self::swap_parent(&mut left, node_pos, S::Idx::ZERO);
+                    Self::swap_parent(&mut *left_g, node_pos, S::Idx::ZERO);
                     // Prepare `node` to replace `*r`
-                    Self::swap_parent(node, S::Idx::ZERO, r.parent_pos);
+                    Self::swap_parent(&mut *node_g, S::Idx::ZERO, r.parent_pos);
+                    debug_assert!(left_g.parent.is_none());
+                    debug_assert!(node_g.parent.is_none());
+
+                    drop((left_g, node_g));
+
                     let new_r = mem::replace(node, left);
-                    r.parent_pos = Self::stack_pos(r.parent_pos, &new_r);
-                    *r.node = Some(new_r);
-                    r.node = &mut r.node.as_mut().unwrap().left;
-                    debug_assert!(r.node.is_none());
+                    r.parent_pos = Self::stack_pos(r.parent_pos, &*new_r.get());
+                    // The following two lines are equivalent to:
+                    //   *r.node = Some(new_r);
+                    //   r.node = &mut r.node.left; (ignoring unwrapping)
+                    r.set_node(Some(new_r));
+                    r.shift_with(EntryKind::Left);
+                    debug_assert!(r.has_hole());
                 }
                 Greater => {
                     // We might sometimes have `idx` equal to one greater than
-                    let mut right = match node.right.take() {
+                    let mut right = match node_g.right.take() {
                         Some(n) => n,
                         None => break,
                     };
-                    node.total_accumulated -= right.total_accumulated.clone();
-                    let mut right_pos = Self::stack_pos(node_pos, &right);
+                    let mut right_g = right.get_mut();
+                    right_g.parent = None;
+                    node_g.total_accumulated -= right_g.total_accumulated.clone();
+                    let mut right_pos = Self::stack_pos(node_pos, &*right_g);
+
+                    let upper_bound = right_pos.add(right_g.size);
+                    drop((right_g, node_g));
 
                     // Rotate left if necessary
-                    if idx >= right_pos.add(right.pair.size) {
+                    if idx >= upper_bound {
+                        let node_weak = node.weak();
+                        let (mut right_g, mut node_g) = (right.get_mut(), node.get_mut());
+
                         // set node.right = right.left
-                        let right_acc = &mut right.total_accumulated; // TODO-RFC#2229
-                        right.left.as_mut().map(|n| {
-                            Self::swap_parent(n, right_pos, node_pos);
-                            *right_acc -= n.total_accumulated.clone();
-                            node.total_accumulated += n.total_accumulated.clone();
-                        });
-                        node.right = right.left.take();
-                        assert_valid!(node);
+                        let mut maybe_guard = OwnedNode::map_mut(&mut right_g.left);
+                        if let Some(n) = maybe_guard.as_mut() {
+                            Self::swap_parent(&mut *n, right_pos, node_pos);
+                            node_g.total_accumulated += n.total_accumulated.clone();
+                            let n_acc = n.total_accumulated.clone();
+                            drop(maybe_guard);
+                            right_g.total_accumulated -= n_acc;
+                        } else {
+                            drop(maybe_guard);
+                        }
+
+                        node_g.right = setp!(right_g.left.take(), Some(node_weak));
+                        assert_valid!(node_g);
 
                         // swap right & node:
                         //
                         // node.offset_from_parent = -right.offset_from_parent;
-                        node.offset_from_parent = S::Idx::ZERO_DELTA;
+                        node_g.offset_from_parent = S::Idx::ZERO_DELTA;
                         S::Idx::delta_sub_assign(
-                            &mut node.offset_from_parent,
-                            right.offset_from_parent,
+                            &mut node_g.offset_from_parent,
+                            right_g.offset_from_parent,
                         );
                         // right.offset_from_parent = right_pos as Idx;
-                        right.offset_from_parent = right_pos.delta_from(S::Idx::ZERO);
+                        right_g.offset_from_parent = right_pos.delta_from(S::Idx::ZERO);
+
+                        drop((right_g, node_g));
+
                         mem::swap(&mut right, node);
                         mem::swap(&mut node_pos, &mut right_pos);
-                        assert_valid!(node);
+                        let node_weak = node.weak();
+                        let mut node_g = node.get_mut();
+                        assert_valid!(node_g);
 
                         // set node.left = right; node.left is currently None because we took
                         // right.left earlier
-                        debug_assert!(node.left.is_none());
-                        // `right`'s "parent" is still correct; we don't need to update it here
-                        node.left = Some(right);
+                        debug_assert!(node_g.left.is_none());
+                        // `right`'s parent position is still correct; we don't need to update it
+                        // here. We *do* need to update the actual parent though.
+                        right.get_mut().parent = Some(node_weak);
+                        node_g.left = Some(right);
 
-                        match mem::replace(&mut node.right, None) {
-                            Some(r) => {
-                                #[allow(unused_assignments)]
-                                {
-                                    // Here, right_pos is never read -- that's mostly fine, but we
-                                    // want to have this statement here either way for consistency.
-                                    right_pos = Self::stack_pos(node_pos, &r);
-                                }
+                        match mem::replace(&mut node_g.right, None) {
+                            Some(mut r) => {
+                                r.get_mut().parent = None;
                                 right = r;
                             }
                             None => break,
                         }
                     }
 
+                    let (mut right_g, mut node_g) = (right.get_mut(), node.get_mut());
+
                     // Broadly: *l = Some(replace(node, right));
                     //          l = &mut l.as_mut().unwrap().right;
                     //
                     // Prepare `right` to replace `node`.
-                    Self::swap_parent(&mut right, node_pos, S::Idx::ZERO);
+                    Self::swap_parent(&mut *right_g, node_pos, S::Idx::ZERO);
                     // Prepare `node` to replace `*l`
-                    Self::swap_parent(node, S::Idx::ZERO, l.parent_pos);
+                    Self::swap_parent(&mut *node_g, S::Idx::ZERO, l.parent_pos);
+                    debug_assert!(right_g.parent.is_none());
+                    debug_assert!(node_g.parent.is_none());
+
+                    drop((right_g, node_g));
+
                     let new_l = mem::replace(node, right);
-                    l.parent_pos = Self::stack_pos(l.parent_pos, &new_l);
-                    *l.node = Some(new_l);
-                    l.node = &mut l.node.as_mut().unwrap().right;
-                    debug_assert!(l.node.is_none());
+                    l.parent_pos = Self::stack_pos(l.parent_pos, &*new_l.get());
+                    // The following two lines are equivalent to:
+                    //   *l.node = Some(new_l);
+                    //   l.node = &mut l.node.right; (ignoring unwrapping)
+                    l.set_node(Some(new_l));
+                    l.shift_with(EntryKind::Right);
+                    debug_assert!(l.has_hole());
                 }
             }
         }
 
-        let node_pos = Self::stack_pos(S::Idx::ZERO, &node);
-        // TODO-RFC#2229 can't come fast enough... :(
-        let l_parent_pos = l.parent_pos;
-        let r_parent_pos = r.parent_pos;
+        let mut node_g = node.get_mut();
+        let node_pos = Self::stack_pos(S::Idx::ZERO, &*node_g);
         swap_option_parents! {
-            l.node, l_parent_pos => node_pos;
-            r.node, r_parent_pos => node_pos;
-            node.left, node_pos => l_parent_pos;
-            node.right, node_pos => r_parent_pos;
+            node_g.left, node_pos => l.parent_pos;
+            node_g.right, node_pos => r.parent_pos;
         }
 
-        mem::swap(l.node, &mut node.left);
-        mem::swap(r.node, &mut node.right);
+        debug_assert!(l.has_hole());
+        debug_assert!(r.has_hole());
+        l.set_node(node_g.left.take());
+        r.set_node(node_g.right.take());
 
         // We need to adjust the "parent" of `new{left,right}` here because we initially set their
         // positions to `usize::MAX / 2`
@@ -1200,8 +2246,8 @@ where
             // We'll store all of the accumulators in a stack, so that we add up the contributions
             // from the side we need to recalculate.
 
-            let root_pos = S::Idx::from_delta(node.offset_from_parent);
-            node.total_accumulated = node.pair.val.accumulated(root_pos, node.pair.size);
+            let root_pos = S::Idx::from_delta(node_g.offset_from_parent);
+            node_g.total_accumulated = node_g.acc.clone();
 
             // Helper function for debugging.
             fn make_str<T>(this: &T, label: &str) -> String {
@@ -1213,59 +2259,81 @@ where
 
             // Handle `newleft`, recursing down on `.right`
             let mut stack = vec![];
-            let mut stack_node = &mut newleft;
+            let mut stack_node = newleft.as_ref().map(|n| n.shallow_clone());
             let mut node_pos = root_pos;
-            while let Some(n) = stack_node.as_mut() {
-                node_pos = Self::stack_pos(node_pos, &*n);
-                n.total_accumulated = n.pair.val.accumulated(node_pos, n.pair.size);
-                if let Some(l) = n.left.as_ref() {
+            while let Some(mut n) = stack_node.take() {
+                let mut g = n.get_mut();
+                node_pos = Self::stack_pos(node_pos, &*g);
+                g.total_accumulated = g.acc.clone();
+                if let Some(a) = OwnedNode::map_ref(&g.left).map(|l| l.total_accumulated.clone()) {
                     // > n.total_accumulated += l.total_accumulated.clone();
-                    Self::add_acc(
-                        l.total_accumulated.clone(),
-                        &mut n.total_accumulated,
-                        default_acc,
-                    );
+                    Self::add_acc(a, &mut g.total_accumulated, default_acc);
                 }
 
-                stack.push(&mut n.total_accumulated);
-                stack_node = &mut n.right;
+                if let Some(r) = g.right.as_ref() {
+                    stack_node = Some(r.shallow_clone());
+                }
+
+                drop(g);
+                stack.push(n);
             }
 
             let mut acc = S::Accumulator::default();
-            while let Some(a) = stack.pop() {
-                *a += acc;
-                acc = a.clone();
+            while let Some(mut n) = stack.pop() {
+                let mut g = n.get_mut();
+                g.total_accumulated += acc;
+                acc = g.total_accumulated.clone();
             }
 
             // > node.total_accumulated += acc;
-            Self::add_acc(acc, &mut node.total_accumulated, default_acc);
+            Self::add_acc(acc, &mut node_g.total_accumulated, default_acc);
 
             // Repeat for `newright`, recursing down on `.left`
-            stack_node = &mut newright;
+            stack_node = newright.as_ref().map(|n| n.shallow_clone());
             node_pos = root_pos;
-            while let Some(n) = stack_node.as_mut() {
-                node_pos = Self::stack_pos(node_pos, &*n);
-                n.total_accumulated = n.pair.val.accumulated(node_pos, n.pair.size);
-                if let Some(r) = n.right.as_ref() {
-                    n.total_accumulated += r.total_accumulated.clone();
+            while let Some(mut n) = stack_node.take() {
+                let mut g = n.get_mut();
+                node_pos = Self::stack_pos(node_pos, &*g);
+                g.total_accumulated = g.acc.clone();
+                if let Some(a) =
+                    OwnedNode::map_mut(&mut g.right).map(|r| r.total_accumulated.clone())
+                {
+                    g.total_accumulated += a;
                 }
 
-                stack.push(&mut n.total_accumulated);
-                stack_node = &mut n.left;
+                if let Some(l) = g.left.as_ref() {
+                    stack_node = Some(l.shallow_clone());
+                }
+
+                drop(g);
+                stack.push(n);
             }
 
             acc = S::Accumulator::default();
-            while let Some(a) = stack.pop() {
-                // > *a += acc;
-                Self::add_acc(acc, a, default_acc);
-                acc = a.clone();
+            while let Some(mut n) = stack.pop() {
+                let mut g = n.get_mut();
+                // > g.total_accumulated += acc;
+                Self::add_acc(acc, &mut g.total_accumulated, default_acc);
+                acc = g.total_accumulated.clone();
             }
 
-            node.total_accumulated += acc;
+            node_g.total_accumulated += acc;
         }
 
-        node.left = newleft;
-        node.right = newright;
+        drop(node_g);
+        let node_weak = node.weak();
+        let mut node_g = node.get_mut();
+
+        if let Some(n) = newleft.as_mut() {
+            n.get_mut().parent = Some(node_weak.clone());
+        }
+        if let Some(n) = newright.as_mut() {
+            n.get_mut().parent = Some(node_weak);
+        }
+
+        node_g.left = newleft;
+        node_g.right = newright;
+        node_g.parent = original_parent;
     }
 
     // Helper function for `splay`: Sets the offset from parent of this node as if the parent's
@@ -1300,7 +2368,35 @@ where
         Self::splay(self.root.as_mut().unwrap(), idx, &mut self.default_acc);
         let root_pos = self.root_pos();
         idx.sub_assign(root_pos);
-        self.root().pair.val.index(root_pos, idx)
+        self.root().val.index(root_pos, idx)
+    }
+
+    /// Produces a reference to the node containing the given index
+    ///
+    /// If the tree is empty, the returned reference is guaranteed to be invalid.
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if `idx` is greater than or equal to [`self.size()`](Self::size), or
+    /// if the implementation of [`AccumulatorSlice`] panics from its indexing method.
+    pub fn index_ref(
+        &mut self,
+        idx: S::Idx,
+    ) -> NodeRef<S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S> {
+        if idx > self.size() {
+            panic!(
+                "index out of bounds: the index is {:?} but the size is {:?}",
+                idx,
+                self.size()
+            )
+        } else if self.size == S::Idx::ZERO {
+            return NodeRef { inner: Weak::new() };
+        }
+
+        Self::splay(self.root.as_mut().unwrap(), idx, &mut self.default_acc);
+        NodeRef {
+            inner: self.root_ref().weak(),
+        }
     }
 }
 
@@ -1332,33 +2428,53 @@ where
     ///
     /// This method panics if `acc` is outside the range of the accumulator.
     pub fn index_of_accumulated(&self, mut acc: S::Accumulator) -> S::Idx {
+        let default_acc = S::Accumulator::default();
+
+        if self.root.is_none() {
+            if acc != default_acc {
+                panic!("`index_of_accumulated` called on empty `Ranged` with non-zero accumulator");
+            } else {
+                return S::Idx::ZERO;
+            }
+        }
+
         let mut idx = self.root_pos();
-        let mut node = self.root();
+        let mut node = self.root_ref().shallow_clone();
         let mut running_acc = S::Accumulator::default();
 
         loop {
-            if let Some(n) = node.left.as_ref() {
+            let guard = node.get();
+
+            if let Some(n) = guard.left.as_ref() {
+                let g = n.get();
                 // lhs_total = running_acc + n.total_accumulated
                 let mut lhs_total = running_acc.clone();
-                lhs_total += n.total_accumulated.clone();
+                lhs_total += g.total_accumulated.clone();
                 if lhs_total >= acc {
-                    node = n;
-                    idx = Self::stack_pos(idx, &*n);
+                    idx = Self::stack_pos(idx, &*g);
+                    let n_shallow_clone = n.shallow_clone();
+                    drop(g);
+                    drop(guard);
+                    node = n_shallow_clone;
                     // Don't increment `running_acc`, because it only contains the accumulator that
                     // we've "committed" to.
                     continue;
                 }
             }
 
-            if let Some(n) = node.right.as_ref() {
+            if let Some(n) = guard.right.as_ref() {
+                let g = n.get();
                 // pre_rhs_total = running_acc + node.total_accumulated - n.total_accumulated
                 let mut pre_rhs_total = running_acc.clone();
-                pre_rhs_total += node.total_accumulated.clone();
-                pre_rhs_total -= n.total_accumulated.clone();
+                pre_rhs_total += guard.total_accumulated.clone();
+                pre_rhs_total -= g.total_accumulated.clone();
 
                 if pre_rhs_total < acc {
-                    node = n;
-                    idx = Self::stack_pos(idx, &*n);
+                    idx = Self::stack_pos(idx, &*g);
+                    let n_shallow_clone = n.shallow_clone();
+                    drop(g);
+                    drop(guard);
+                    node = n_shallow_clone;
                     // Because we want `running_acc` to give everything that occurs before the
                     // subtree rooted at this node, and `pre_rhs_total` gives everything before the
                     // right-hand node, we set it to the right-hand node.
@@ -1372,14 +2488,16 @@ where
             break;
         }
 
-        let mut after_val_acc = node.pair.val.accumulated(idx, node.pair.size);
+        let guard = node.get();
+
+        let mut after_val_acc = guard.acc.clone();
         after_val_acc += running_acc.clone();
         assert!(running_acc < acc);
         assert!(after_val_acc >= acc);
 
         acc -= running_acc;
-        let within_idx = node.pair.val.index_of_accumulated(idx, acc);
-        assert!(within_idx <= node.pair.size);
+        let within_idx = guard.val.index_of_accumulated(idx, acc);
+        assert!(within_idx <= guard.size);
 
         idx.add(within_idx)
     }
@@ -1424,7 +2542,7 @@ where
     S::Idx: Debug,
 {
     fn print_node(
-        node: Option<&Box<SNode<S>>>,
+        node: Option<&OwnedSNode<S>>,
         parent_pos: S::Idx,
         prefix: &str,
         lower: &str,
@@ -1439,25 +2557,28 @@ where
         match node {
             None => format!("{}<empty>", prefix),
             Some(n) => {
-                let pos = Self::stack_pos(parent_pos, &*n);
+                let g = n.get();
+                let pos = Self::stack_pos(parent_pos, &*g);
 
                 let top_info = format!(
-                    "{}{}, size = {:?}, {}, {}, {}",
+                    "{}@{:?} ({:?}): {}, size = {:?}, {}, {}, {}",
                     prefix,
-                    make_str(&n.offset_from_parent, "offset"),
-                    n.pair.size,
-                    make_str(&n.pair.val, "val"),
-                    make_str(&n.pair.val.accumulated(pos, n.pair.size), "acc"),
-                    make_str(&n.total_accumulated, "total_acc"),
+                    DebugPtr(Rc::as_ptr(&n.inner)),
+                    g.parent.as_ref().map(|p: &Weak<_>| DebugPtr(p.as_ptr())),
+                    make_str(&g.offset_from_parent, "offset"),
+                    g.size,
+                    make_str(&g.val, "val"),
+                    make_str(&g.val.accumulated(pos, g.size), "acc"),
+                    make_str(&g.total_accumulated, "total_acc"),
                 );
                 let left_prefix = format!("{} ├─ left: ", lower);
                 let left_lower = format!("{} │  ", lower);
-                let left_info = Self::print_node(n.left.as_ref(), pos, &left_prefix, &left_lower);
+                let left_info = Self::print_node(g.left.as_ref(), pos, &left_prefix, &left_lower);
 
                 let right_prefix = format!("{} └─ right: ", lower);
                 let right_lower = format!("{}    ", lower);
                 let right_info =
-                    Self::print_node(n.right.as_ref(), pos, &right_prefix, &right_lower);
+                    Self::print_node(g.right.as_ref(), pos, &right_prefix, &right_lower);
 
                 format!("{}\n{}\n{}", top_info, left_info, right_info)
             }
@@ -1486,7 +2607,7 @@ where
         let func = || {
             if self.size != S::Idx::ZERO {
                 let root = &self.root.as_ref().unwrap();
-                Self::assert_valid_node(root, true, S::Idx::ZERO..self.size, S::Idx::ZERO);
+                Self::assert_valid_node(root, true, S::Idx::ZERO..self.size, S::Idx::ZERO, None);
             } else {
                 assert!(self.root.is_none());
             }
@@ -1501,30 +2622,48 @@ where
     }
 
     fn assert_valid_node(
-        node: &SNode<S>,
+        node: &OwnedSNode<S>,
         is_root: bool,
         within_range: Range<S::Idx>,
         parent_pos: S::Idx,
+        parent: Option<&OwnedSNode<S>>,
     ) {
+        use crate::utils::OpaqueOption;
+
         // Check that the recursion is valid
         assert!(is_root || !within_range.contains(&parent_pos));
 
+        let guard = node.get();
+
+        // Check that the parent is correct. This does a pointer comparison in the way you'd
+        // expect.
+        match (guard.parent.as_ref(), parent) {
+            (None, None) => (),
+            (Some(a), Some(b)) => assert!(a.ptr_eq(&b.weak())),
+            (a, b) => panic!(
+                "mismatched parents: node has {:?}, should be {:?}",
+                OpaqueOption::new(&a),
+                OpaqueOption::new(&b)
+            ),
+        }
+
         // And then on to the actual node checks.
-        assert!(node.pair.size != S::Idx::ZERO);
-        let pos = Self::stack_pos(parent_pos, node);
+        assert!(guard.size != S::Idx::ZERO);
+        let pos = Self::stack_pos(parent_pos, &*guard);
         assert!(within_range.contains(&pos));
-        let end_pos = pos.add(node.pair.size);
+        let end_pos = pos.add(guard.size);
         assert!(end_pos <= within_range.end);
 
-        let mut running_accumulator = node.pair.val.accumulated(pos, node.pair.size);
+        let mut running_accumulator = guard.val.accumulated(pos, guard.size);
+        assert_eq!(running_accumulator, guard.acc);
 
-        if let Some(n) = node.left.as_ref() {
+        if let Some(n) = guard.left.as_ref() {
             let new_range = within_range.start..pos;
             assert!(!new_range.is_empty());
-            Self::assert_valid_node(&n, false, new_range, pos);
+            Self::assert_valid_node(&n, false, new_range, pos, Some(node));
             // > running_accumulator += n.total_accumulated.clone();
             Self::add_acc(
-                n.total_accumulated.clone(),
+                n.get().total_accumulated.clone(),
                 &mut running_accumulator,
                 &mut Some(S::Accumulator::default()),
             );
@@ -1532,16 +2671,16 @@ where
             assert_eq!(pos, within_range.start);
         }
 
-        if let Some(n) = node.right.as_ref() {
+        if let Some(n) = guard.right.as_ref() {
             let new_range = end_pos..within_range.end;
             assert!(!new_range.is_empty());
-            Self::assert_valid_node(&n, false, new_range, pos);
-            running_accumulator += n.total_accumulated.clone();
+            Self::assert_valid_node(&n, false, new_range, pos, Some(node));
+            running_accumulator += n.get().total_accumulated.clone();
         } else {
             assert_eq!(end_pos, within_range.end);
         }
 
-        assert_eq!(running_accumulator, node.total_accumulated);
+        assert_eq!(running_accumulator, guard.total_accumulated);
     }
 }
 
@@ -1551,10 +2690,15 @@ mod tests {
     use itertools::Itertools;
     use std::fmt::Debug;
     use std::ops::{AddAssign, SubAssign};
-    use std::panic::UnwindSafe;
+    use std::panic::{RefUnwindSafe, UnwindSafe};
     use std::sync::Mutex;
 
     type TestRanged = Ranged<Acc, usize, isize, Slice>;
+
+    // Unsafe? Yeah maybe. But we're only providing this implementation in tests, so we can get
+    // away with it. It's for diagnostics.
+    impl RefUnwindSafe for TestRanged {}
+    impl UnwindSafe for TestRanged {}
 
     #[derive(Clone, Debug)]
     struct Slice {
@@ -1776,15 +2920,15 @@ mod tests {
         fn from_sizes(sizes: &[(usize, char, u8, &[(u8, u8)])]) -> TestRanged {
             let mut this = Ranged::new_empty();
 
+            println!("{}", this.print_tree());
             for &(size, x, rel_pos, skips) in sizes {
-                println!("{}", this.print_tree());
-
                 let i = this.size();
                 let slice = Slice {
                     name: x,
                     acc: Acc::new(rel_pos, size, skips),
                 };
                 this.insert(i, size, slice);
+                println!("{}", this.print_tree());
             }
 
             this
@@ -2175,5 +3319,34 @@ mod tests {
                 .clone_range(5..8)
                 .assert_matches(&[(2, 'b', 5, &[]), (1, 'c', 7, &[])]);
         });
+    }
+
+    #[test]
+    fn normal_refs_deallocated() {
+        // Tests that our references are properly invalid once the tree is dropped. We want to be
+        // sure that the
+        let sizes: Tuples = &[
+            (4, 'a', 0, &[]),
+            (3, 'b', 4, &[]),
+            (5, 'c', 7, &[]),
+            (2, 'd', 12, &[]),
+        ];
+
+        let mut ranged = Ranged::from_sizes(sizes);
+
+        let refs = [0, 4, 7, 12]
+            .iter()
+            .map(|&i| {
+                let mut r = ranged.index_ref(i);
+                assert!(r.current_index() == i);
+                r
+            })
+            .collect::<Vec<_>>();
+
+        drop(ranged);
+
+        for r in refs {
+            assert!(!r.is_valid());
+        }
     }
 }

@@ -1,7 +1,7 @@
 //! Wrapper module around [`StdRanged`] and associated traits
 
 use super::{AccumulatorSlice, Ranged};
-use std::ops::{AddAssign, Range, SubAssign};
+use std::ops::{AddAssign, Deref, Range, SubAssign};
 
 /// The "standard" parameterization of a [`Ranged`], requiring simpler trait implementations
 ///
@@ -21,6 +21,12 @@ use std::ops::{AddAssign, Range, SubAssign};
 pub struct StdRanged<S> {
     inner: Ranged<NoAccumulator, usize, isize, S>,
 }
+
+// SAFETY: These are safe to implement because the only thread-unsafe accessing that could be done
+// is by `NodeRef`s, which are not exposed here. In other words, we know that this is thread-safe
+// because access is always uniquely given through the root of the tree.
+unsafe impl<S: Send> Send for StdRanged<S> {}
+unsafe impl<S: Sync> Sync for StdRanged<S> {}
 
 /// A simple wrapper type that provides an implementation of [`IndexedSlice`] for homogenous ranges
 ///
@@ -232,7 +238,9 @@ impl<S: IndexedSlice> StdRanged<S> {
     ///
     /// This function can be used with [`clone_range`](Self::clone_range) to iterate over a smaller
     /// range.
-    pub fn iter<'a>(&'a self) -> impl 'a + Iterator<Item = (&'a S, Range<usize>)> {
+    pub fn iter<'a>(
+        &'a self,
+    ) -> impl 'a + Iterator<Item = (impl 'a + Deref<Target = S>, Range<usize>)> {
         self.inner.iter()
     }
 
