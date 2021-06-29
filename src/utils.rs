@@ -3,7 +3,7 @@
 //! This is more-or-less a miscellaneous collection.
 
 use serde::{Deserialize, Serialize};
-use std::fmt::{self, Debug, Formatter};
+use std::fmt::{self, Debug, Formatter, Pointer};
 use std::ops::{Deref, DerefMut};
 
 /// A trait similar to [`std::convert::Into`]; a companion to [`XFrom`]
@@ -93,6 +93,8 @@ pub fn blank_str(length: u16) -> &'static str {
 /// function pointers or trait objects). The standard way to create this type is with the
 /// [`new`](Self::new) method.
 ///
+/// See also: [`DebugPtr`].
+///
 /// ## Example
 ///
 /// ```
@@ -125,6 +127,19 @@ impl Debug for OpaqueOption {
             Self::Some => fmt.write_str("Some(...)"),
             Self::None => fmt.write_str("None"),
         }
+    }
+}
+
+/// Helper type implementing `Debug` as the inner type's [`Pointer`] formatting
+///
+/// There isn't much more to it - this type is pretty simple.
+///
+/// See also: [`OpaqueOption`].
+pub struct DebugPtr<P>(pub P);
+
+impl<P: Pointer> Debug for DebugPtr<P> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        Pointer::fmt(&self.0, f)
     }
 }
 
