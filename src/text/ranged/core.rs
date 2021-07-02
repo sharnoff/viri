@@ -183,9 +183,16 @@ where
 // We always guarantee that - if a `NodeRef` is still valid - the node it points to will contain
 // the address of reference in its `RefSet`. This means we can always confidently remove the
 // reference from a redirected node when we update.
-#[derive(Clone)]
 pub struct NodeRef<Acc, Idx, Delta, S> {
     inner: Weak<RefCell<MaybeNode<Acc, Idx, Delta, S>>>,
+}
+
+impl<Acc, Idx, Delta, S> Clone for NodeRef<Acc, Idx, Delta, S> {
+    fn clone(&self) -> Self {
+        NodeRef {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<Acc, Idx, Delta, S> Drop for NodeRef<Acc, Idx, Delta, S> {
