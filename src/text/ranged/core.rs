@@ -131,6 +131,10 @@ where
 /// for each joining. Accessing a redirected node will overwrite the `NodeRef` to point to the new
 /// one.
 ///
+/// For completeness, it's worth specifiying here that splitting a node will *always* cause
+/// all `NodeRef`s to go to the left-hand value (i.e. the new node will receive none of the
+/// references).
+///
 /// Please note that it *is* possible for a sequence of node joins and splits to cause a `NodeRef`
 /// to point to a different but equal (i.e. `join`-able) node in an equal version of the tree. This
 /// can occur even in simple cases -- to demonstrate let's see an example, with distinct node given
@@ -1862,75 +1866,75 @@ where
             // If the node containing `range.start` has other values beneath it, then we need to
             // split the range.
             //
-            // |-------- root --------|
-            //               |---- range ----|
-            // |- left_size -|
+            //    |-------- root --------|
+            //                  |---- range ----|
+            //    |- left_size -|
+            //    ^
+            // left pos
 
-            let root_pos = self.root_pos();
+            // Split the left off from the root.
+            //
+            // We have to be careful here, because we promise that any splitting points all of the
+            // references to the left-hand node. In this case, we want the root to remain with the
+            // right-hand side of the split, so it needs to be a new node.
+            //
+            // To make this clear, let's call the current root "left", and call the value to the
+            // right of it "root". We'll call the previous value of the root "old_root".
+            let mut left_ref = self.root.take().unwrap();
+            let mut left = left_ref.get_mut();
+            let left_pos = S::Idx::from_delta(left.offset_from_parent);
+            let left_size = range.start.sub(left_pos);
 
-            let mut sub_left = self.root_mut().left.take();
-            let left_size = range.start.sub(self.root_pos());
+            left.acc = left.val.accumulated(left_pos, left_size);
+            // We always set the value of `left.offset_from_parent` equal to the size of `left`.
+            left.offset_from_parent = S::Idx::delta_from(S::Idx::ZERO, left_size);
 
-            self.size.sub_assign(range.start);
-            let mut root = self.root_mut();
-            root.size.sub_assign(left_size);
+            let mut new_root_ref = OwnedNode::temporary();
+            let root_pos = left_pos.add(left_size);
+            let root_size = {
+                let old_root_size = mem::replace(&mut left.size, left_size);
+                old_root_size.sub(left_size)
+            };
+            let root_val = left.val.split_at(left_pos, left_size);
+            let root_acc = root_val.accumulated(root_pos, root_size);
 
-            // we set offset_from_parent to zero here because we just removed all of the nodes up
-            // to range.start
-            root.offset_from_parent = S::Idx::ZERO_DELTA;
+            // Temporarily store the old total accumulated value, so that we can use it to find the
+            // new accumulated value for the new `root.total_accumulated`.
+            let old_root_total_acc = left.total_accumulated.clone();
 
-            // Because we're removing part of the root, we need to shift the location of
-            // root.right:
-            if let Some(mut n) = OwnedNode::map_mut(&mut root.right) {
-                S::Idx::delta_sub_assign_idx(&mut n.offset_from_parent, left_size);
-            }
-
-            // Split the left off from the root:
-            let mut left_val = root.val.split_at(root_pos, left_size);
-            mem::swap(&mut left_val, &mut root.val);
-            // Transfer all of the node references to the new left node
-            let left_refs = mem::take(&mut root.refs);
-
-            // Acknowledge that we've taken some of the accumulated value out of the root - we're
-            // putting it into `lhs_acc`.
-            let lhs_acc = left_val.accumulated(root_pos, left_size);
-            root.acc -= lhs_acc.clone();
-
-            let mut lhs_total_accumulated = lhs_acc.clone();
-
-            let mut temp_return = OwnedNode::temporary();
-
-            if let Some(mut l) = OwnedNode::map_mut(&mut sub_left) {
-                // > lhs_accumulated += l.total_accumulated.clone();
-                Self::add_acc(
-                    l.total_accumulated.clone(),
-                    &mut lhs_total_accumulated,
-                    &mut default_acc,
-                );
-                l.parent = Some(temp_return.weak());
-            }
-            root.total_accumulated -= lhs_total_accumulated.clone();
-
-            // offset_from_parent = -left_size
-            let mut offset_from_parent = S::Idx::ZERO_DELTA;
-            S::Idx::delta_sub_assign_idx(&mut offset_from_parent, left_size);
-
-            temp_return.set_temp(Node {
-                left: sub_left,
-                right: None,
-                refs: left_refs,
-                // We don't know what the new root will be, so we leave this as `None` for the time
-                // being. If we end up placing this as the new root, `None` will be correct.
-                // Otherwise, we'll have to set the parent anyways.
-                parent: None,
-                offset_from_parent,
-                size: left_size,
-                val: left_val,
-                acc: lhs_acc,
-                total_accumulated: lhs_total_accumulated,
+            // The right-hand side of the root needs to be the same as the old right-hand side.
+            let root_sub_right = left.right.take().map(|mut n| {
+                let mut g = n.get_mut();
+                g.parent = Some(new_root_ref.weak());
+                S::Idx::delta_sub_assign_idx(&mut g.offset_from_parent, left_size);
+                left.total_accumulated -= g.total_accumulated.clone();
+                drop(g);
+                n
             });
 
-            Some(temp_return)
+            left.total_accumulated -= root_acc.clone();
+
+            // And now we know `left.total_accumulated` is correct and equal to the amount removed
+            // from `old_root_total_acc`:
+            let mut root_total_acc = old_root_total_acc;
+            root_total_acc -= left.total_accumulated.clone();
+
+            new_root_ref.set_temp(Node {
+                left: None,
+                right: root_sub_right,
+                refs: RefSet::default(),
+                parent: None,
+                offset_from_parent: S::Idx::ZERO_DELTA,
+                size: root_size,
+                val: root_val,
+                acc: root_acc,
+                total_accumulated: root_total_acc,
+            });
+            self.root = Some(new_root_ref);
+            self.size.sub_assign(root_pos);
+
+            drop(left);
+            Some(left_ref)
         } else {
             // This branch corresponds to the case where `range.start` is aligned with the starting
             // index of a node. We want to leave `self` containing the set of values corresonding
@@ -1959,7 +1963,14 @@ where
 
         if self.root.is_some() {
             // Extract the values from after the range
-            Self::splay(self.root_ref_mut(), end, &mut default_acc);
+            //
+            // Before we splay here, we need to temporarily shift the position of the root to
+            // *pretend* the tree is still as it was before.
+            let left_delta = S::Idx::delta_from(range.start, S::Idx::ZERO);
+            S::Idx::delta_add_assign(&mut self.root_mut().offset_from_parent, left_delta);
+
+            Self::splay(self.root_ref_mut(), range.end, &mut default_acc);
+            S::Idx::delta_sub_assign(&mut self.root_mut().offset_from_parent, left_delta);
 
             right = if end == self.size {
                 None
@@ -2010,6 +2021,8 @@ where
                 temp_return.set_temp(Node {
                     left: None,
                     right: sub_right,
+                    // Because we're extracting out the value to the right, we don't take any of
+                    // the references with us. NodeRefs always stay to the left in a split.
                     refs: RefSet::default(),
                     // We'll set the parent later if we need to, once we know the new root
                     parent: None,
@@ -2794,8 +2807,10 @@ mod tests {
         // Our accumulation is pretty contrived; essentially we're counting the sum of the
         // character's numbers from 'a': so 'a' is 1, 'b' is 2, etc.
         type Accumulator = Acc;
-        fn accumulated(&self, _base: usize, _idx: usize) -> Acc {
-            self.acc.clone()
+        fn accumulated(&self, _base: usize, idx: usize) -> Acc {
+            Acc {
+                vals: Vec::from(&self.acc.vals[..idx]),
+            }
         }
         fn index_of_accumulated(&self, _base: usize, acc: Acc) -> usize {
             let idx = acc.vals.len();
