@@ -1834,7 +1834,7 @@ where
     ///
     /// This method will panic if the index is out of bounds.
     ///
-    /// [`TextTree`]: crate::text::objects::TextTree;
+    /// [`TextTree`]: crate::text::objects::TextTree
     pub fn accumulated_at(&mut self, mut idx: S::Idx) -> S::Accumulator {
         if idx > self.size() {
             panic!(
@@ -2422,7 +2422,7 @@ where
     /// > For all `x` and `y`, `x` <= `x` + `y`
     ///
     /// In addition to the requirements listed in the documentation for
-    /// [`RangeSlice::Accumulator`].
+    /// [`AccumulatorSlice::Accumulator`].
     ///
     /// ## Panics
     ///
