@@ -54,6 +54,9 @@ pub trait RangedIndex: Copy + Ord {
         *self = self.sub(other);
     }
 
+    /// Produces the equivalent of adding one to this value
+    fn increment(self) -> Self;
+
     /// Produces the equivalent of subtracting one from this value
     ///
     /// This method is typically used to get the last index contained within a [`Range`], which is
@@ -117,6 +120,7 @@ impl RangedIndex for usize {
 
     fn add(self, other: Self) -> Self { self + other }
     fn sub(self, other: Self) -> Self { self - other }
+    fn increment(self) -> Self { self + 1 }
     fn decrement(self) -> Self { self - 1 }
 
     fn apply_delta(self, del: isize) -> Self { (self as isize + del) as usize }

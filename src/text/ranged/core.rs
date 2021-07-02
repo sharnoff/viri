@@ -439,7 +439,7 @@ where
 /// `NodeRef` permits some redirection (and thus accessing takes a `&mut NodeRef` to overwrite the
 /// pointer), we expect all `OwnedNode`s to have no redirection. The methods on this type therefore
 /// reflect that difference.
-struct OwnedNode<Acc, Idx, Delta, S> {
+pub(super) struct OwnedNode<Acc, Idx, Delta, S> {
     inner: Rc<RefCell<MaybeNode<Acc, Idx, Delta, S>>>,
 }
 
@@ -548,7 +548,9 @@ impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
 
     /// Provides a mutable reference to the inner [`Node`]
     #[track_caller]
-    fn get_mut<'a>(&'a mut self) -> impl 'a + DerefMut<Target = Node<Acc, Idx, Delta, S>> {
+    pub(super) fn get_mut<'a>(
+        &'a mut self,
+    ) -> impl 'a + DerefMut<Target = Node<Acc, Idx, Delta, S>> {
         let guard = self.inner.borrow_mut();
 
         // We could just directly map the guard, but it's better to panic early if we're given bad
@@ -622,6 +624,16 @@ impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
         this: &mut Option<Self>,
     ) -> Option<impl '_ + DerefMut<Target = Node<Acc, Idx, Delta, S>>> {
         this.as_mut().map(Self::get_mut)
+    }
+
+    /// Turns an `OwnedNode` into a [`NodeRef`]
+    ///
+    /// This is only really exposed in order to work with [`Ranged::as_single_mut`], for the
+    /// purpose of implementing [`RelativeSet`].
+    ///
+    /// [`RelativeSet`]: super::RelativeSet
+    pub(super) fn into_ref(self) -> NodeRef<Acc, Idx, Delta, S> {
+        NodeRef { inner: self.weak() }
     }
 }
 
@@ -759,7 +771,7 @@ impl<Acc, Idx, Delta, S> MaybeNode<Acc, Idx, Delta, S> {
 type ParentPointer<Acc, Idx, Delta, S> = Weak<RefCell<MaybeNode<Acc, Idx, Delta, S>>>;
 
 /// (*Internal*) An individual node in the [`Ranged`] splay tree
-struct Node<Acc, Idx, Delta, S> {
+pub(super) struct Node<Acc, Idx, Delta, S> {
     left: Option<OwnedNode<Acc, Idx, Delta, S>>,
     right: Option<OwnedNode<Acc, Idx, Delta, S>>,
 
@@ -778,7 +790,7 @@ struct Node<Acc, Idx, Delta, S> {
     // The size of the range contained by this node -- not including `left` or `right`.
     size: Idx,
     // The `AccumulatorSlice` itself
-    val: S,
+    pub(super) val: S,
     // The accumulated value across the full range
     acc: Acc,
 
@@ -897,6 +909,7 @@ pub trait AccumulatorSlice: Sized {
     /// like the implementation of [`RelativeSet`], for example.
     ///
     /// [`NoAccumulator`]: super::NoAccumulator
+    /// [`RelativeSet`]: super::RelativeSet
     type Accumulator: Default + Clone + AddAssign + SubAssign;
 
     /// Returns the value of `Self::Accumulator` that is present at a point within the slice
@@ -1027,6 +1040,20 @@ where
     /// have a value for
     pub fn size(&self) -> S::Idx {
         self.size
+    }
+
+    /// Assuming that the tree consists of a single node, returns a reference to that node
+    ///
+    /// This function should be used with caution -- the mutable access required to *get* the
+    /// `OwnedNode` is not required to continue holding it, and may cause borrowing conflicts if
+    /// used incorrectly.
+    pub(super) fn as_single_mut(&mut self) -> OwnedSNode<S> {
+        let root = self.root_ref();
+
+        let g = root.get();
+        assert!(g.left.is_none() && g.right.is_none());
+
+        root.shallow_clone()
     }
 
     // Provides an immutable reference to the root node
