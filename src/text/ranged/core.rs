@@ -464,6 +464,7 @@ where
                 "parent",
                 &this.parent.as_ref().map(|p| DebugPtr(p.as_ptr())),
             )
+            .field("refs", &this.refs)
             .field("offset_from_parent", &this.offset_from_parent)
             .field("size", &this.size)
             .field("val", &this.val)
@@ -652,6 +653,16 @@ struct RefSet<Acc, Idx, Delta, S> {
     set: BTreeSet<RefSetItem<MaybeNode<Acc, Idx, Delta, S>>>,
 }
 
+impl<Acc, Idx, Delta, S> Debug for RefSet<Acc, Idx, Delta, S> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut map = f.debug_map();
+        for it in &self.set {
+            map.key(&DebugPtr(Rc::as_ptr(&it.0))).value(it);
+        }
+        map.finish()
+    }
+}
+
 impl<Acc, Idx, Delta, S> Default for RefSet<Acc, Idx, Delta, S> {
     fn default() -> Self {
         RefSet {
@@ -665,6 +676,30 @@ impl<Acc, Idx, Delta, S> Default for RefSet<Acc, Idx, Delta, S> {
 // This is a newtype so that we can have a special implementation of `Ord` that simply compares the
 // addresses of the pointers.
 struct RefSetItem<N>(Rc<RefCell<N>>);
+
+impl<Acc, Idx, Delta, S> Debug for RefSetItem<MaybeNode<Acc, Idx, Delta, S>> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        struct Dbg<T>(T);
+
+        impl<'a, Acc, Idx, Delta, S> Debug for Dbg<&'a Rc<RefCell<MaybeNode<Acc, Idx, Delta, S>>>> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                let guard = self.0.borrow();
+
+                match &*guard {
+                    MaybeNode::Temp => f.write_str("Temp"),
+                    MaybeNode::Base(_) => f.write_str("Base(_)"),
+                    MaybeNode::Redirected(node_ref, refs) => f
+                        .debug_struct("Redirected")
+                        .field("to", &DebugPtr(node_ref.inner.as_ptr()))
+                        .field("refs", refs)
+                        .finish(),
+                }
+            }
+        }
+
+        Dbg(&self.0).fmt(f)
+    }
+}
 
 impl<N> PartialEq for RefSetItem<N> {
     fn eq(&self, other: &Self) -> bool {
