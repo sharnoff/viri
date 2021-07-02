@@ -2751,7 +2751,6 @@ mod tests {
     use std::fmt::Debug;
     use std::ops::{AddAssign, SubAssign};
     use std::panic::{RefUnwindSafe, UnwindSafe};
-    use std::sync::Mutex;
 
     type TestRanged = Ranged<Acc, usize, isize, Slice>;
 
@@ -2996,6 +2995,13 @@ mod tests {
             this
         }
 
+        // A version of `from_sizes` that calls `scramble` with the provided permtuation afterwards
+        fn from_perm_sizes(sizes: &[(usize, char, u8, &[(u8, u8)])], perm: &[usize]) -> TestRanged {
+            let mut r = Self::from_sizes(sizes);
+            r.scramble(perm);
+            r
+        }
+
         // The tuple in `sizes` is briefly described in `from_sizes()`.
         fn assert_matches(&self, sizes: &[(usize, char, u8, &[(u8, u8)])]) {
             self.assert_valid(true);
@@ -3012,19 +3018,25 @@ mod tests {
                 so_far = r.end;
             }
         }
+
+        // Helper function for producing a random structure for the tree by accessing indexes in the
+        // given order
+        fn scramble(&mut self, perm: &[usize]) {
+            for &i in perm {
+                self.index(i);
+            }
+        }
     }
 
-    // Execute the given test function for all generations of a `Ranged` with the given input
-    // sizes.
+    // Execute the given test function for all permutations of `initial_sizes`
     //
-    // This is to ensure that various tests pass, regardless of the input structure of the tree. We
-    // do this by accessing each range after creating the tree, testing all permutations of the
-    // access pattern.
+    // This is to ensure that various tests pass, regardless of the input structure of the tree.
+    // Typically, this is done by calling the `scramble` method with returned indexes.
     //
     // The tuple in `initial_sizes` is briefly described in `from_sizes()`.
     fn do_all_perms<Func>(initial_sizes: &[(usize, char, u8, &[(u8, u8)])], test: Func)
     where
-        Func: Fn(TestRanged),
+        Func: Fn(&[usize]),
         for<'a> &'a Func: UnwindSafe,
     {
         const MAX_PERM_LEN: usize = 6;
@@ -3033,8 +3045,6 @@ mod tests {
             initial_sizes.len() <= MAX_PERM_LEN,
             "too many sizes to generate all permutations"
         );
-
-        let base = Ranged::from_sizes(initial_sizes);
 
         // The starting indexes of each size:
         let mut idx = 0;
@@ -3045,31 +3055,8 @@ mod tests {
         });
 
         for idxs in indexes.permutations(initial_sizes.len()) {
-            let r = Mutex::new(base.clone());
-
-            for &i in &idxs {
-                let last_tree = r.lock().unwrap().print_tree();
-
-                if let Err(e) = std::panic::catch_unwind(|| {
-                    r.lock().unwrap().index(i);
-                    r.lock().unwrap().assert_valid(false);
-                }) {
-                    println!("panicked with indexing order {:?} at index {}", idxs, i);
-                    let g = match r.lock() {
-                        Err(e) => e.into_inner(),
-                        Ok(g) => g,
-                    };
-                    println!("last tree:\n{}", last_tree);
-                    println!("current:\n{}", g.print_tree());
-                    std::panic::resume_unwind(e);
-                }
-            }
-
-            let r = r.into_inner().unwrap();
-            let cloned = r.clone();
-            if let Err(e) = std::panic::catch_unwind(|| test(cloned)) {
+            if let Err(e) = std::panic::catch_unwind(|| test(&idxs)) {
                 println!("panicked with indexing order {:?}", idxs);
-                println!("last tree:\n{}", r.print_tree());
                 std::panic::resume_unwind(e);
             }
         }
@@ -3085,8 +3072,24 @@ mod tests {
             (3, 'b', 4, &[]),
             (5, 'c', 7, &[]),
             (2, 'd', 12, &[]),
+            (1, 'e', 14, &[]),
+            (6, 'f', 15, &[]),
         ];
-        do_all_perms(sizes, |r| r.assert_matches(sizes));
+
+        do_all_perms(sizes, |perm| {
+            let mut ranged = Ranged::from_sizes(sizes);
+            // Store all of the node references, check later that their indexes are correct.
+            let refs: Vec<_> = [0, 4, 7, 12, 14, 15]
+                .iter()
+                .map(|&i| (i, ranged.index_ref(i)))
+                .collect();
+            ranged.scramble(perm);
+
+            ranged.assert_matches(sizes);
+            for (i, mut r) in refs {
+                assert_eq!(r.current_index(), i);
+            }
+        });
     }
 
     #[test]
@@ -3099,7 +3102,8 @@ mod tests {
             (5, 'c', 7, &[]),
             (2, 'd', 12, &[]),
         ];
-        do_all_perms(sizes, |replacement| {
+        do_all_perms(sizes, |perm| {
+            let replacement = Ranged::from_perm_sizes(sizes, perm);
             let mut e = empty.clone();
             e.replace(0..0, replacement).assert_matches(&[]);
             e.assert_matches(sizes);
@@ -3115,7 +3119,8 @@ mod tests {
             (2, 'd', 12, &[]),
         ];
         let insert = Ranged::from_sizes(&sizes[0..1]);
-        do_all_perms(&sizes[1..], |mut ranged| {
+        do_all_perms(&sizes[1..], |perm| {
+            let mut ranged = Ranged::from_perm_sizes(&sizes[1..], perm);
             ranged.replace(0..0, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(sizes);
         });
@@ -3132,7 +3137,8 @@ mod tests {
         ];
 
         let insert = Ranged::from_sizes(&[(3, 'b', 4, &[])]);
-        do_all_perms(start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged.replace(4..4, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(end_sizes);
         });
@@ -3149,7 +3155,8 @@ mod tests {
         ];
 
         let insert = Ranged::from_sizes(&[(3, 'b', 3, &[])]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged.replace(3..3, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(&end_sizes);
         });
@@ -3164,7 +3171,8 @@ mod tests {
             (2, 'd', 12, &[]),
         ];
         let insert = Ranged::from_sizes(&sizes[3..4]);
-        do_all_perms(&sizes[..3], |mut ranged| {
+        do_all_perms(&sizes[..3], |perm| {
+            let mut ranged = Ranged::from_perm_sizes(&sizes[..3], perm);
             ranged.replace(12..12, insert.clone()).assert_matches(&[]);
             ranged.assert_matches(sizes);
         });
@@ -3185,7 +3193,8 @@ mod tests {
             (2, 'd', 13, &[]),
         ];
         let replacement = Ranged::from_sizes(&[(5, 'e', 0, &[])]);
-        do_all_perms(start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(0..4, replacement.clone())
                 .assert_matches(&[(4, 'a', 0, &[])]);
@@ -3208,7 +3217,8 @@ mod tests {
             (2, 'd', 12, &[]),
         ];
         let replacement = Ranged::from_sizes(&[(3, 'e', 0, &[])]);
-        do_all_perms(start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(0..6, replacement.clone())
                 .assert_matches(&[(4, 'a', 0, &[]), (2, 'b', 4, &[])]);
@@ -3232,7 +3242,8 @@ mod tests {
             (2, 'd', 12, &[]),
         ];
         let replacement = Ranged::from_sizes(&[(3, 'e', 6, &[])]);
-        do_all_perms(start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(6..9, replacement.clone())
                 .assert_matches(&[(1, 'b', 6, &[]), (2, 'c', 7, &[])]);
@@ -3256,7 +3267,8 @@ mod tests {
             (2, 'd', 13, &[]),
         ];
         let replacement = Ranged::from_sizes(&[(3, 'e', 7, &[])]);
-        do_all_perms(start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(7..9, replacement.clone())
                 .assert_matches(&[(2, 'c', 8, &[])]);
@@ -3280,7 +3292,8 @@ mod tests {
             (2, 'd', 14, &[]),
         ];
         let replacement = Ranged::from_sizes(&[(3, 'e', 6, &[])]);
-        do_all_perms(start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(6..7, replacement.clone())
                 .assert_matches(&[(1, 'b', 6, &[])]);
@@ -3298,7 +3311,8 @@ mod tests {
         ];
         let end_sizes: Tuples = &[(4, 'a', 0, &[]), (3, 'e', 5, &[]), (2, 'd', 12, &[])];
         let replacement = Ranged::from_sizes(&[(3, 'e', 5, &[])]);
-        do_all_perms(start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(4..12, replacement.clone())
                 .assert_matches(&[(3, 'b', 4, &[]), (5, 'c', 7, &[])]);
@@ -3316,7 +3330,8 @@ mod tests {
         ];
         let end_sizes: Tuples = &[(4, 'a', 0, &[]), (3, 'b', 4, &[]), (2, 'e', 7, &[])];
         let replacement = Ranged::from_sizes(&[(2, 'e', 7, &[])]);
-        do_all_perms(start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(7..14, replacement.clone())
                 .assert_matches(&[(5, 'c', 7, &[]), (2, 'd', 12, &[])]);
@@ -3339,7 +3354,8 @@ mod tests {
             (2, 'e', 9, &[]),
         ];
         let replacement = Ranged::from_sizes(&[(2, 'e', 9, &[])]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(9..14, replacement.clone())
                 .assert_matches(&[(3, 'c', 9, &[]), (2, 'd', 12, &[])]);
@@ -3360,7 +3376,8 @@ mod tests {
         ];
         let end_sizes: Tuples = &[(4, 'a', 0, &[]), (5, 'b', 4, &[(8, 1)]), (2, 'd', 10, &[])];
         let replacement = Ranged::from_sizes(&[(2, 'b', 6, &[])]);
-        do_all_perms(&start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .replace(6..9, replacement.clone())
                 .assert_matches(&[(1, 'b', 6, &[]), (2, 'c', 7, &[])]);
@@ -3376,7 +3393,8 @@ mod tests {
             (2, 'c', 7, &[]),
             (5, 'd', 12, &[]),
         ];
-        do_all_perms(&start_sizes, |mut ranged| {
+        do_all_perms(start_sizes, |perm| {
+            let mut ranged = Ranged::from_perm_sizes(start_sizes, perm);
             ranged
                 .clone_range(5..8)
                 .assert_matches(&[(2, 'b', 5, &[]), (1, 'c', 7, &[])]);
