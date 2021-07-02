@@ -338,12 +338,6 @@ where
 
         let mut initial_guard = this_rc.borrow_mut();
 
-        // A list of the redirected nodes that we'll change to point to the final node we find.
-        // In the case that there's a long chain of redirections (or: if this has been cloned),
-        // this helps to ensure that multiple calls to `collapse_redirects` have a smaller number
-        // of total operations that are actually required.
-        let mut final_overwrite = Vec::new();
-
         // We keep `last` around so that we can remove it from the `RefSet` in the next node;
         // it'll be redirected with `final_overwrite`.
         //
@@ -352,52 +346,62 @@ where
         let (mut last, mut next) = match &mut *initial_guard {
             MaybeNode::Base(_) => return,
             MaybeNode::Temp => panic!("`NodeRef` points to temp node"),
-            MaybeNode::Redirected(n, _) => {
-                match Rc::weak_count(&this_rc) {
-                    // We know that there has to be at least one weak reference, because `self`
-                    // contains one.
-                    0 => unreachable!(),
-                    // If there's only one weak reference, we won't do anything.
-                    1 => (),
-                    // But if there's more than one, we want to change this node to point to the
-                    // eventual target that we find in this method.
-                    _ => final_overwrite.push(this_rc.clone()),
-                }
-
-                (
-                    this_rc.clone(),
-                    n.inner.upgrade().expect("redirected to invalid node"),
-                )
-            }
+            MaybeNode::Redirected(n, _) => (
+                this_rc.clone(),
+                n.inner.upgrade().expect("redirected to invalid node"),
+            ),
         };
 
+        // A list of all of the nodes that we traverse through in our redirection. For the most
+        // part, we'll allow the destructors to run and clean this up, even though there might be
+        // ways to do it that are more efficient.
+        let mut traversed = vec![this_rc.clone()];
+
+        // We need to eagerly drop `initial_guard` here; otherwise we run into borrowing conflicts
+        // if we've added `this_rc` to `final_overwrite`.
+        drop(initial_guard);
+
         loop {
+            let next_weak = Rc::downgrade(&next);
             let mut guard = next.borrow_mut();
             match &mut *guard {
-                MaybeNode::Base(n) => {
-                    *self = NodeRef {
-                        inner: Rc::downgrade(&next),
-                    };
-                    for rc in final_overwrite {
-                        let mut guard = rc.borrow_mut();
-                        match mem::replace(&mut *guard, MaybeNode::Temp) {
-                            MaybeNode::Redirected(_, refs) => n.refs.set.extend(refs.set),
+                MaybeNode::Base(_) => {
+                    // For every node we've traversed, set it to point instead at the new value.
+                    // We've already removed the strong references from their redirection, and so
+                    // all that remains are the references in `traversed` -- we'll add those to
+                    // `n.refs` in order to finalize the redirection.
+
+                    // We need to temporarily give up our hold on `guard`. It could be the case
+                    // that - in the course of dropping a `NodeRef` we overwrite - we need to
+                    // remove some *other* reference from `next`.
+                    //
+                    // We'll re-acquire this after the loop.
+                    drop(guard);
+
+                    for rc in traversed.iter() {
+                        println!("traversed[..] = {:p}", Rc::as_ptr(&rc));
+                        match &mut *rc.borrow_mut() {
+                            MaybeNode::Redirected(r, _) => {
+                                *r = NodeRef {
+                                    inner: next_weak.clone(),
+                                }
+                            }
                             _ => unreachable!(),
                         }
                     }
+                    *self = NodeRef { inner: next_weak };
+
+                    let mut guard = next.borrow_mut();
+                    let n = match &mut *guard {
+                        MaybeNode::Base(n) => n,
+                        _ => unreachable!(),
+                    };
+                    n.refs.set.extend(traversed.into_iter().map(RefSetItem));
                     return;
                 }
                 MaybeNode::Temp => panic!("`NodeRef` redirected to temp node"),
                 MaybeNode::Redirected(n, refs) => {
-                    match Rc::weak_count(&next) {
-                        // Again: we know that this can't have zero weak references, because `last`
-                        // contains one, and it must still be alive because we're about to remove
-                        // it from `refs.set`.
-                        0 => unreachable!(),
-                        1 => (),
-                        // And we only move along the redirected node if we actually have to.
-                        _ => final_overwrite.push(next.clone()),
-                    }
+                    traversed.push(next.clone());
 
                     refs.set.remove(&RefSetItem(last));
                     let new_next = n.inner.upgrade().expect("redirected to invalid node");
