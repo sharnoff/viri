@@ -435,7 +435,7 @@ where
 /// tree
 ///
 /// This type is only used within the tree to represent child nodes. It's similar to the
-/// publicly-exposd [`NodeRef`], but the guaranteed semantics are significantly different. While
+/// publicly-exposed [`NodeRef`], but the guaranteed semantics are significantly different. While
 /// `NodeRef` permits some redirection (and thus accessing takes a `&mut NodeRef` to overwrite the
 /// pointer), we expect all `OwnedNode`s to have no redirection. The methods on this type therefore
 /// reflect that difference.
