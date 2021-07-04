@@ -332,7 +332,8 @@ where
     /// has been removed. This can be checked with the [`is_valid`] method.
     ///
     /// [`is_valid`]: Self::is_valid
-    pub fn size(&self) -> S::Idx {
+    pub fn size(&mut self) -> S::Idx {
+        self.collapse_redirects();
         self.inner
             .upgrade()
             .expect("invalid node reference")
