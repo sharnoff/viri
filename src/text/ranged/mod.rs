@@ -8,6 +8,7 @@
 
 mod core;
 mod index;
+mod rc;
 mod set;
 mod std_ranged;
 
