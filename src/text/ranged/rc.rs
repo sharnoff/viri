@@ -247,6 +247,7 @@ impl<T> OwnedCell<T> {
         }
 
         BorrowMut {
+            stacked: Vec::new(),
             borrow_ptr,
             // SAFETY: The only way this fails is if the offset from `Inner::val_ptr` wraps around
             // to produce a value of zero. This won't happen; the allocated `Inner` needs to
@@ -979,10 +980,15 @@ enum DropFn {
 
 /// A mutable borrow, constructed by [`OwnedCell::borrow_mut`]
 ///
-/// Mutable borrows can be mapped via the associated [`map`] function.
+/// Mutable borrows can be mapped via the associated [`map`] function. We also support stacking
+/// borrows with [`stack`] to handle borrowing within recursive data structures.
 ///
 /// [`map`]: Self::map
+/// [`stack`]: Self::stack
 pub struct BorrowMut<'r, T> {
+    // Previously stacked borrows that we will reset upon dropping.
+    stacked: Vec<*mut Option<Borrowed>>,
+
     // The `borrow` pointer here is raw because we only ever construct temporary references; we
     // can't hold it indefinitely, but only accessing the raw pointer when we need to means we can
     // still do it safely.
@@ -1133,15 +1139,126 @@ impl<'r, T> BorrowMut<'r, T> {
     where
         F: FnOnce(&mut T) -> &mut U,
     {
-        let this = ManuallyDrop::new(this);
+        let mut this = ManuallyDrop::new(this);
         // SAFETY: `this.value` is always guaranteed to be identical to a `&'r mut T` by the
         // lifetime in the marker. It is only stored as a raw pointer so that we can extract the
         // mutable reference out of `this`, which has a destructor.
         let val: &'r mut T = unsafe { &mut *this.value.as_ptr() };
 
         BorrowMut {
+            stacked: mem::take(&mut this.stacked),
             borrow_ptr: this.borrow_ptr,
             value: NonNull::from(func(val)),
+            marker: PhantomData,
+        }
+    }
+
+    /// *Stacks* the borrow by the given function, allowing for certain borrowing patterns on
+    /// mutable references to be replicated with `BorrowMut`
+    ///
+    /// This function is like [`map`], except that the mapping function is expected to produce a
+    /// `BorrowMut`, instead of a `&mut U`. For more information, see [`Borrow::map`] or
+    /// [`BorrowMut::map`].
+    ///
+    /// ## Examples
+    ///
+    /// A common use case for this method is in producing borrows on values stored deep within a
+    /// recursive data structure.
+    ///
+    // @def "ranged::rc::BorrowMut::stack doctests" v0
+    /// ```
+    /// // A tree with nodes behind `OwnedCell`s
+    /// //
+    /// // The reasoning for using `OwnedCell` doesn't matter *too* much here.
+    /// // Perhaps it's like `Ranged`, and needs to be able to produce stable
+    /// // references to individual nodes.
+    /// struct Tree<T> {
+    ///     left: Option<OwnedCell<Tree<T>>>,
+    ///     right: Option<OwnedCell<Tree<T>>>,
+    ///     val: T,
+    /// }
+    ///
+    /// impl<T> Tree<T> {
+    ///     // -- construction functions left out --
+    ///
+    ///
+    ///     // Returns a mutable borrow on the left-most subtree
+    ///     //
+    ///     // We wouldn't be able to implement this without stacked borrows, which
+    ///     // allows us to acquire borrows on *every* node that we need.
+    ///     fn leftmost_subtree(this: &mut OwnedCell<Self>) -> BorrowMut<Tree<T>> {
+    ///         let mut borrow = this.borrow_mut();
+    ///         while borrow.left.is_some() {
+    ///             borrow = BorrowMut::stack(borrow, |tree| {
+    ///                 let left_ref: &mut OwnedCell<_> = tree.left.as_mut().unwrap();
+    ///                 left_ref.borrow_mut()
+    ///             });
+    ///         }
+    ///         borrow
+    ///     }
+    ///
+    ///     // Inserts a value into the new left-most position in the tree
+    ///     //
+    ///     // This is just example usage of the function above, showing that
+    ///     // everything *does* work as expected
+    ///     fn insert_leftmost(this: &mut OwnedCell<Self>, val: T) {
+    ///         let mut leftmost = Tree::leftmost_subtree(this);
+    ///
+    ///         let new_left = OwnedCell::new(Tree {
+    ///             left: None,
+    ///             right: None,
+    ///             val,
+    ///         });
+    ///
+    ///         leftmost.left = Some(new_left);
+    ///     }
+    /// }
+    ///
+    /// // Using these functions then works as expected:
+    /// let mut t = OwnedCell::new(Tree {
+    ///     left: Some(OwnedCell::new(Tree {
+    ///         val: 1_i32,
+    ///         left: None,
+    ///         right: None,
+    ///     })),
+    ///     val: 2,
+    ///     right: Some(OwnedCell::new(Tree {
+    ///         val: 3,
+    ///         left: None,
+    ///         right: None,
+    ///     })),
+    /// });
+    ///
+    /// assert_eq!(Tree::leftmost_subtree(&mut t).val, 1);
+    /// Tree::insert_leftmost(&mut t, 0);
+    /// Tree::insert_leftmost(&mut t, -1);
+    ///
+    /// assert_eq!(Tree::leftmost_subtree(&mut t).val, -1);
+    /// ```
+    ///
+    /// ## Performance note
+    ///
+    /// Note that this type of usage *does* mean that the `BorrowMut` will have a size roughly
+    /// proportional to the number of calls to `stack`. Similarly, dropping such a borrow will
+    /// dereference an additional pointer for each prior call to `stack`.
+    pub fn stack<U, F>(this: BorrowMut<'r, T>, func: F) -> BorrowMut<'r, U>
+    where
+        F: FnOnce(&mut T) -> BorrowMut<U>,
+    {
+        let mut this = ManuallyDrop::new(this);
+
+        // SAFETY: Safe for the same reason that `DerefMut` is safe.
+        let val: &'r mut T = unsafe { &mut *this.value.as_ptr() };
+        let mut new_borrow = ManuallyDrop::new(func(val));
+
+        let mut stacked = mem::take(&mut this.stacked);
+        stacked.push(this.borrow_ptr);
+        stacked.extend(mem::take(&mut new_borrow.stacked));
+
+        BorrowMut {
+            stacked,
+            borrow_ptr: new_borrow.borrow_ptr,
+            value: new_borrow.value,
             marker: PhantomData,
         }
     }
@@ -1259,8 +1376,16 @@ impl<'r, T> Drop for BorrowMut<'r, T> {
         // exist. We don't need to worry about any dropping/deallocation logic because the value is
         // still in use.
         //
-        // SAFETY: the `OwnedCell` exists for this pointer; it's perfectly valid. The temporary
-        // reference isn't aliased, because references to `borrow` are never held.
+        // We apply the same process for dropping *this* borrow as with any of the borrows it's
+        // stacked on top of. It actually also doesn't matter what order we drop these in, because
+        // no external code has the chance to run (and therefore exploit the in-between time).
+        //
+        // All of the assignments are safe because the individual `OwnedCell`s exist for these
+        // pointers (as guaranteed by the lifetime 'r), and the temporary references to the borrow
+        // field is not aliased by any references (though it may be, by pointers).
+        for ptr in mem::take(&mut self.stacked) {
+            unsafe { *ptr = None };
+        }
         unsafe { *self.borrow_ptr = None };
     }
 }
@@ -1534,6 +1659,78 @@ mod doctests {
 
         assert_eq!(owned.as_ref(), &Ok("Still ok!"));
     }
+
+    // @req "ranged::rc::BorrowMut::stack doctests" v0
+    #[test]
+    fn borrowmut_stack() {
+        // A tree with nodes behind `OwnedCell`s
+        //
+        // The reasoning for using `OwnedCell` doesn't matter *too* much here.
+        // Perhaps it's like `Ranged`, and needs to be able to produce stable
+        // references to individual nodes.
+        struct Tree<T> {
+            left: Option<OwnedCell<Tree<T>>>,
+            #[allow(dead_code)]
+            right: Option<OwnedCell<Tree<T>>>,
+            val: T,
+        }
+
+        impl<T> Tree<T> {
+            // -- construction functions left out --
+
+            // Returns a mutable borrow on the left-most subtree
+            //
+            // We wouldn't be able to implement this without stacked borrows, which
+            // allows us to acquire borrows on *every* node that we need.
+            fn leftmost_subtree(this: &mut OwnedCell<Self>) -> BorrowMut<Tree<T>> {
+                let mut borrow = this.borrow_mut();
+                while borrow.left.is_some() {
+                    borrow = BorrowMut::stack(borrow, |tree| {
+                        let left_ref: &mut OwnedCell<_> = tree.left.as_mut().unwrap();
+                        left_ref.borrow_mut()
+                    });
+                }
+                borrow
+            }
+
+            // Inserts a value into the new left-most position in the tree
+            //
+            // This is just example usage of the function above, showing that
+            // everything *does* work as expected
+            fn insert_leftmost(this: &mut OwnedCell<Self>, val: T) {
+                let mut leftmost = Tree::leftmost_subtree(this);
+
+                let new_left = OwnedCell::new(Tree {
+                    left: None,
+                    right: None,
+                    val,
+                });
+
+                leftmost.left = Some(new_left);
+            }
+        }
+
+        // Using these functions then works as expected:
+        let mut t = OwnedCell::new(Tree {
+            left: Some(OwnedCell::new(Tree {
+                val: 1_i32,
+                left: None,
+                right: None,
+            })),
+            val: 2,
+            right: Some(OwnedCell::new(Tree {
+                val: 3,
+                left: None,
+                right: None,
+            })),
+        });
+
+        assert_eq!((&mut *Tree::leftmost_subtree(&mut t)).val, 1);
+        Tree::insert_leftmost(&mut t, 0);
+        Tree::insert_leftmost(&mut t, -1);
+
+        assert_eq!(Tree::leftmost_subtree(&mut t).val, -1);
+    }
 }
 
 #[cfg(test)]
@@ -1601,5 +1798,24 @@ mod tests {
         // Dropping the borrow should drop the value as well.
         drop(borrow);
         assert!(dropped.get());
+    }
+
+    #[test]
+    fn borrow_after_stacked() {
+        type T = OwnedCell<OwnedCell<i32>>;
+
+        let mut x: T = OwnedCell::new(OwnedCell::new(3));
+        let outer_weak: Weak<OwnedCell<i32>> = x.weak();
+        let inner_weak: Weak<i32> = x.as_ref().weak();
+
+        // Borrow the inner i32:
+        let mut borrow_mut = BorrowMut::stack(x.borrow_mut(), |c| c.borrow_mut());
+        assert_eq!(*borrow_mut, 3);
+        *borrow_mut = 5;
+        drop(borrow_mut);
+
+        // Check that we can still borrow (i.e. everything's dropped correctly):
+        assert_eq!(*inner_weak.borrow(), 5);
+        assert_eq!(*outer_weak.borrow().as_ref(), 5);
     }
 }
