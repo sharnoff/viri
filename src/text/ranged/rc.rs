@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use std::mem::{self, MaybeUninit};
 use std::num::NonZeroUsize;
 use std::ops::{Deref, DerefMut};
-use std::ptr::{drop_in_place, NonNull};
+use std::ptr::{drop_in_place, null, NonNull};
 use std::thread;
 
 /// A custom pointer type similar to `Rc<RefCell<T>>`
@@ -112,6 +112,15 @@ pub struct OwnedCell<T> {
 ///
 /// [`borrow`]: Self::borrow
 pub struct Weak<T> {
+    // We use a trick from the standard library here.
+    //
+    // For any `Weak` not created with the `new` method, this pointer will correctly be non-null
+    // and point to a valid `Inner<T>`.
+    //
+    // But when we create something with the `new` method, it can't be a null pointer. So we set
+    // the pointer value to `usize::MAX` instead. Whether the pointer is set to such a value is
+    // checked with the `is_dangling` method. Any method that wants access to `ptr` needs to check
+    // that it isn't dangling first.
     ptr: NonNull<Inner<T>>,
     marker: PhantomData<T>,
 }
@@ -454,8 +463,8 @@ impl<T: Display> Display for OwnedCell<T> {
 impl<T> Weak<T> {
     /// Creates a new, always-invalid `Weak` pointer
     ///
-    /// Note that this method *does* create a new allocation for the pointer. This may be changed
-    /// in the future, but - for now - do not assume this method has no cost.
+    /// This method does not allocate anything for the pointer. It can be assumed to have
+    /// effectively no cost.
     ///
     /// ## Examples
     ///
@@ -477,26 +486,32 @@ impl<T> Weak<T> {
     /// }
     /// ```
     pub fn new() -> Self {
-        // Currently, we allocate. We essentially just set the state to pretend as if the strong
-        // reference has already been dropped, which produces the behavior we want.
-        let boxed = Box::new(Inner {
-            val: <MaybeUninit<T>>::uninit(),
-            state: State::Dropped,
-            // A single weak count, for this reference
-            weak_count: 1,
-            borrow: None,
-        });
+        // Doing what we described in the comment above `Weak.ptr`. We're creating a dangling
+        // pointer that can't possibly exist as a valid allocation.
+        let ptr = NonNull::new(usize::MAX as *mut Inner<T>).expect("usize::MAX should be non-zero");
 
         Weak {
-            // SAFETY: The pointer provided by a `Box` is always non-null
-            ptr: unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) },
+            ptr,
             marker: PhantomData,
         }
     }
 
+    /// (*Internal*) Returns whether the `Weak` is dangling, equivalent to whether it was created
+    /// by [`new`]
+    fn is_dangling(&self) -> bool {
+        self.ptr.as_ptr() as usize == usize::MAX
+    }
+
     /// Produces a pointer-formattable value that can be used to debug addresses
     pub fn fmt_ptr(&self) -> impl fmt::Pointer {
-        Inner::val_ptr(self.ptr.as_ptr()) as *const T
+        // We'll do a little trickery here. It's better to display dangling pointers as null
+        // instead of `usize::MAX`, so we'll check for that independently. (Also because any offset
+        // from `self.ptr` via `Inner::val_ptr` might overflow...)
+        if self.is_dangling() {
+            null()
+        } else {
+            Inner::val_ptr(self.ptr.as_ptr()) as *const T
+        }
     }
 
     /// Returns whether the value behind the weak pointer can still be accessed
@@ -510,6 +525,10 @@ impl<T> Weak<T> {
     ///
     /// [`try_borrow`]: Self::try_borrow
     pub fn is_valid(&self) -> bool {
+        if self.is_dangling() {
+            return false;
+        }
+
         let ptr = self.ptr.as_ptr();
 
         // The pointer is valid only if the value hasn't been dropped
@@ -657,12 +676,14 @@ impl<T> Weak<T> {
 
 impl<T> Clone for Weak<T> {
     fn clone(&self) -> Self {
-        // Cloning a weak pointer is relatively simple; we just increment the weak count.
-        //
-        // SAFETY: By virtue of the original weak pointer being passed in, we know that the
-        // backing allocation is still there -- it's still safe to read from (and write to) fields
-        // of the `Inner`.
-        unsafe { *Inner::weak_count_ptr(self.ptr.as_ptr()) += 1 };
+        if !self.is_dangling() {
+            // Cloning a weak pointer is relatively simple; we just increment the weak count.
+            //
+            // SAFETY: By virtue of the original weak pointer being passed in, we know that the
+            // backing allocation is still there -- it's still safe to read from (and write to) fields
+            // of the `Inner`.
+            unsafe { *Inner::weak_count_ptr(self.ptr.as_ptr()) += 1 };
+        }
 
         // We've incremented the weak count, so we're now free to construct a new pointer:
         Weak {
@@ -679,6 +700,13 @@ impl<T> Drop for Weak<T> {
         // If this is the last weak pointer, we may need to deallocate. It might *also* be the case
         // that the weak pointers were assigned shared ownership of the value, meaning that we'll
         // have to drop the value before deallocating as well.
+        //
+        // But also... if this weak pointer was never allocated in the first place, we should just
+        // return.
+        if self.is_dangling() {
+            return;
+        }
+
         let ptr = self.ptr.as_ptr();
 
         let weak_count = unsafe { &mut *Inner::weak_count_ptr(ptr) };
