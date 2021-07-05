@@ -2,7 +2,7 @@
 //
 // TODO-CORRECTNESS (MEM): There's a few cases in here where we have interior mutability that
 // doesn't boil down to an `UnsafeCell`. `Weak::clone`, for example, increments the count behind
-// the pointer. So: do we need to include this in the `PhanomData`?
+// the pointer. So: do we need to include this in the `PhantomData`?
 //
 // TODO-API: It might be better to allow `try_borrow` to return an error if `is_valid` is false,
 // instead of simply panicking. We'd have to make `BorrowError` internally use an enum for this to
