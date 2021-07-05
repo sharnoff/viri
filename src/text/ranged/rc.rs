@@ -10,7 +10,7 @@
 
 use std::fmt::{self, Debug, Display, Formatter};
 use std::marker::PhantomData;
-use std::mem::{self, MaybeUninit};
+use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::num::NonZeroUsize;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{drop_in_place, null, NonNull};
@@ -232,7 +232,8 @@ impl<T> OwnedCell<T> {
         // ever referenced temporarily -- we could only possibly have aliasing as a result of
         // multiple threads accessing pointers to the same allocation, which is prevented by the
         // lack of an implementation of `Send` and `Sync` for these types.
-        let b = unsafe { &mut *Inner::borrow_ptr(ptr) };
+        let borrow_ptr = Inner::borrow_ptr(ptr);
+        let b = unsafe { &mut *borrow_ptr };
 
         match b {
             None => *b = Some(Borrowed::Mutable),
@@ -243,7 +244,11 @@ impl<T> OwnedCell<T> {
         }
 
         BorrowMut {
-            base_ptr: self.ptr,
+            borrow_ptr,
+            // SAFETY: The only way this fails is if the offset from `Inner::val_ptr` wraps around
+            // to produce a value of zero. This won't happen; the allocated `Inner` needs to
+            // already exist in memory in such a way that we can actually refer to each field.
+            value: unsafe { NonNull::new_unchecked(Inner::val_ptr(ptr) as *mut T) },
             marker: PhantomData,
         }
     }
@@ -339,7 +344,8 @@ impl<T> AsRef<T> for OwnedCell<T> {
     }
 }
 
-impl<T> Drop for OwnedCell<T> {
+// @req "uses #[may_dangle]" v0
+unsafe impl<#[may_dangle] T> Drop for OwnedCell<T> {
     fn drop(&mut self) {
         // General safety note: Because this type is still alive, we know that `ptr` is valid. For
         // every field except `val`, we only ever construct temporary references, so we can safely
@@ -642,7 +648,8 @@ impl<T> Weak<T> {
         // SAFETY: We're safe to construct a mutable reference to `borrow` here because all
         // references to `borrow` exist only temporarily -- i.e. they exist within these functions,
         // and are always dropped before calling any external code.
-        let borrow = unsafe { &mut *Inner::borrow_ptr(ptr) };
+        let borrow_ptr = Inner::borrow_ptr(ptr);
+        let borrow = unsafe { &mut *borrow_ptr };
         match borrow {
             None => {
                 // SAFETY: Trivailly safe; 1 != 0.
@@ -667,10 +674,50 @@ impl<T> Weak<T> {
             Some(Borrowed::Mutable) => return Err(BorrowError { _private: () }),
         }
 
+        // SAFETY: We now know that (a) `ptr.val` is not dropped, and (b) the current value of
+        // `ptr.borrow` means that we've secured an immtuable borrow for ourselves at least until
+        // we drop.
+        let value = unsafe { &*(Inner::val_ptr(ptr) as *const T) };
+
         Ok(Borrow {
-            base_ptr: self.ptr,
-            marker: PhantomData,
+            // SAFETY: `ptr` came from a `NonNull`; it is already guaranteed to be non-null.
+            base_ptr: self.ptr.cast(),
+            do_drop: DropFn::Normal,
+            borrow_ptr,
+            value,
         })
+    }
+
+    /// Returns true if `self` was created by a call to `owned.weak()`, i.e. if they point to the
+    /// same allocation
+    ///
+    /// In practice, this method is primarily used for debug assertions.
+    ///
+    /// ## Examples
+    ///
+    // @def "ranged::rc::Weak::is_from doctests" v0
+    /// ```
+    /// // Even though these values are the same, their allocations
+    /// // are different. That's what we're detecting here.
+    /// let x = OwnedCell::new(3_i32);
+    /// let y = OwnedCell::new(3_i32);
+    ///
+    /// let w = x.weak();
+    ///
+    /// assert!(w.is_from(&x));
+    /// assert!(!w.is_from(&y));
+    ///
+    /// // Anything created with `Weak::new` will return false
+    /// // for any `OwnedCell`.
+    /// let z = Weak::new();
+    /// assert!(!z.is_from(&x));
+    /// ```
+    pub fn is_from(&self, owned: &OwnedCell<T>) -> bool {
+        // We can just directly compare the pointers. We don't need to worry about whether this
+        // pointer is dangling, because it'll still be ok to compare the value of the *pointers*.
+        //
+        // The implementation of equality for `NonNull` compares pointer equality.
+        self.ptr == owned.ptr
     }
 }
 
@@ -693,7 +740,8 @@ impl<T> Clone for Weak<T> {
     }
 }
 
-impl<T> Drop for Weak<T> {
+// @req "uses #[may_dangle]" v0
+unsafe impl<#[may_dangle] T> Drop for Weak<T> {
     fn drop(&mut self) {
         // When dropping a weak pointer, there's a couple things that could happen.
         //
@@ -764,49 +812,369 @@ impl<T> Drop for Weak<T> {
 
 /// An immutable borrow, constructed by [`Weak::borrow`]
 ///
-/// Immutable borrows can be cloned, in addition to mapped by the associated [`map`] function.
+/// Immutable borrows can be cloned with the associated [`clone`] function, in addition to mapped
+/// by the associated [`map`] function.
 ///
+/// [`clone`]: Self::clone
 /// [`map`]: Self::map
+//
+// There's a couple things to know about this type. Normally, anything that can run the destructor
+// for some type `T` needs to indicate as such - either by including a value that indicates it, or
+// by using a `PhantomData`. But this type can be mapped to other types in a way that means we
+// can't always indicate that dropping a `Borrow` can, in fact, drop a type.
+//
+// But in spite of this, let me make the argument that this type is still sound.
+//
+// Essentially, the only thing that can go wrong when we fail to include the proper PhantomData
+// *for dropck* (ignoring other applications) is that we can produce a use-after-free or similar
+// behavior (i.e. accessing a value after it's been dropped). In fact, this sort of behavior is
+// exactly what dropck was designed to check. (See RFC #0769)
+//
+// ## Part 1: Mutually-referential
+//
+// Normally, the way this occurs is if two values have the same lifetime, and we assign one of them
+// to reference the other, with a destructor that uses that borrow. The faulty reasoning here on
+// the compiler's side usually takes the form of "this lifetime is expected to be at least as long
+// as the other, which it is", when in fact *one* of the values must be dropped first, and so the
+// lifetime must be strictly longer.
+//
+// So the idea here would be: If we can set the value behind two `Borrow`s in a way that references
+// each other such that - when they both go out of scope - they run the destructor for each value
+// and one uses dropped data. And so we could try this:
+//
+//    #[derive(Default)]
+//    struct Contrived<'a> {
+//        dropped: bool,
+//        other: Cell<Option<&'a Contrived<'a>>>,
+//    }
+//
+//    // The point here is that `Contrived` uses the `other` field in its destructor, which if we
+//    // were trying to find a problem, we'd hope it was allowed to sucessfully do.
+//    impl<'a> Drop for Contrived<'a> {
+//        fn drop(&mut self) {
+//            if let Some(other) = self.other.get() {
+//                assert!(!other.dropped);
+//            }
+//
+//            self.dropped = true;
+//        }
+//    }
+//
+//    // We create two values
+//    let a_owned = OwnedCell::new(Contrived::default());
+//    let b_owned = OwnedCell::new(Contrived::default());
+//
+//    // And extract references to them, with borrows:
+//    let a_weak = a_owned.weak();
+//    let a_borrow = a_weak.borrow();
+//
+//    let b_weak = b_owned.weak();
+//    let b_borrow = b_weak.borrow();
+//
+//    // The borrows keep the value alive:
+//    drop((a_owned, b_owned));
+//
+//    // And then we set the values to reference the other:
+//    a_borrow.other.set(Some(&*b_borrow));
+//    //                      ^^^^^^^^^^ b_borrow does not live long enough
+//    b_borrow.other.set(Some(&*a_borrow));
+//    //                      ^^^^^^^^^^ a_borrow does not live long enough
+//
+//    // When `a_borrow` and `b_borrow` go out of scope, the destructors for the inner `Contrived`
+//    // will run, so one of them must fail.
+//
+// This example *would* wonderfully showcase that this type is unsound, except it doesn't compile.
+// The reason it doesn't compile is because -- fundamentally -- both borrows are tied to their weak
+// pointers, and the weak pointers *do* tell dropck that they own a `T` and will call its
+// destructor. So even though the borrows themselves don't carry the necessary information,
+// assignment will logically borrow from the original `Weak`s, which will cause dropck to correctly
+// complain. We can actually see this in the hints in the error messages -- they indicate htat
+// `a_weak` and `b_weak` are dropped at the end of the function while still borrowed.
+//
+// ## Part 2: Incorrect lifetime inference
+//
+// So we might think to some other kind of dropping "exploit" -- where failing to indicate to
+// dropck that `Borrow` owns the value would allow us to create a dangling pointer that's accessed
+// in the destructor. There's an example from an actual soundess issue along these lines that
+// previously existed with `SyncOnceCell`:
+//
+//    use std::lazy::SyncOnceCell;
+//
+//    struct A<'a>(&'a str);
+//
+//    impl<'a> Drop for A<'a> {
+//        fn drop(&mut self) {
+//            dbg!(self.0);
+//        }
+//    }
+//
+//    fn main() {
+//        let cell = SyncOnceCell::new();
+//        {
+//            let s = String::from("hello world");
+//            let _ = cell.set(A(&s));
+//        }
+//    }
+//
+// (Source: https://github.com/rust-lang/rust/issues/76367)
+//
+// This code previously compiled due to an error in `SyncOnceCell<T>`: it did not indicate to
+// dropck that it logically owned a `T`, and so it was incorretly assumed that the destructor for
+// `A` wouldn't run. (Note that replacing `A` with `&str` *would* be correct, because `&str`
+// doesn't have a destructor; it is allowed to dangle.)
+//
+// So how would we go about adapting this for `Borrow`? Well... we can try it directly:
+//
+//   // (using struct A from above)
+//
+//   use std::cell::Cell;
+//
+//   fn main() {
+//       let owned: OwnedCell<Cell<Option<A>>> = OwnedCell::new(Cell::new(None));
+//       let weak = owned.weak();
+//
+//       {
+//           let b = weak.borrow();
+//           drop(owned);
+//           let s = String::from("hello world");
+//           b.set(Some(A(&s)));
+//       }
+//   }
+//
+// But this doesn't work -- for a similar reason to why the example in Part 1 didn't. It still
+// carries the lifetime information, and so even though it's actually the *borrow* running the
+// destructor, the compiler's association between the `Borrow` and its `Weak` means that the borrow
+// inherits the information from dropck.
 pub struct Borrow<'r, T> {
-    // The layout here is used similarly to `BorrowMut`; we're pretending that we actually have
-    // some field `val: &'r T`. The primary difference here is that we don't allow constructing a
-    // mutable reference to `val` through `base_ptr`, where `BorrowMut` does.
-    base_ptr: NonNull<Inner<T>>,
+    // The original pointer to the backing allocation. We've erased the type here, and it'll be
+    // properly handled in the chosen function for `do_drop`.
+    base_ptr: NonNull<u8>,
+    // A callback for dropping the base pointer.
+    do_drop: DropFn,
 
-    // So our marker actually needs to contain more than just `&'r T`. Because dropping this type
-    // can ALSO drop the inner `T` under certain circumstances, we need to indicate this fact to
-    // dropck by indicating that we logically own a `T`.
-    marker: PhantomData<(&'r T, T)>,
+    // An additional pointer back to the `borrow` field of the backing `Inner`, so that we can
+    // increment it when we clone.
+    borrow_ptr: *mut Option<Borrowed>,
+
+    // The actual reference to the value. This might be mapped, or it might not be. It's largely
+    // independent of the other two fields.
+    value: &'r T,
+}
+
+#[derive(Copy, Clone)]
+enum DropFn {
+    // The normal case: the borrow is of type `T` for a borrow on `OwnedCell<T>/Weak<T>`, and the
+    // borrow hasn't been mapped at all. We separate this out so that the normal path can be
+    // inlined.
+    Normal,
+    // Some separate drop function is being used. This is set in the implementation of
+    // `Borrow::map`.
+    Mapped(unsafe fn(NonNull<u8>)),
 }
 
 /// A mutable borrow, constructed by [`OwnedCell::borrow_mut`]
 ///
-/// Mutable borrows can be mapped via the associated [`map`] function, or downgraded to an
-/// immutable borrow with [`downgrade`] to allow new immutable borrows to be made.
+/// Mutable borrows can be mapped via the associated [`map`] function.
 ///
-/// [`downgrade`]: Self::downgrade
 /// [`map`]: Self::map
 pub struct BorrowMut<'r, T> {
-    // We use the fields in `base_ptr` and the marker alongside it to pretend like we actually
-    // store a field `val: &'r mut T`. We need to store a pointer to the containing `Inner`
-    // anyways, so it's more memory efficient to just store a single pointer and produce the other
-    // one as needed.
-    base_ptr: NonNull<Inner<T>>,
+    // The `borrow` pointer here is raw because we only ever construct temporary references; we
+    // can't hold it indefinitely, but only accessing the raw pointer when we need to means we can
+    // still do it safely.
+    borrow_ptr: *mut Option<Borrowed>,
+
+    // The actual value that's being borrowed. This may have been mapped, or not.
+    //
+    // This is essentially just a `&'r mut T`, but we have to store it as a raw pointer in order to
+    // get around not being able to copy the field.
+    value: NonNull<T>,
     marker: PhantomData<&'r mut T>,
 }
 
+impl<'r, T> Borrow<'r, T> {
+    /// Clones the `Borrow`, producing a new owned reference to the underlying value
+    ///
+    /// This method may be useful in certain cases that otherwise wouldn't have a solution, like
+    /// storing both a mapped and un-mapped borrow.
+    ///
+    /// The `clone` method is an associated function; it could not be a proper method because that
+    /// would conflict with any inherited from `Deref<Target = T>`.
+    ///
+    /// ## Examples
+    ///
+    // @def "ranged::rc::Borrow::clone doctests" v0
+    /// ```
+    /// let x = OwnedCell::new(3_i32);
+    /// let weak = x.weak();
+    /// let b1 = weak.borrow();
+    /// assert_eq!(*b1, 3);
+    ///
+    /// // Cloning must be called as an associated function:
+    /// assert_eq!(*Borrow::clone(&b1), 3);
+    /// ```
+    pub fn clone(this: &Borrow<'r, T>) -> Borrow<'r, T> {
+        let b = unsafe { &mut *this.borrow_ptr };
+        match b {
+            Some(Borrowed::Immutable { count }) => {
+                let new_count = match count.get().checked_add(1) {
+                    Some(c) => c,
+                    None => panic!(
+                        "integer overflow on borrow count: cannot add 1 to {}",
+                        count.get()
+                    ),
+                };
+
+                // SAFETY: We already checked that incrementing didn't overflow; this value cannot
+                // be zero.
+                *count = unsafe { NonZeroUsize::new_unchecked(new_count) };
+
+                Borrow {
+                    base_ptr: this.base_ptr,
+                    do_drop: this.do_drop,
+                    borrow_ptr: this.borrow_ptr,
+                    value: this.value,
+                }
+            }
+
+            #[cfg(debug_assertions)]
+            None => panic!("called `Borrow::clone` while not borrowed"),
+            #[cfg(debug_assertions)]
+            Some(Borrowed::Mutable) => panic!("called `Borrow::clone` while mutably borrowed"),
+
+            // SAFETY: We already have an existing immutable borrow. The only way that the borrowed
+            // field could not have that would be if a destructor ran twice.
+            #[cfg(not(debug_assertions))]
+            None | Some(Borrowed::Mutable) => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
+    /// Maps the borrow by the given function, returning a reference to a sub-value
+    ///
+    /// This method is typically used to restrict a borrow, either by singling out a field or by
+    /// checking that an enum is of a certain variant. It is an associated function because a
+    /// proper method would conflict with any inherited from `Deref<Target = T>`.
+    ///
+    /// ## Examples
+    ///
+    /// One of the useful things that can be done with this function, for example, is to process
+    /// various kinds of enums that we may know in advance are a certain variant:
+    ///
+    // @def "ranged::rc::Borrow::map doctests" v0
+    /// ```
+    /// // Unwraps the inner value, returning a reference to it
+    /// //
+    /// // Note: you may wish to be careful when using this function or things
+    /// // like it.
+    /// fn unwrap_borrow<T, E>(b: Borrow<Result<T, E>>) -> Borrow<T> {
+    ///     Borrow::map(b, |r| r.as_ref().unwrap())
+    /// }
+    ///
+    /// // Usage of this function is pretty simple though!
+    /// let owned: OwnedCell<Result<_, ()>> = OwnedCell::new(Ok("I'm ok!"));
+    /// let weak = owned.weak();
+    ///
+    /// let borrow = weak.borrow();
+    /// assert_eq!(*borrow, Ok("I'm ok!"));
+    ///
+    /// // If the value wasn't `Ok`, we'd panic at the construction of `mapped`;
+    /// // not at the dereference.
+    /// let mapped = unwrap_borrow(borrow);
+    /// assert_eq!(*mapped, "I'm ok!");
+    /// ```
+    pub fn map<U, F>(this: Borrow<'r, T>, func: F) -> Borrow<'r, U>
+    where
+        F: FnOnce(&T) -> &U,
+    {
+        // We're essentially transferring the borrow from `this` to the returned one. We don't want
+        // to run any destructors in this function.
+        let this = ManuallyDrop::new(this);
+
+        Borrow {
+            base_ptr: this.base_ptr,
+            do_drop: match this.do_drop {
+                f @ DropFn::Mapped(_) => f,
+                // If we haven't changed the drop function, we can set it to what it was going to
+                // be anyways:
+                DropFn::Normal => DropFn::Mapped(Self::do_normal_borrow_drop),
+            },
+            borrow_ptr: this.borrow_ptr,
+            value: func(this.value),
+        }
+    }
+}
+
+impl<'r, T> BorrowMut<'r, T> {
+    /// Maps the borrow by the given function, returning a handle on the mutable reference to a
+    /// sub-value
+    ///
+    /// This method is just the mutable counterpart to [`Borrow::map`]; for more information and
+    /// ideas, refer to that method's documentation.
+    ///
+    /// ## Examples
+    ///
+    // @def "ranged::rc::BorrowMut::map doctests" v0
+    /// ```
+    /// let mut owned: OwnedCell<Result<_, ()>> = OwnedCell::new(Ok("I'm ok!"));
+    /// let mut just_the_string =
+    ///     BorrowMut::map(owned.borrow_mut(), |r| r.as_mut().unwrap());
+    ///
+    /// assert_eq!(*just_the_string, "I'm ok!");
+    /// *just_the_string = "Still ok!";
+    /// drop(just_the_string);
+    ///
+    /// assert_eq!(owned.as_ref(), &Ok("Still ok!"));
+    /// ```
+    pub fn map<U, F>(this: BorrowMut<'r, T>, func: F) -> BorrowMut<'r, U>
+    where
+        F: FnOnce(&mut T) -> &mut U,
+    {
+        let this = ManuallyDrop::new(this);
+        // SAFETY: `this.value` is always guaranteed to be identical to a `&'r mut T` by the
+        // lifetime in the marker. It is only stored as a raw pointer so that we can extract the
+        // mutable reference out of `this`, which has a destructor.
+        let val: &'r mut T = unsafe { &mut *this.value.as_ptr() };
+
+        BorrowMut {
+            borrow_ptr: this.borrow_ptr,
+            value: NonNull::from(func(val)),
+            marker: PhantomData,
+        }
+    }
+}
+
+// We don't need #[may_dangle] here because dropck *already* assumes that we don't own a `T`.
+// Which... we might actually not. If you're worried, have a read through the comment above
+// `Borrow`, which makes a lengthy argument for its soundness.
 impl<'r, T> Drop for Borrow<'r, T> {
     fn drop(&mut self) {
+        match self.do_drop {
+            DropFn::Normal => unsafe { Self::do_normal_borrow_drop(self.base_ptr) },
+            DropFn::Mapped(f) => unsafe { f(self.base_ptr) },
+        }
+    }
+}
+
+impl<'r, T: 'r> Borrow<'r, T> {
+    // Calls `do_borrow_drop`, assuming that `ptr` is the correct value for `*mut Inner<T>`
+    unsafe fn do_normal_borrow_drop(ptr: NonNull<u8>) {
+        let inner_ptr = ptr.as_ptr() as *mut Inner<T>;
+        Self::do_borrow_drop(inner_ptr);
+    }
+
+    // Performs the logic for dropping a `Borrow` with the given pointer to `Inner`.
+    //
+    // All safety considerations can be considered from the inside of the `Drop` implementation
+    // above.
+    #[inline(always)]
+    unsafe fn do_borrow_drop(ptr: *mut Inner<T>) {
         // Dropping an immtuable borrow is sometimes tricky. In general, we're guaranteed that
-        // `self.val` is a valid reference, and `self.base_ptr` hasn't been deallocated -- so
-        // `base_ptr.state` is anything *except* `State::Dropped`.
+        // `ptr.val` is a valid reference, and `ptr` hasn't been deallocated -- so `base_ptr.state`
+        // is anything *except* `State::Dropped`.
         //
         // But other than that, there's a couple things we need to do. We need to decrement the
         // number of immutable borrows (setting `base_ptr.borrow = None` if that would be zero),
         // and if the state is `ShouldDrop`, then we also need to actually drop the value if this
         // was the last borrow.
-
-        let ptr = self.base_ptr.as_ptr();
 
         // SAFETY: we know the `Inner` hasn't been deallocated because the lifetime attached to
         // this `Borrow` ensures that there's at least one `Weak` pointer alive. Constructing a
@@ -888,7 +1256,7 @@ impl<'r, T> Drop for BorrowMut<'r, T> {
         //
         // SAFETY: the `OwnedCell` exists for this pointer; it's perfectly valid. The temporary
         // reference isn't aliased, because references to `borrow` are never held.
-        unsafe { *Inner::borrow_ptr(self.base_ptr.as_ptr()) = None };
+        unsafe { *self.borrow_ptr = None };
     }
 }
 
@@ -896,10 +1264,7 @@ impl<'r, T> Deref for Borrow<'r, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: `base_ptr.val` is always valid at least until the destructor for this type has
-        // been called, which we know because:
-        //  (a) the attached lifetime
-        unsafe { &*(Inner::val_ptr(self.base_ptr.as_ptr()) as *const T) }
+        self.value
     }
 }
 
@@ -907,24 +1272,19 @@ impl<'r, T> Deref for BorrowMut<'r, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // SAFETY: `base_ptr.val` is always valid at least until the destructor for this type has
-        // been called, which we know because of the attached lifetime that prevents the
-        // `OwnedCell` from being dropped while this value is still alive.
-        unsafe { &*(Inner::val_ptr(self.base_ptr.as_ptr()) as *const T) }
+        // SAFETY: The value pointer is forced to be treated identically to a `&'r mut T`; it's
+        // just stored as a raw pointer so we can get around copying. The lifetimes guarantee that
+        // the pointer is valid.
+        unsafe { self.value.as_ref() }
     }
 }
 
 impl<'r, T> DerefMut for BorrowMut<'r, T> {
     fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: Constructing a reference here is safe for the same reasons as in the
-        // implementation of `Deref` for this type, but we know that we can construct a *mutable*
-        // reference because:
-        //  (a) only the single `OwnedCell` can produce `BorrowMut`s for the value;
-        //  (b) the `BorrowMut` mutably borrows the `OwnedCell`, so there can only be one
-        //      `BorrowMut` for a single value, AND the value hasn't been dropped; and
-        //  (c) dynamically tracking borrows via `Inner.borrow` ensures that (1) there weren't any
-        //      immutable borrows already, and (2) no new ones can be formed.
-        unsafe { &mut *(Inner::val_ptr(self.base_ptr.as_ptr()) as *mut T) }
+        // SAFETY: The value pointer is forced to be treated identically to a `&'r mut T`; it's
+        // just stored as a raw pointer so we can get around copying. The lifetimes guarantee that
+        // the pointer is valid.
+        unsafe { self.value.as_mut() }
     }
 }
 
@@ -1104,6 +1464,70 @@ mod doctests {
 
         assert!(!weak.is_valid());
         assert_eq!(*borrow, 3);
+    }
+
+    // @req "ranged::rc::Weak::is_from doctests" v0
+    #[test]
+    fn weak_is_from() {
+        let x = OwnedCell::new(3_i32);
+        let y = OwnedCell::new(3_i32);
+
+        let w = x.weak();
+
+        assert!(w.is_from(&x));
+        assert!(!w.is_from(&y));
+
+        let z = Weak::new();
+        assert!(!z.is_from(&x));
+    }
+
+    // @req "ranged::rc::Borrow::clone doctests" v0
+    #[test]
+    fn borrow_clone() {
+        let x = OwnedCell::new(3_i32);
+        let weak = x.weak();
+        let b1 = weak.borrow();
+        assert_eq!(*b1, 3);
+
+        assert_eq!(*Borrow::clone(&b1), 3);
+    }
+
+    // @req "ranged::rc::Borrow::map doctests" v0
+    #[test]
+    fn borrow_map() {
+        fn unwrap_borrow<T, E>(b: Borrow<Result<T, E>>) -> Borrow<T> {
+            Borrow::map(b, |r| match r.as_ref() {
+                Ok(t) => t,
+                Err(_) => panic!("expected `Ok`"),
+            })
+        }
+
+        let owned: OwnedCell<Result<_, ()>> = OwnedCell::new(Ok("I'm ok!"));
+        let weak = owned.weak();
+
+        let borrow = weak.borrow();
+        assert_eq!(*borrow, Ok("I'm ok!"));
+
+        let mapped = unwrap_borrow(borrow);
+        assert_eq!(*mapped, "I'm ok!");
+
+        // Not included above: check that we can mutably borrow afterwards.
+        drop(mapped);
+        let mut owned = owned;
+        *owned.borrow_mut() = Err(());
+    }
+
+    // @req "ranged::rc::BorrowMut::map doctests" v0
+    #[test]
+    fn borrowmut_map() {
+        let mut owned: OwnedCell<Result<_, ()>> = OwnedCell::new(Ok("I'm ok!"));
+        let mut just_the_string = BorrowMut::map(owned.borrow_mut(), |r| r.as_mut().unwrap());
+
+        assert_eq!(*just_the_string, "I'm ok!");
+        *just_the_string = "Still ok!";
+        drop(just_the_string);
+
+        assert_eq!(owned.as_ref(), &Ok("Still ok!"));
     }
 }
 

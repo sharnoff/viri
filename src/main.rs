@@ -30,6 +30,8 @@
     doc_notable_trait,
     // Used in utf8 decoding -- @req "utf8 intrinsics::{likely, unlikely}" v0
     core_intrinsics,
+    // Used anywhere with the corresponding mark. @def "uses #[may_dangle]" v0
+    dropck_eyepatch,
 )]
 // Lint flags:
 #![deny(
