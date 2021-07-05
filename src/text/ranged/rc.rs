@@ -412,7 +412,7 @@ impl<T> Drop for OwnedCell<T> {
                 // destructor happens to result in the destructor for a `Weak` reference to this
                 // allocation being dropped, we know it won't access `state` because we've already
                 // set the flag to indicate it's been dropped.
-                unsafe { drop_in_place(Inner::val_ptr(ptr)) };
+                unsafe { drop_in_place(Inner::val_ptr(ptr) as *mut T) };
 
                 // And, if there's no other references, deallocate:
                 //
@@ -847,7 +847,7 @@ impl<'r, T> Drop for Borrow<'r, T> {
 
             // SAFETY: We know that the value hasn't already been dropped, because `state` didn't
             // equal `Dropped`, and we now have no aliasing that could conflict with this.
-            unsafe { drop_in_place(Inner::val_ptr(ptr)) };
+            unsafe { drop_in_place(Inner::val_ptr(ptr) as *mut T) };
         }
     }
 }
@@ -1076,5 +1076,73 @@ mod doctests {
 
         assert!(!weak.is_valid());
         assert_eq!(*borrow, 3);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    // Helper struct that sets `dropped = true` when it drops.
+    struct SetOnDrop<'r> {
+        dropped: &'r Cell<bool>,
+    }
+
+    impl<'r> SetOnDrop<'r> {
+        fn new(dropped: &'r Cell<bool>) -> Self {
+            SetOnDrop { dropped }
+        }
+    }
+
+    impl<'r> Drop for SetOnDrop<'r> {
+        fn drop(&mut self) {
+            println!("dropping `SetOnDrop`");
+            self.dropped.set(true);
+        }
+    }
+
+    // Checks that the inner value is dropped as expected when the `OwnedCell` is
+    #[test]
+    fn drops_with_owner() {
+        let dropped = Cell::new(false);
+
+        let owned = OwnedCell::new(SetOnDrop::new(&dropped));
+        assert!(!dropped.get());
+
+        drop(owned);
+        assert!(dropped.get());
+    }
+
+    #[test]
+    fn lone_borrow_drops_val() {
+        // Checks that - if the `OwnedCell` is dropped, the last borrow drops the value.
+
+        // Helper struct that tells us when it's been dropped.
+        struct SetOnDrop<'r> {
+            dropped: &'r Cell<bool>,
+        }
+
+        impl<'r> Drop for SetOnDrop<'r> {
+            fn drop(&mut self) {
+                println!("drop!");
+                self.dropped.set(true);
+            }
+        }
+
+        let dropped = Cell::new(false);
+        let owned = OwnedCell::new(SetOnDrop { dropped: &dropped });
+        let weak = owned.weak();
+
+        // Take out a borrow. Dropping the `OwnedCell` means that the borrow is the only thing
+        // keeping the value alive.
+        let borrow: Borrow<SetOnDrop<'_>> = weak.borrow();
+        drop(owned);
+
+        assert!(!dropped.get());
+
+        // Dropping the borrow should drop the value as well.
+        drop(borrow);
+        assert!(dropped.get());
     }
 }
