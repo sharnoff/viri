@@ -65,6 +65,7 @@ use std::thread;
 /// [`new`]: Self::new
 /// [`weak`]: Self::weak
 /// [`borrow_mut`]: Self::borrow_mut
+/// [`drop_and_promote_weaks`]: Self::drop_and_promote_weaks
 pub struct OwnedCell<T> {
     ptr: NonNull<Inner<T>>,
     marker: PhantomData<T>,
@@ -111,6 +112,8 @@ pub struct OwnedCell<T> {
 /// ```
 ///
 /// [`borrow`]: Self::borrow
+/// [`is_valid`]: Self::is_valid
+/// [`try_borrow`]: Self::try_borrow
 pub struct Weak<T> {
     // We use a trick from the standard library here.
     //
@@ -504,6 +507,8 @@ impl<T> Weak<T> {
 
     /// (*Internal*) Returns whether the `Weak` is dangling, equivalent to whether it was created
     /// by [`new`]
+    ///
+    /// [`new`]: Self::new
     fn is_dangling(&self) -> bool {
         self.ptr.as_ptr() as usize == usize::MAX
     }
