@@ -324,25 +324,31 @@ impl<T> OwnedCell<T> {
         let ptr = self.ptr.as_ptr();
 
         // The only component of `self` that we actually need is the pointer, so we can just
-        // `forget()` it immediately:
+        // `forget()` it immediately, to prevent it from dropping on its own.
         mem::forget(self);
 
-        // SAFETY: Because we were handed `self`, we know that the pointer is valid. Any pointer to
-        // `state` is temporary, so it's safe to mutate it in a single-threaded context.
-        unsafe { *Inner::state_ptr(ptr) = State::WeaksAreStrong };
+        // SAFETY: Another value that's only accessed temporarily. `ptr` is still valid, because
+        // `self` was given to us.
+        let weak_count = unsafe { *Inner::weak_count_ptr(ptr) };
 
         // If there are any weak references, we're essentially done here. Otherwise, this is the
         // last reference to the value, so we should deallocate.
-        //
-        // SAFETY: Another value that's only accessed temporarily. `ptr` is still valid, because
-        // `self` was given to us.
-        if unsafe { *Inner::weak_count_ptr(ptr) == 0 } {
-            // As described in `OwnedCell::drop`, it's easiest to just convert the pointer to a
-            // `Box` to deallocate.
+        if weak_count != 0 {
+            // SAFETY: Because we were handed `self`, we know that the pointer is valid. Any pointer to
+            // `state` is temporary, so it's safe to mutate it in a single-threaded context.
+            unsafe { *Inner::state_ptr(ptr) = State::WeaksAreStrong };
+        } else {
+            // If there were no weak references at the time that this value has been dropped, it
+            // should not be possible to create any more without some kind unsoundness.
             //
-            // SAFETY: A weak count of zero means there can't be any more pointers to the
-            // allocation. We won't leave anything dangling.
-            drop(unsafe { <Box<Inner<T>>>::from_raw(ptr) });
+            // Because of that, we don't need to worry about setting the state -- the value cannot
+            // possible access this pointer in another way.
+            unsafe {
+                drop_in_place(Inner::val_ptr(ptr) as *mut T);
+                // As described in `OwnedCell::drop`, it's easiest to just convert the pointer to a
+                // `Box` to deallocate.
+                drop(<Box<Inner<T>>>::from_raw(ptr));
+            }
         }
     }
 }
@@ -1786,6 +1792,16 @@ mod tests {
         assert!(!dropped.get());
 
         drop(owned);
+        assert!(dropped.get());
+    }
+
+    #[test]
+    fn single_owner_drops_promoted() {
+        let dropped = Cell::new(false);
+        let owned = OwnedCell::new(SetOnDrop::new(&dropped));
+        assert!(!dropped.get());
+
+        owned.drop_and_promote_weaks();
         assert!(dropped.get());
     }
 
