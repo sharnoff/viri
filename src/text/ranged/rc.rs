@@ -149,6 +149,14 @@ enum State {
     // The weak references have been promoted to keep the value alive, even though there isn't a
     // strong pointer any more.
     WeaksAreStrong,
+    // The inner value is *currently* being dropped. This state can often occur with
+    // self-referential data structures, where a `Weak` to some allocation is dropped in the
+    // destructor for that value.
+    //
+    // We can't just set the state to `Dropped` before we actually drop the value either, because
+    // that can result in freeing the memory *in the middle of dropping what's at that memory
+    // address*.
+    DropInProgress,
     // The inner value `Inner.val` has been dropped.
     Dropped,
 }
@@ -419,10 +427,7 @@ unsafe impl<#[may_dangle] T> Drop for OwnedCell<T> {
                 // We actually need to be careful here: it's possible for the value to contain a
                 // cycle, having a weak reference pointing back to this allocation. As such, we
                 // can't hold any mutable references across calling the destructor.
-                //
-                // We also need to indicate *before* dropping the value that it's been dropped, in
-                // order to prevent weak references accessing it *during its own destructor*.
-                *state = State::Dropped;
+                *state = State::DropInProgress;
                 drop(state);
 
                 // SAFETY: At this point, we know we have unique mutable access to the value --
@@ -432,6 +437,11 @@ unsafe impl<#[may_dangle] T> Drop for OwnedCell<T> {
                 // allocation being dropped, we know it won't access `state` because we've already
                 // set the flag to indicate it's been dropped.
                 unsafe { drop_in_place(Inner::val_ptr(ptr) as *mut T) };
+
+                // And then mark the value as having been dropped.
+                //
+                // SAFETY: Only temporary references -- all good!
+                unsafe { *Inner::state_ptr(ptr) = State::Dropped };
 
                 // And, if there's no other references, deallocate:
                 //
@@ -551,7 +561,7 @@ impl<T> Weak<T> {
         // possibilities of aliased pointers.
         match unsafe { *Inner::state_ptr(ptr) } {
             State::HasStrong | State::WeaksAreStrong => true,
-            State::ShouldDrop | State::Dropped => false,
+            State::ShouldDrop | State::DropInProgress | State::Dropped => false,
         }
     }
 
@@ -794,16 +804,27 @@ unsafe impl<#[may_dangle] T> Drop for Weak<T> {
         }
         drop(weak_count);
 
-        let state = unsafe { *Inner::state_ptr(ptr) };
+        let mut state = unsafe { *Inner::state_ptr(ptr) };
 
         // If this is the last pointer to the value *and* it hasn't been dropped yet, we should do
         // that now.
         if state == State::WeaksAreStrong {
-            // SAFETY: todo
-            unsafe { drop_in_place(Inner::val_ptr(ptr)) };
+            unsafe {
+                let state_ptr = Inner::state_ptr(ptr);
+                *state_ptr = State::DropInProgress;
+                drop_in_place(Inner::val_ptr(ptr));
+                *state_ptr = State::Dropped;
+            }
+
+            // For consistency (and to avoid another pointer dereference), we'll update our cached
+            // version of the state as well.
+            state = State::Dropped;
         }
 
-        if state == State::WeaksAreStrong || state == State::Dropped {
+        // We already know that we have the only weak pointer to this value. If the value has
+        // already been dropped, then there's no strong pointer either: we need to free the
+        // associated memory.
+        if state == State::Dropped {
             // The way we handle deallocation is to just convert the `*mut Inner` to a box and drop
             // that.
             //
@@ -1817,5 +1838,95 @@ mod tests {
         // Check that we can still borrow (i.e. everything's dropped correctly):
         assert_eq!(*inner_weak.borrow(), 5);
         assert_eq!(*outer_weak.borrow().as_ref(), 5);
+    }
+
+    // Test that dropping an `OwnedCell` storing a weak reference to itself will be sound.
+    #[test]
+    fn drop_self_reference() {
+        // This type should not be used outside of tests. There isn't normally any guarantee that
+        // `Weak` will still refer to the same backing allocation, because we can freely move it
+        // out of the `OwnedCell`.
+        struct SelfRef {
+            #[allow(dead_code)]
+            this: Weak<SelfRef>,
+        }
+
+        let mut x = OwnedCell::new(SelfRef { this: Weak::new() });
+        let weak = x.weak();
+        x.borrow_mut().this = weak;
+
+        // And then we just wait for it to drop!
+    }
+
+    // Test that we can't sneak another weak reference out from inside a type's destructor while
+    // it's being dropped
+    #[test]
+    fn sneak_weak_during_drop() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        // The slot is primarily meant to exist an external thing. We just want to be able to refer
+        // back to it afterwards -- using lifetimes instead actually invalidates this code, so
+        // we'll use normal `Rc`s instead.
+        struct Slot {
+            received: bool,
+            weak: Weak<Exfiltrate>,
+        }
+
+        struct Exfiltrate {
+            kind: Kind,
+            slot: Rc<RefCell<Slot>>,
+            this: Weak<Exfiltrate>,
+        }
+
+        #[derive(Debug, Copy, Clone)]
+        enum Kind {
+            Take,
+            Cloned,
+        }
+
+        impl Drop for Exfiltrate {
+            fn drop(&mut self) {
+                let weak = match self.kind {
+                    Kind::Take => mem::replace(&mut self.this, Weak::new()),
+                    Kind::Cloned => self.this.clone(),
+                };
+
+                self.slot.replace(Slot {
+                    received: true,
+                    weak,
+                });
+            }
+        }
+
+        for &kind in &[Kind::Take, Kind::Cloned] {
+            println!("with `kind = {:?}`...", kind);
+
+            let slot = Rc::new(RefCell::new(Slot {
+                received: false,
+                weak: Weak::new(),
+            }));
+
+            let mut val = OwnedCell::new(Exfiltrate {
+                kind,
+                slot: slot.clone(),
+                this: Weak::new(),
+            });
+
+            let weak = val.weak();
+            val.borrow_mut().this = weak;
+
+            // And then we drop!
+            drop(val);
+
+            // So. After dropping we should find that the slot did have its value set, and that the
+            // memory wasn't freed. We can't directly test that the memory wasn't freed, but we can
+            // replace the `Weak` in the slot to trigger its destructor, which *will* cause it to
+            // be freed. Tests will detect a double-free.
+            let mut borrow = slot.borrow_mut();
+            assert!(borrow.received);
+            assert!(!borrow.weak.is_valid());
+            borrow.weak = Weak::new();
+        }
     }
 }
