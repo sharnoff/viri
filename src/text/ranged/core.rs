@@ -2,16 +2,14 @@
 //!
 //! Information about the purpose that [`Ranged`] serves is available in the type's documentation.
 
-use crate::utils::{DebugPtr, MapDeref, MapDerefMut, MappedGuard};
-use std::cell::{self, RefCell};
+use crate::utils::DebugPtr;
+use std::cell::RefCell;
 use std::cmp::Ordering::{self, Equal, Greater, Less};
-use std::collections::BTreeSet;
 use std::fmt::{self, Debug, Formatter};
-use std::marker::PhantomData;
-use std::ops::{AddAssign, Deref, DerefMut, Range, SubAssign};
-use std::rc::{Rc, Weak};
-use std::{mem, thread};
+use std::mem;
+use std::ops::{AddAssign, Deref, Range, SubAssign};
 
+use super::rc::{BorrowMut, OwnedCell, Weak};
 use super::RangedIndex;
 
 /// A compact representation of tagged ranges
@@ -165,12 +163,12 @@ where
 ///
 /// ## Send/Sync bounds
 ///
-/// This type does not implement `Send` or `Sync` because it internally uses an [`rc::Weak`]. If
-/// your usage of this type restricts access so that only a single thread at a time may own **all**
-/// node references for a particular tree (including the tree itself!), then it is safe to
-/// implement `Send` or `Sync` on a wrapper type. [`StdRanged`] does this, because `NodeRef`s are
-/// not exposed there. There are no checks here that this invariant is upheld, aside from the racy
-/// runtime borrow checks from [`RefCell`].
+/// This type does not implement `Send` or `Sync` because it internally uses something similar to
+/// an [`rc::Weak`]. If your usage of this type restricts access so that only a single thread at a
+/// time may own **all** node references for a particular tree (including the tree itself!), then
+/// it is safe to implement `Send` or `Sync` on a wrapper type. [`StdRanged`] does this, because
+/// `NodeRef`s are not exposed there. There are no checks here that this invariant is upheld, aside
+/// from the racy runtime borrow checks from [`RefCell`].
 ///
 /// It is not possible to safely expose any of the functionality from a `NodeRef` in a concurrent
 /// fashion directly. Do not attempt to do so. If this functionality is required, wrap the entire
@@ -184,85 +182,20 @@ where
 //
 // Internal notes:
 //
+// We always guarantee that either the `OwnedCell` corresponding to the weak pointer is still held,
+// or ownership has been transferred to all weak pointers.
+//
 // We always guarantee that - if a `NodeRef` is still valid - the node it points to will contain
 // the address of reference in its `RefSet`. This means we can always confidently remove the
 // reference from a redirected node when we update.
 pub struct NodeRef<Acc, Idx, Delta, S> {
-    inner: Weak<RefCell<MaybeNode<Acc, Idx, Delta, S>>>,
+    inner: Weak<MaybeNode<Acc, Idx, Delta, S>>,
 }
 
 impl<Acc, Idx, Delta, S> Clone for NodeRef<Acc, Idx, Delta, S> {
     fn clone(&self) -> Self {
         NodeRef {
             inner: self.inner.clone(),
-        }
-    }
-}
-
-impl<Acc, Idx, Delta, S> Drop for NodeRef<Acc, Idx, Delta, S> {
-    fn drop(&mut self) {
-        // The implementation of `Drop` serves to clean up any redirected nodes if there's no more
-        // references pointing to them. Because redirected nodes internally use `NodeRef`s as well
-        // to redirect, this will occur all the way down a chain of unused redirects.
-        //
-        // The central idea here is that -- if our NodeRef happens to point to a redirected node,
-        // AND there's no other NodeRefs remaining that point to it, then we can remove the last
-        // strong reference for that node from the node it points to.
-
-        match self.inner.weak_count() {
-            // weak_count = 0 if the node has already been deallocated already
-            0 => return,
-            // weak_count = 1 if this `NodeRef` is the last thing referencing it
-            1 => (),
-            // weak_count > 1 if there's other active `NodeRef`s. We should allow this to stay
-            // as-is
-            _ => return,
-        }
-
-        if let Some(node_rc) = self.inner.upgrade() {
-            // We want to avoid double-panicking in the destructor here. If we aren't already
-            // panicking, then we can go ahead and just grab the guard, but if we are we'll just
-            // silently exit -- it could be that some other invariant already messed this up.
-            //
-            // Helper macro to panic if the thread isn't already panicking.
-            macro_rules! ensure_panic {
-                ($($ts:tt)*) => {{
-                    if !thread::panicking() {
-                        panic!($($ts)*);
-                    } else {
-                        return;
-                    }
-                }};
-            }
-
-            let guard = match node_rc.try_borrow() {
-                Ok(g) => g,
-                Err(e) => ensure_panic!("failed to borrow node: {}", e),
-            };
-
-            let redirect_ref = match &*guard {
-                MaybeNode::Redirected(r, _) => r,
-                // Don't worry about counts for nodes that aren't redirected
-                MaybeNode::Base(_) => return,
-                MaybeNode::Temp => ensure_panic!("dropped invalid `NodeRef`: points to `Temp`"),
-            };
-
-            let redirect_rc = match redirect_ref.inner.upgrade() {
-                Some(rc) => rc,
-                None => ensure_panic!("redirect points to dropped node"),
-            };
-
-            let mut r_guard = match redirect_rc.try_borrow_mut() {
-                Ok(g) => g,
-                Err(e) => ensure_panic!("failed to borrow node: {}", e),
-            };
-
-            match &mut *r_guard {
-                MaybeNode::Redirected(_, refs) | MaybeNode::Base(Node { refs, .. }) => {
-                    refs.set.remove(&RefSetItem(node_rc.clone()));
-                }
-                MaybeNode::Temp => ensure_panic!("redirect points to `Temp`"),
-            }
         }
     }
 }
@@ -279,9 +212,7 @@ where
     /// the `NodeRef` separately from the `Ranged` containing its node, it's generally a good idea
     /// to call this method first to check that the `NodeRef` is still valid.
     pub fn is_valid(&self) -> bool {
-        // If the strong count is > 0, we'll be able to upgrade the pointer -- that's all that's
-        // required for us to know that it's valid
-        self.inner.strong_count() > 0
+        self.inner.is_valid()
     }
 
     /// Returns the current global index corresponding to the start of the node
@@ -296,7 +227,7 @@ where
         assert!(self.is_valid());
         self.collapse_redirects();
 
-        let mut node_ref = self.inner.upgrade().unwrap();
+        let mut node_ref = self.inner.clone();
 
         let mut delta = S::Idx::ZERO_DELTA;
         loop {
@@ -306,7 +237,7 @@ where
             match &node.parent {
                 None => break,
                 Some(p) => {
-                    let r = p.upgrade().unwrap();
+                    let r = p.clone();
                     drop(guard);
                     node_ref = r;
                 }
@@ -333,91 +264,53 @@ where
     ///
     /// [`is_valid`]: Self::is_valid
     pub fn size(&mut self) -> S::Idx {
+        assert!(self.is_valid());
         self.collapse_redirects();
-        self.inner
-            .upgrade()
-            .expect("invalid node reference")
-            .borrow()
-            .as_node_ref()
-            .size
+
+        self.inner.borrow().as_node_ref().size
     }
 
     /// (*Internal*) Collapses any redirection that might be present in a node that this one
     /// references
     fn collapse_redirects(&mut self) {
-        let this_rc = self.inner.upgrade().unwrap();
+        let initial_guard = self.inner.borrow();
 
-        let mut initial_guard = this_rc.borrow_mut();
-
-        // We keep `last` around so that we can remove it from the `RefSet` in the next node;
-        // it'll be redirected with `final_overwrite`.
-        //
-        // In the case that `next` is our final node, we might just end up removing `last` and
-        // adding it back when we add everything from `final_overwrite`.
-        let (mut last, mut next) = match &mut *initial_guard {
+        let mut next = match &*initial_guard {
             MaybeNode::Base(_) => return,
             MaybeNode::Temp => panic!("`NodeRef` points to temp node"),
-            MaybeNode::Redirected(n, _) => (
-                this_rc.clone(),
-                n.inner.upgrade().expect("redirected to invalid node"),
-            ),
+            MaybeNode::Redirected(n) => (&*n.borrow()).clone(),
         };
 
         // A list of all of the nodes that we traverse through in our redirection. For the most
         // part, we'll allow the destructors to run and clean this up, even though there might be
         // ways to do it that are more efficient.
-        let mut traversed = vec![this_rc.clone()];
+        let mut traversed = vec![self.clone()];
 
-        // We need to eagerly drop `initial_guard` here; otherwise we run into borrowing conflicts
-        // if we've added `this_rc` to `final_overwrite`.
+        // We have to drop `initial_guard` here so that we can assign to `self` later
         drop(initial_guard);
 
         loop {
-            let next_weak = Rc::downgrade(&next);
-            let mut guard = next.borrow_mut();
-            match &mut *guard {
+            let guard = next.inner.borrow();
+            match &*guard {
                 MaybeNode::Base(_) => {
                     // For every node we've traversed, set it to point instead at the new value.
-                    // We've already removed the strong references from their redirection, and so
-                    // all that remains are the references in `traversed` -- we'll add those to
-                    // `n.refs` in order to finalize the redirection.
-
-                    // We need to temporarily give up our hold on `guard`. It could be the case
-                    // that - in the course of dropping a `NodeRef` we overwrite - we need to
-                    // remove some *other* reference from `next`.
-                    //
-                    // We'll re-acquire this after the loop.
-                    drop(guard);
-
-                    for rc in traversed.iter() {
-                        println!("traversed[..] = {:p}", Rc::as_ptr(&rc));
-                        match &mut *rc.borrow_mut() {
-                            MaybeNode::Redirected(r, _) => {
-                                *r = NodeRef {
-                                    inner: next_weak.clone(),
-                                }
+                    for node_ref in traversed.iter() {
+                        match &*node_ref.inner.borrow() {
+                            MaybeNode::Redirected(r) => {
+                                let _ = r.replace(next.clone());
                             }
                             _ => unreachable!(),
                         }
                     }
-                    *self = NodeRef { inner: next_weak };
-
-                    let mut guard = next.borrow_mut();
-                    let n = match &mut *guard {
-                        MaybeNode::Base(n) => n,
-                        _ => unreachable!(),
-                    };
-                    n.refs.set.extend(traversed.into_iter().map(RefSetItem));
+                    drop(guard);
+                    *self = next;
                     return;
                 }
                 MaybeNode::Temp => panic!("`NodeRef` redirected to temp node"),
-                MaybeNode::Redirected(n, refs) => {
+                MaybeNode::Redirected(n) => {
                     traversed.push(next.clone());
-
-                    refs.set.remove(&RefSetItem(last));
-                    let new_next = n.inner.upgrade().expect("redirected to invalid node");
+                    let new_next = (&*n.borrow()).clone();
                     drop(guard);
-                    last = next;
                     next = new_next;
                 }
             }
@@ -441,7 +334,7 @@ where
 /// pointer), we expect all `OwnedNode`s to have no redirection. The methods on this type therefore
 /// reflect that difference.
 pub(super) struct OwnedNode<Acc, Idx, Delta, S> {
-    inner: Rc<RefCell<MaybeNode<Acc, Idx, Delta, S>>>,
+    inner: OwnedCell<MaybeNode<Acc, Idx, Delta, S>>,
 }
 
 impl<Acc, Idx, Delta, S> Debug for OwnedNode<Acc, Idx, Delta, S>
@@ -456,19 +349,18 @@ where
         // to be able to give the correct address for the node.
         //
         // The reason we have to do this (and why we can't just use the &Node that gets passed to
-        // `Debug`) is because the address given for Rc/Weak::as_ptr is offset from the address
-        // inside of the `RefCell`. We could ignore that and output addresses that aren't *quite*
-        // right, but it's not worth the possibility of getting all confused about why the
-        // addresses are slightly off (again).
+        // `Debug`) is because the address given for OwnedCell/Weak::as_ptr is possibly offset from
+        // the address that the inner value is stored at. We could ignore that and output addresses
+        // that aren't guaranteed to be correct, but it's not worth the possibility of getting all
+        // confused about why the addresses are slightly off.
 
         let this = self.get();
         f.debug_struct("Node")
-            .field("<addr>", &DebugPtr(Rc::as_ptr(&self.inner)))
+            .field("<addr>", &DebugPtr(self.inner.fmt_ptr()))
             .field(
                 "parent",
-                &this.parent.as_ref().map(|p| DebugPtr(p.as_ptr())),
+                &this.parent.as_ref().map(|p| DebugPtr(p.fmt_ptr())),
             )
-            .field("refs", &this.refs)
             .field("offset_from_parent", &this.offset_from_parent)
             .field("size", &this.size)
             .field("val", &this.val)
@@ -480,17 +372,11 @@ where
     }
 }
 
-// Helper type for `OwnedNode::get`. It's extracted out here because it's... a bit big.
-type OwnedNodeRef<'r, Acc, Idx, Delta, S> = MappedGuard<
-    cell::Ref<'r, MaybeNode<Acc, Idx, Delta, S>>,
-    fn(&MaybeNode<Acc, Idx, Delta, S>) -> &Node<Acc, Idx, Delta, S>,
->;
-
 impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
     /// Creates a new `OwnedNode` from the given `Node`
     fn new(node: Node<Acc, Idx, Delta, S>) -> Self {
         OwnedNode {
-            inner: Rc::new(RefCell::new(MaybeNode::Base(node))),
+            inner: OwnedCell::new(MaybeNode::Base(node)),
         }
     }
 
@@ -499,7 +385,7 @@ impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
     /// [`set_temp`]: Self::set_temp
     fn temporary() -> Self {
         OwnedNode {
-            inner: Rc::new(RefCell::new(MaybeNode::Temp)),
+            inner: OwnedCell::new(MaybeNode::Temp),
         }
     }
 
@@ -517,52 +403,30 @@ impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
         *guard = MaybeNode::Base(node);
     }
 
-    /// Performs a "shallow" clone of the reference, returning another `OwnedNode` pointing to the
-    /// same allocation
-    fn shallow_clone(&self) -> Self {
-        OwnedNode {
-            inner: self.inner.clone(),
-        }
-    }
-
-    /// Returns a weak reference to the underlying allocation. Analagous to [`Rc::downgrade`].
-    fn weak(&self) -> Weak<RefCell<MaybeNode<Acc, Idx, Delta, S>>> {
-        Rc::downgrade(&self.inner)
+    /// Returns a weak reference to the underlying allocation
+    fn weak(&self) -> Weak<MaybeNode<Acc, Idx, Delta, S>> {
+        self.inner.weak()
     }
 
     /// Provides a reference to the inner [`Node`]
-    ///
-    /// We can't return `impl Deref` here because usage in `Ranged::iter` requires being able to
-    /// name the type.
-    #[track_caller]
-    fn get<'a>(&'a self) -> OwnedNodeRef<'a, Acc, Idx, Delta, S> {
-        let guard = self.inner.borrow();
-
-        // We could just directly map the guard, but it's better to panic early if we're given bad
-        // input, so we check that first.
-        match &*guard {
-            MaybeNode::Base(_) => guard.map_guard(MaybeNode::as_node_ref),
-            MaybeNode::Redirected(_, _) => panic!("called `get` on `Redirected` node"),
+    fn get(&self) -> &Node<Acc, Idx, Delta, S> {
+        match self.inner.as_ref() {
+            MaybeNode::Base(node) => node,
+            MaybeNode::Redirected(_) => panic!("called `get` on `Redirected` node"),
             MaybeNode::Temp => panic!("called `get` on `Temp` node"),
         }
     }
 
     /// Provides a mutable reference to the inner [`Node`]
     #[track_caller]
-    pub(super) fn get_mut<'a>(
-        &'a mut self,
-    ) -> impl 'a + DerefMut<Target = Node<Acc, Idx, Delta, S>> {
+    pub(super) fn get_mut<'a>(&'a mut self) -> BorrowMut<'a, Node<Acc, Idx, Delta, S>> {
         let guard = self.inner.borrow_mut();
 
-        // We could just directly map the guard, but it's better to panic early if we're given bad
-        // input, so we check that first.
-        match &*guard {
-            MaybeNode::Base(_) => {
-                guard.map_mut_guard(MaybeNode::as_node_ref, MaybeNode::as_node_mut)
-            }
-            MaybeNode::Redirected(_, _) => panic!("called `get_mut` on `Redirected` node"),
+        BorrowMut::map(guard, |maybe_node| match maybe_node {
+            MaybeNode::Base(n) => n,
+            MaybeNode::Redirected(_) => panic!("called `get_mut` on `Redirected` node"),
             MaybeNode::Temp => panic!("called `get_mut` on `Temp` node"),
-        }
+        })
     }
 
     /// Extracts the inner [`Node`], replacing it with a [`MaybeNode::Temp`]
@@ -579,7 +443,7 @@ impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
     fn take(&mut self) -> Node<Acc, Idx, Delta, S> {
         match self.inner.replace(MaybeNode::Temp) {
             MaybeNode::Base(n) => n,
-            MaybeNode::Redirected(_, _) => panic!("called `take` on `Redirected` node"),
+            MaybeNode::Redirected(_) => panic!("called `take` on `Redirected` node"),
             MaybeNode::Temp => panic!("called `take` on `Temp` node"),
         }
     }
@@ -594,7 +458,7 @@ impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
     fn set(&mut self, node: MaybeNode<Acc, Idx, Delta, S>) {
         match self.inner.replace(node) {
             MaybeNode::Temp => (),
-            MaybeNode::Redirected(_, _) => panic!("called `set` on `Redirected` node"),
+            MaybeNode::Redirected(_) => panic!("called `set` on `Redirected` node"),
             MaybeNode::Base(_) => panic!("called `set` on `Base` node"),
         }
     }
@@ -621,19 +485,17 @@ impl<Acc, Idx, Delta, S> OwnedNode<Acc, Idx, Delta, S> {
     /// This method panics if the node is in an invalid state, as described by [`get_mut`].
     ///
     /// [`get_mut`]: Self::get_mut
-    fn map_mut(
-        this: &mut Option<Self>,
-    ) -> Option<impl '_ + DerefMut<Target = Node<Acc, Idx, Delta, S>>> {
+    fn map_mut(this: &mut Option<Self>) -> Option<BorrowMut<Node<Acc, Idx, Delta, S>>> {
         this.as_mut().map(Self::get_mut)
     }
 
-    /// Turns an `OwnedNode` into a [`NodeRef`]
+    /// Creates a [`NodeRef`] from an `OwnedNode`
     ///
     /// This is only really exposed in order to work with [`Ranged::as_single_mut`], for the
     /// purpose of implementing [`RelativeSet`].
     ///
     /// [`RelativeSet`]: super::RelativeSet
-    pub(super) fn into_ref(self) -> NodeRef<Acc, Idx, Delta, S> {
+    pub(super) fn to_node_ref(&self) -> NodeRef<Acc, Idx, Delta, S> {
         NodeRef { inner: self.weak() }
     }
 }
@@ -653,90 +515,10 @@ enum MaybeNode<Acc, Idx, Delta, S> {
     Base(Node<Acc, Idx, Delta, S>),
     // A node that has since been joined with another; this reference now gives the address of that
     // node.
-    //
-    // Note that, to keep with the restrictions on `NodeRef` in its internal documentation, the
-    // node that we have a reference to here *also* contains a pointer to this value in its
-    // `RefSet`.
-    Redirected(NodeRef<Acc, Idx, Delta, S>, RefSet<Acc, Idx, Delta, S>),
+    Redirected(RefCell<NodeRef<Acc, Idx, Delta, S>>),
     // A temporary value that's sometimes used in order to take ownership over the contents of a
     // `Node` without requiring any memory-unsafe operations.
     Temp,
-}
-
-// A `RefSet` is our method of storing the set of redirected nodes that are pointing at this one,
-// so that they cannot be dropped with `NodeRef`s pointing to them
-struct RefSet<Acc, Idx, Delta, S> {
-    set: BTreeSet<RefSetItem<MaybeNode<Acc, Idx, Delta, S>>>,
-}
-
-impl<Acc, Idx, Delta, S> Debug for RefSet<Acc, Idx, Delta, S> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let mut map = f.debug_map();
-        for it in &self.set {
-            map.key(&DebugPtr(Rc::as_ptr(&it.0))).value(it);
-        }
-        map.finish()
-    }
-}
-
-impl<Acc, Idx, Delta, S> Default for RefSet<Acc, Idx, Delta, S> {
-    fn default() -> Self {
-        RefSet {
-            set: BTreeSet::new(),
-        }
-    }
-}
-
-// A single item in a `RefSet`.
-//
-// This is a newtype so that we can have a special implementation of `Ord` that simply compares the
-// addresses of the pointers.
-struct RefSetItem<N>(Rc<RefCell<N>>);
-
-impl<Acc, Idx, Delta, S> Debug for RefSetItem<MaybeNode<Acc, Idx, Delta, S>> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        struct Dbg<T>(T);
-
-        impl<'a, Acc, Idx, Delta, S> Debug for Dbg<&'a Rc<RefCell<MaybeNode<Acc, Idx, Delta, S>>>> {
-            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                let guard = self.0.borrow();
-
-                match &*guard {
-                    MaybeNode::Temp => f.write_str("Temp"),
-                    MaybeNode::Base(_) => f.write_str("Base(_)"),
-                    MaybeNode::Redirected(node_ref, refs) => f
-                        .debug_struct("Redirected")
-                        .field("to", &DebugPtr(node_ref.inner.as_ptr()))
-                        .field("refs", refs)
-                        .finish(),
-                }
-            }
-        }
-
-        Dbg(&self.0).fmt(f)
-    }
-}
-
-impl<N> PartialEq for RefSetItem<N> {
-    fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl<N> Eq for RefSetItem<N> {}
-
-impl<N> PartialOrd for RefSetItem<N> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<N> Ord for RefSetItem<N> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // The inner type of `self.0` is `Rc<RefCell<N>>`, so we want to compare the references to
-        // the `RefCell<N>`.
-        ((&*self.0) as *const RefCell<N>).cmp(&((&*other.0) as *const RefCell<N>))
-    }
 }
 
 impl<Acc, Idx, Delta, S> MaybeNode<Acc, Idx, Delta, S> {
@@ -769,15 +551,12 @@ impl<Acc, Idx, Delta, S> MaybeNode<Acc, Idx, Delta, S> {
 }
 
 /// (*Internal*) Helper type alias for the type of pointers to a parent node
-type ParentPointer<Acc, Idx, Delta, S> = Weak<RefCell<MaybeNode<Acc, Idx, Delta, S>>>;
+type ParentPointer<Acc, Idx, Delta, S> = Weak<MaybeNode<Acc, Idx, Delta, S>>;
 
 /// (*Internal*) An individual node in the [`Ranged`] splay tree
 pub(super) struct Node<Acc, Idx, Delta, S> {
     left: Option<OwnedNode<Acc, Idx, Delta, S>>,
     right: Option<OwnedNode<Acc, Idx, Delta, S>>,
-
-    // All of the external `NodeRef`s that are referencing this node
-    refs: RefSet<Acc, Idx, Delta, S>,
 
     // The parent of this node, if it exists. We only use a `Weak` here in order to allow
     // deallocation; the reference should always be valid.
@@ -829,9 +608,6 @@ where
         new.set_temp(Node {
             left: this.left.as_ref().map(|n| n.deep_clone(this_ptr.clone())),
             right: this.right.as_ref().map(|n| n.deep_clone(this_ptr)),
-            // Note: `refs` is empty because the cloned node is fundamentally a different node --
-            // references to it *shouldn't* transfer.
-            refs: RefSet::default(),
             parent,
             // In general, setting `offset_from_parent` to the same is correct. Because cloning
             // `OwnedNode`s never exists in a vacuum -- it's always as part of another call to
@@ -1014,7 +790,6 @@ where
             root: Some(OwnedNode::new(Node {
                 left: None,
                 right: None,
-                refs: RefSet::default(),
                 parent: None,
                 offset_from_parent: S::Idx::ZERO_DELTA,
                 size,
@@ -1043,22 +818,28 @@ where
         self.size
     }
 
-    /// Assuming that the tree consists of a single node, returns a reference to that node
-    ///
-    /// This function should be used with caution -- the mutable access required to *get* the
-    /// `OwnedNode` is not required to continue holding it, and may cause borrowing conflicts if
-    /// used incorrectly.
-    pub(super) fn as_single_mut(&mut self) -> OwnedSNode<S> {
-        let root = self.root_ref();
-
-        let g = root.get();
+    /// Assuming that the tree consists of a single node, returns a mutable reference to the
+    /// contents of that node
+    pub(super) fn as_single_mut(&mut self) -> BorrowMut<S> {
+        let g = self.root_mut();
         assert!(g.left.is_none() && g.right.is_none());
+        BorrowMut::map(g, |n| &mut n.val)
+    }
 
-        root.shallow_clone()
+    /// Constructs a `NodeRef` to the root node
+    ///
+    /// If the tree is empty, this will be an always-invalid reference.
+    pub(super) fn root_node_ref(
+        &self,
+    ) -> NodeRef<S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S> {
+        self.root
+            .as_ref()
+            .map(OwnedNode::to_node_ref)
+            .unwrap_or(NodeRef { inner: Weak::new() })
     }
 
     // Provides an immutable reference to the root node
-    fn root(&self) -> impl '_ + Deref<Target = SNode<S>> {
+    fn root(&self) -> &SNode<S> {
         #[cfg(debug_assertions)]
         if self.size == S::Idx::ZERO {
             panic!("cannot get root node while tree is empty");
@@ -1071,7 +852,7 @@ where
     }
 
     // Provides a mutable guard for the contents of the root node
-    fn root_mut(&mut self) -> impl '_ + DerefMut<Target = SNode<S>> {
+    fn root_mut(&mut self) -> BorrowMut<SNode<S>> {
         #[cfg(debug_assertions)]
         if self.size == S::Idx::ZERO {
             panic!("cannot get root node while tree is empty");
@@ -1142,111 +923,60 @@ where
     ///
     /// This function can be used with [`clone_range`](Self::clone_range) to iterate over a smaller
     /// range.
-    pub fn iter<'a>(
-        &'a self,
-    ) -> impl 'a + Iterator<Item = (impl 'a + Deref<Target = S>, Range<S::Idx>)> {
-        struct Iter<'r, Acc, Idx, Delta, S> {
+    pub fn iter<'a>(&'a self) -> impl 'a + Iterator<Item = (&'a S, Range<S::Idx>)> {
+        struct Iter<'a, S: AccumulatorSlice> {
             // The root is `Some` only on the first iteration
-            root: Option<OwnedNode<Acc, Idx, Delta, S>>,
+            root: Option<&'a SNode<S>>,
             // Stack of nodes and their position
-            stack: Vec<(Idx, OwnedNode<Acc, Idx, Delta, S>)>,
-            // We attach a lifetime to the iterator in order to ensure that the structure of the
-            // tree doesn't change out from underneath us
-            marker: PhantomData<&'r ()>,
+            stack: Vec<(S::Idx, &'a SNode<S>)>,
         }
 
-        // Helper type for implmenting deref going `OwnedNode` -> `S`.
-        //
-        // This uses unsafety in the implementation, because `borrow` conceptually borrows from
-        // `owned`, even though it is only accessing *through* `owned`.
-        //
-        // It's theoretically possible to implement this in safe rust, but only if you traverse the
-        // entire tree to get to each referenced node. That solution would be O(n^2), which is
-        // obviously not acceptable, unfortunately.
-        //
-        // So we're using this for now, though we may later create a custom `RefCell`
-        // implementation that directly supports guards that go through common pointer types by
-        // accessing their values each time. (TODO-ALG/TODO-FEATURE)
-        //
-        // We could also instead just include `borrow`: we know that the tree shouldn't change out
-        // from underneath us, so we could embrace the unsafety even more and do away with all of
-        // the refcounts. But... single-threaded refcounts are pretty fast anyways, and so it
-        // probably wouldn't matter much.
-        struct NodeDeref<'r, Acc, Idx, Delta, S> {
-            owned: OwnedNode<Acc, Idx, Delta, S>,
-            // Invariant: `borrow` always points to the same node as `owned`. Because `owned` has a
-            // strong reference to the data, we know that `borrow` will remain valid at least as
-            // long as `owned` is alive.
-            borrow: OwnedNodeRef<'r, Acc, Idx, Delta, S>,
-        }
-
-        impl<'r, Acc, Idx, Delta, S> Deref for NodeDeref<'r, Acc, Idx, Delta, S> {
-            type Target = S;
-
-            fn deref(&self) -> &S {
-                &self.borrow.val
-            }
-        }
-
-        impl<'r, S> Iter<'r, S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>
+        impl<'a, S> Iter<'a, S>
         where
             S: AccumulatorSlice,
         {
-            fn push_lefts(
-                &mut self,
-                root_parent_pos: S::Idx,
-                root: OwnedNode<S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>,
-            ) {
+            fn push_lefts(&mut self, root_parent_pos: S::Idx, root: &'a SNode<S>) {
                 let mut pos = root_parent_pos;
                 let mut r = Some(root);
                 while let Some(n) = r {
-                    pos = Ranged::stack_pos(pos, &*n.get());
-                    r = n.get().left.as_ref().map(|n| n.shallow_clone());
+                    pos = <Ranged<_, _, _, _>>::stack_pos(pos, &*n);
                     self.stack.push((pos, n));
+                    r = n.left.as_ref().map(|b| b.get());
                 }
             }
         }
 
-        impl<'r, S> Iterator for Iter<'r, S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>
+        impl<'a, S> Iterator for Iter<'a, S>
         where
-            S: 'r + AccumulatorSlice,
+            S: AccumulatorSlice,
         {
-            type Item = (
-                NodeDeref<'r, S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>,
-                Range<S::Idx>,
-            );
+            type Item = (&'a S, Range<S::Idx>);
 
             fn next(&mut self) -> Option<Self::Item> {
-                if let Some(r) = self.root.take() {
-                    self.push_lefts(S::Idx::ZERO, r);
+                if let Some(r) = self.root {
+                    self.push_lefts(S::Idx::ZERO, &r);
+                    self.root = None;
                 }
 
                 match self.stack.pop() {
-                    Some((pos, owned)) => {
-                        let g = owned.get();
-                        if let Some(r) = g.right.as_ref() {
-                            self.push_lefts(pos, r.shallow_clone());
+                    Some((pos, n)) => {
+                        if let Some(r) = n.right.as_ref() {
+                            self.push_lefts(pos, r.get());
                         }
-
-                        let range = pos..pos.add(g.size);
-                        // SAFETY: We've described above, in the comments for `NodeDeref` why this
-                        // has to be unsafe. This is simply lifetime extension, so that the
-                        // original lifetime (which is tied to `owned`) doesn't get tied up when we
-                        // try to place `borrow` into a struct alongside `owned`.
-                        let borrow = unsafe {
-                            mem::transmute::<OwnedNodeRef<_, _, _, _>, OwnedNodeRef<_, _, _, _>>(g)
-                        };
-                        Some((NodeDeref { owned, borrow }, range))
+                        let range = pos..pos.add(n.size);
+                        Some((&n.val, range))
                     }
                     None => None,
                 }
             }
         }
 
-        let iter: Iter<'a, _, _, _, _> = Iter {
-            root: self.root.as_ref().map(|n| n.shallow_clone()),
+        let iter: Iter<S> = Iter {
+            root: match self.size == S::Idx::ZERO {
+                true => None,
+                false => Some(self.root()),
+            },
             stack: Vec::new(),
-            marker: PhantomData,
         };
 
         iter
@@ -1288,69 +1018,80 @@ where
         let mut newleft: Option<OwnedSNode<S>> = None;
         let mut newright: Option<OwnedSNode<S>> = None;
 
-        struct Entry<'a, S: AccumulatorSlice> {
-            kind: EntryKind<'a, S>,
-            parent_pos: S::Idx,
+        enum EntryRef<'a, S: AccumulatorSlice> {
+            Base(&'a mut Option<OwnedSNode<S>>),
+            Guard(BorrowMut<'a, Option<OwnedSNode<S>>>),
         }
 
-        enum EntryKind<'a, S: AccumulatorSlice> {
-            Base(&'a mut Option<OwnedSNode<S>>),
-            Left(OwnedSNode<S>),
-            Right(OwnedSNode<S>),
+        struct Entry<'a, S: AccumulatorSlice> {
+            // `e_ref` is always `Some`; we keep it as an option so that we can temporarily move
+            // out of it as needed.
+            e_ref: Option<EntryRef<'a, S>>,
+            parent_pos: S::Idx,
+            parent:
+                Option<ParentPointer<S::Accumulator, S::Idx, <S::Idx as RangedIndex>::Delta, S>>,
+        }
+
+        enum Shift {
+            Left,
+            Right,
         }
 
         impl<'a, S: AccumulatorSlice> Entry<'a, S> {
-            // fills in the "hole" in the entry, in the appropriate place. panics if it already has
-            // a node there
-            fn set_node(&mut self, mut node: Option<OwnedSNode<S>>) {
-                match &mut self.kind {
-                    EntryKind::Base(hole) => {
-                        if let Some(mut n) = OwnedNode::map_mut(&mut node) {
-                            n.parent = None;
-                        }
-
-                        debug_assert!(hole.is_none());
-                        // double-dereference because we matched on `&mut EntryKind::Base(&mut _)`.
-                        **hole = node;
-                    }
-                    EntryKind::Left(n) => {
-                        if let Some(mut l) = OwnedNode::map_mut(&mut node) {
-                            l.parent = Some(n.weak());
-                        }
-
-                        let mut g = n.get_mut();
-                        debug_assert!(g.left.is_none());
-                        g.left = node;
-                    }
-                    EntryKind::Right(n) => {
-                        if let Some(mut r) = OwnedNode::map_mut(&mut node) {
-                            r.parent = Some(n.weak());
-                        }
-
-                        let mut g = n.get_mut();
-                        debug_assert!(g.right.is_none());
-                        g.right = node;
-                    }
+            fn new(base: &'a mut Option<OwnedSNode<S>>, parent_pos: S::Idx) -> Self {
+                Entry {
+                    e_ref: Some(EntryRef::Base(base)),
+                    parent_pos,
+                    parent: None,
                 }
-            }
-
-            // Moves the hole the entry corresponds to
-            fn shift_with(&mut self, kind: impl FnOnce(OwnedSNode<S>) -> EntryKind<'a, S>) {
-                let node = match &self.kind {
-                    EntryKind::Base(n) => n.as_ref().unwrap().shallow_clone(),
-                    EntryKind::Left(n) => n.get().left.as_ref().unwrap().shallow_clone(),
-                    EntryKind::Right(n) => n.get().right.as_ref().unwrap().shallow_clone(),
-                };
-
-                self.kind = kind(node);
             }
 
             fn has_hole(&self) -> bool {
-                match &self.kind {
-                    EntryKind::Base(opt) => opt.is_none(),
-                    EntryKind::Left(n) => n.get().left.is_none(),
-                    EntryKind::Right(n) => n.get().right.is_none(),
+                match self.e_ref.as_ref().unwrap() {
+                    EntryRef::Base(n) => n.is_none(),
+                    EntryRef::Guard(g) => g.is_none(),
                 }
+            }
+
+            fn set_opt_node(&mut self, mut node: Option<OwnedSNode<S>>) {
+                debug_assert!(self.has_hole());
+
+                if let Some(mut n) = OwnedNode::map_mut(&mut node) {
+                    n.parent = self.parent.clone();
+                }
+
+                match self.e_ref.as_mut().unwrap() {
+                    EntryRef::Base(n) => **n = node,
+                    EntryRef::Guard(g) => **g = node,
+                }
+            }
+
+            fn set_node_and_shift(&mut self, mut node: OwnedSNode<S>, shift: Shift) {
+                debug_assert!(self.has_hole());
+
+                let parent = self.parent.replace(node.weak());
+                node.get_mut().parent = parent;
+
+                let e_ref = self.e_ref.take().unwrap();
+
+                let node_guard = match e_ref {
+                    EntryRef::Base(n) => {
+                        *n = Some(node);
+                        n.as_mut().unwrap().get_mut()
+                    }
+                    EntryRef::Guard(mut g) => {
+                        *g = Some(node);
+                        BorrowMut::stack(g, |n| n.as_mut().unwrap().get_mut())
+                    }
+                };
+
+                // Map the guard by the desired shift:
+                let new_guard = match shift {
+                    Shift::Left => BorrowMut::map(node_guard, |n| &mut n.left),
+                    Shift::Right => BorrowMut::map(node_guard, |n| &mut n.right),
+                };
+
+                self.e_ref = Some(EntryRef::Guard(new_guard));
             }
         }
 
@@ -1358,14 +1099,8 @@ where
         // must always result in something non-negative.
         //
         // @req "Ranged::replace requires less than usize::MAX / 2" v0
-        let mut l = Entry {
-            kind: EntryKind::Base(&mut newleft),
-            parent_pos: S::Idx::MAX_SIZE,
-        };
-        let mut r = Entry {
-            kind: EntryKind::Base(&mut newright),
-            parent_pos: S::Idx::MAX_SIZE,
-        };
+        let mut l = Entry::new(&mut newleft, S::Idx::MAX_SIZE);
+        let mut r = Entry::new(&mut newright, S::Idx::MAX_SIZE);
 
         macro_rules! assert_valid {
             ($node:expr) => {{
@@ -1497,11 +1232,10 @@ where
 
                     let new_r = mem::replace(node, left);
                     r.parent_pos = Self::stack_pos(r.parent_pos, &*new_r.get());
-                    // The following two lines are equivalent to:
+                    // The following line is equivalent to:
                     //   *r.node = Some(new_r);
                     //   r.node = &mut r.node.left; (ignoring unwrapping)
-                    r.set_node(Some(new_r));
-                    r.shift_with(EntryKind::Left);
+                    r.set_node_and_shift(new_r, Shift::Left);
                     debug_assert!(r.has_hole());
                 }
                 Greater => {
@@ -1590,11 +1324,10 @@ where
 
                     let new_l = mem::replace(node, right);
                     l.parent_pos = Self::stack_pos(l.parent_pos, &*new_l.get());
-                    // The following two lines are equivalent to:
+                    // The following line is equivalent to:
                     //   *l.node = Some(new_l);
                     //   l.node = &mut l.node.right; (ignoring unwrapping)
-                    l.set_node(Some(new_l));
-                    l.shift_with(EntryKind::Right);
+                    l.set_node_and_shift(new_l, Shift::Right);
                     debug_assert!(l.has_hole());
                 }
             }
@@ -1609,8 +1342,9 @@ where
 
         debug_assert!(l.has_hole());
         debug_assert!(r.has_hole());
-        l.set_node(node_g.left.take());
-        r.set_node(node_g.right.take());
+        l.set_opt_node(node_g.left.take());
+        r.set_opt_node(node_g.right.take());
+        drop((l, r));
 
         // We need to adjust the "parent" of `new{left,right}` here because we initially set their
         // positions to `usize::MAX / 2`
@@ -1644,30 +1378,51 @@ where
                 }
             }
 
+            struct DropInReverse<T> {
+                vec: Vec<T>,
+            }
+
+            impl<T> Drop for DropInReverse<T> {
+                fn drop(&mut self) {
+                    self.vec.drain(..).rev().for_each(drop);
+                }
+            }
+
             // Handle `newleft`, recursing down on `.right`
-            let mut stack = vec![];
-            let mut stack_node = newleft.as_ref().map(|n| n.shallow_clone());
+            let mut stack: DropInReverse<BorrowMut<_>> = DropInReverse { vec: Vec::new() };
+            let mut stack_guard = OwnedNode::map_mut(&mut newleft);
             let mut node_pos = root_pos;
-            while let Some(mut n) = stack_node.take() {
-                let mut g = n.get_mut();
+            while let Some(mut g) = stack_guard.take() {
                 node_pos = Self::stack_pos(node_pos, &*g);
+                g.total_accumulated = g.acc.clone();
                 g.total_accumulated = g.acc.clone();
                 if let Some(a) = OwnedNode::map_ref(&g.left).map(|l| l.total_accumulated.clone()) {
                     // > n.total_accumulated += l.total_accumulated.clone();
                     Self::add_acc(a, &mut g.total_accumulated, default_acc);
                 }
 
-                if let Some(r) = g.right.as_ref() {
-                    stack_node = Some(r.shallow_clone());
-                }
+                // We have two things to do here:
+                //
+                //   1. If we can recurse down on .right, set `stack_guard` to that value.
+                //   2. Push `g` onto the top of the stack, so that `stack_guard` will be able to
+                //      continue referencing it.
+                //
+                // These operations are only sound because of the way that we guarantee that all
+                // the borrows in `stack` are held longer than the elements that use them (both
+                // later elements and `stack_guard`).
 
-                drop(g);
-                stack.push(n);
+                // 1: Recurse if we can, using an extended reference -- `g` is going out of scope.
+                //
+                // SAFETY: Lifetime extension for the reference; see note above.
+                let extended = unsafe { &mut *(&mut *g as *mut Node<_, _, _, _>) };
+                stack_guard = OwnedNode::map_mut(&mut extended.right);
+
+                // 2: Push `g` onto the stack
+                stack.vec.push(g);
             }
 
             let mut acc = S::Accumulator::default();
-            while let Some(mut n) = stack.pop() {
-                let mut g = n.get_mut();
+            while let Some(mut g) = stack.vec.pop() {
                 g.total_accumulated += acc;
                 acc = g.total_accumulated.clone();
             }
@@ -1676,10 +1431,9 @@ where
             Self::add_acc(acc, &mut node_g.total_accumulated, default_acc);
 
             // Repeat for `newright`, recursing down on `.left`
-            stack_node = newright.as_ref().map(|n| n.shallow_clone());
+            stack_guard = OwnedNode::map_mut(&mut newright);
             node_pos = root_pos;
-            while let Some(mut n) = stack_node.take() {
-                let mut g = n.get_mut();
+            while let Some(mut g) = stack_guard.take() {
                 node_pos = Self::stack_pos(node_pos, &*g);
                 g.total_accumulated = g.acc.clone();
                 if let Some(a) =
@@ -1688,18 +1442,17 @@ where
                     g.total_accumulated += a;
                 }
 
-                if let Some(l) = g.left.as_ref() {
-                    stack_node = Some(l.shallow_clone());
-                }
+                // SAFETY: A similar procedure occurs in the loop above. Refer to the comment
+                // there.
+                let extended = unsafe { &mut *(&mut *g as *mut Node<_, _, _, _>) };
+                stack_guard = OwnedNode::map_mut(&mut extended.left);
 
-                drop(g);
-                stack.push(n);
+                stack.vec.push(g);
             }
 
             acc = S::Accumulator::default();
-            while let Some(mut n) = stack.pop() {
-                let mut g = n.get_mut();
-                // > g.total_accumulated += acc;
+            while let Some(mut g) = stack.vec.pop() {
+                // > *g.total_accumulated += acc;
                 Self::add_acc(acc, &mut g.total_accumulated, default_acc);
                 acc = g.total_accumulated.clone();
             }
@@ -1950,7 +1703,6 @@ where
             new_root_ref.set_temp(Node {
                 left: None,
                 right: root_sub_right,
-                refs: RefSet::default(),
                 parent: None,
                 offset_from_parent: S::Idx::ZERO_DELTA,
                 size: root_size,
@@ -2049,9 +1801,6 @@ where
                 temp_return.set_temp(Node {
                     left: None,
                     right: sub_right,
-                    // Because we're extracting out the value to the right, we don't take any of
-                    // the references with us. NodeRefs always stay to the left in a split.
-                    refs: RefSet::default(),
                     // We'll set the parent later if we need to, once we know the new root
                     parent: None,
                     // The offset doesn't actually matter here - we just set it to zero as a
@@ -2304,17 +2053,8 @@ where
 
                 // Set up `left` as redirecting to `root` -- we need to ensure that any `NodeRef`s
                 // that point to `left` will continue to function as intended.
-                //
-                // We only need to do this if there are existing `NodeRef`s to `left`, which we can
-                // detect by the weak count. At this point, both of the node's children should be
-                // dropped or `None`,
-                if Rc::weak_count(&left.inner) != 0 {
-                    debug_assert!(temp_left.right.is_none());
-
-                    temp_root.refs.set.insert(RefSetItem(left.inner.clone()));
-                    let root_node_ref = NodeRef::from_owned(&root_ref);
-                    left.set(MaybeNode::Redirected(root_node_ref, temp_left.refs));
-                }
+                left.set(MaybeNode::Redirected(RefCell::new(root_ref.to_node_ref())));
+                left.inner.drop_and_promote_weaks();
 
                 root_ref.set(MaybeNode::Base(temp_root));
             }
@@ -2377,14 +2117,8 @@ where
                     n
                 });
 
-                if Rc::weak_count(&right.inner) != 0 {
-                    debug_assert!(temp_right.left.is_none());
-
-                    temp_root.refs.set.insert(RefSetItem(right.inner.clone()));
-                    let root_node_ref = NodeRef::from_owned(&root_ref);
-                    right.set(MaybeNode::Redirected(root_node_ref, temp_right.refs));
-                }
-
+                right.set(MaybeNode::Redirected(RefCell::new(root_ref.to_node_ref())));
+                right.inner.drop_and_promote_weaks();
                 root_ref.set(MaybeNode::Base(temp_root));
             }
         }
@@ -2527,42 +2261,34 @@ where
         }
 
         let mut idx = self.root_pos();
-        let mut node = self.root_ref().shallow_clone();
-        let mut running_acc = S::Accumulator::default();
+        let mut node = self.root();
+        let mut running_acc = default_acc;
 
         loop {
-            let guard = node.get();
-
-            if let Some(n) = guard.left.as_ref() {
-                let g = n.get();
+            if let Some(rc) = node.left.as_ref() {
+                let n = rc.get();
                 // lhs_total = running_acc + n.total_accumulated
                 let mut lhs_total = running_acc.clone();
-                lhs_total += g.total_accumulated.clone();
+                lhs_total += n.total_accumulated.clone();
                 if lhs_total >= acc {
-                    idx = Self::stack_pos(idx, &*g);
-                    let n_shallow_clone = n.shallow_clone();
-                    drop(g);
-                    drop(guard);
-                    node = n_shallow_clone;
+                    idx = Self::stack_pos(idx, n);
+                    node = n;
                     // Don't increment `running_acc`, because it only contains the accumulator that
                     // we've "committed" to.
                     continue;
                 }
             }
 
-            if let Some(n) = guard.right.as_ref() {
-                let g = n.get();
+            if let Some(rc) = node.right.as_ref() {
+                let n = rc.get();
                 // pre_rhs_total = running_acc + node.total_accumulated - n.total_accumulated
                 let mut pre_rhs_total = running_acc.clone();
-                pre_rhs_total += guard.total_accumulated.clone();
-                pre_rhs_total -= g.total_accumulated.clone();
+                pre_rhs_total += node.total_accumulated.clone();
+                pre_rhs_total -= n.total_accumulated.clone();
 
                 if pre_rhs_total < acc {
-                    idx = Self::stack_pos(idx, &*g);
-                    let n_shallow_clone = n.shallow_clone();
-                    drop(g);
-                    drop(guard);
-                    node = n_shallow_clone;
+                    idx = Self::stack_pos(idx, n);
+                    node = n;
                     // Because we want `running_acc` to give everything that occurs before the
                     // subtree rooted at this node, and `pre_rhs_total` gives everything before the
                     // right-hand node, we set it to the right-hand node.
@@ -2576,16 +2302,14 @@ where
             break;
         }
 
-        let guard = node.get();
-
-        let mut after_val_acc = guard.acc.clone();
+        let mut after_val_acc = node.acc.clone();
         after_val_acc += running_acc.clone();
         assert!(running_acc < acc);
         assert!(after_val_acc >= acc);
 
         acc -= running_acc;
-        let within_idx = guard.val.index_of_accumulated(idx, acc);
-        assert!(within_idx <= guard.size);
+        let within_idx = node.val.index_of_accumulated(idx, acc);
+        assert!(within_idx <= node.size);
 
         idx.add(within_idx)
     }
@@ -2649,10 +2373,10 @@ where
                 let pos = Self::stack_pos(parent_pos, &*g);
 
                 let top_info = format!(
-                    "{}@{:?} ({:?}): {}, size = {:?}, {}, {}, {}",
+                    "{}@{:p} ({:?}): {}, size = {:?}, {}, {}, {}",
                     prefix,
-                    DebugPtr(Rc::as_ptr(&n.inner)),
-                    g.parent.as_ref().map(|p: &Weak<_>| DebugPtr(p.as_ptr())),
+                    n.inner.fmt_ptr(),
+                    g.parent.as_ref().map(|p: &Weak<_>| DebugPtr(p.fmt_ptr())),
                     make_str(&g.offset_from_parent, "offset"),
                     g.size,
                     make_str(&g.val, "val"),
@@ -2727,7 +2451,7 @@ where
         // expect.
         match (guard.parent.as_ref(), parent) {
             (None, None) => (),
-            (Some(a), Some(b)) => assert!(a.ptr_eq(&b.weak())),
+            (Some(a), Some(b)) => assert!(a.is_from(&b.inner)),
             (a, b) => panic!(
                 "mismatched parents: node has {:?}, should be {:?}",
                 OpaqueOption::new(&a),

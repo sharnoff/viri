@@ -1,7 +1,7 @@
 //! Wrapper module around [`StdRanged`] and associated traits
 
 use super::{AccumulatorSlice, Ranged};
-use std::ops::{AddAssign, Deref, Range, SubAssign};
+use std::ops::{AddAssign, Range, SubAssign};
 
 /// The "standard" parameterization of a [`Ranged`], requiring simpler trait implementations
 ///
@@ -238,9 +238,7 @@ impl<S: IndexedSlice> StdRanged<S> {
     ///
     /// This function can be used with [`clone_range`](Self::clone_range) to iterate over a smaller
     /// range.
-    pub fn iter<'a>(
-        &'a self,
-    ) -> impl 'a + Iterator<Item = (impl 'a + Deref<Target = S>, Range<usize>)> {
+    pub fn iter<'a>(&'a self) -> impl 'a + Iterator<Item = (&'a S, Range<usize>)> {
         self.inner.iter()
     }
 

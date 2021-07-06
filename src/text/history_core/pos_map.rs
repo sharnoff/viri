@@ -199,7 +199,7 @@ impl<Time: Ord, R: BytesRef> PosMap<Time, R> {
         blame
             .clone_range(blame_range)
             .iter()
-            .filter_map(|(constant, _)| constant.0)
+            .filter_map(|(Constant(opt), _)| *opt)
             .filter(|id| bottommost_undone.contains_key(id))
             .collect()
     }

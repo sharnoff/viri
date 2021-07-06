@@ -735,7 +735,7 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
         let shadow_conflicts: Vec<_> = (self.shadow)
             .clone_range(blame_range.clone())
             .iter()
-            .filter_map(|(b, _)| Some((*b)?.id))
+            .filter_map(|(&b, _)| Some(b?.id))
             .collect();
 
         let mut removed_edits = Vec::new();
@@ -818,7 +818,7 @@ impl<Time: Clone + Ord, R: BytesRef> HistoryCore<Time, R> {
             range.start += blame_range.start;
             range.end += blame_range.end;
 
-            let (last, b) = match (last_values, *blame) {
+            let (last, b) = match (last_values, blame) {
                 (Some((true, _, (o, id))), None) => {
                     before.push((o, id));
                     debug_assert!(before_set.insert(id));

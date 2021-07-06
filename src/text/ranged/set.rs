@@ -302,8 +302,9 @@ impl<Idx: Debug + RangedIndex, T: Clone + Hash + Eq> RelativeSet<Idx, T> {
             .replace_with(idx..idx.increment(), |mut region| {
                 let mut set = region.as_single_mut();
                 // Add the value to the set for the index, which may be empty
-                set.get_mut().val.add(v.clone());
-                new_ref = Some(set.into_ref());
+                set.add(v.clone());
+                drop(set);
+                new_ref = Some(region.root_node_ref());
 
                 region
             });
@@ -372,7 +373,7 @@ impl<Idx: Debug + RangedIndex, T: Clone + Hash + Eq> RelativeSet<Idx, T> {
         self.ranged
             .replace_with(idx..idx.increment(), |mut ranged| {
                 // Remove the item from the set it belongs to
-                ranged.as_single_mut().get_mut().val.remove(&item);
+                ranged.as_single_mut().remove(&item);
                 ranged
             });
 
