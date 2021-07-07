@@ -21,7 +21,6 @@
     const_fn_trait_bound, // Allows trait bounds in const fns -- `any::Type::new`
     const_generics, // Needed for a whole bunch of things.
     specialization,     // required for dynamic deserialization
-    maybe_uninit_ref, // Required for `init::LazyInit::deref`
     // required for `text::diff::MaxVec`:
     maybe_uninit_extra,
     maybe_uninit_slice,
