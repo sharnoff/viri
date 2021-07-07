@@ -44,10 +44,11 @@ impl Hash for Type {
 
 impl Type {
     /// Constructs the representation of the concrete type `T`
+    // @req #![feature(const_fn_trait_bound)] v0
     pub const fn new<T: Any>() -> Self {
         Type {
-            id: TypeId::of::<T>(),
-            name: type_name::<T>(),
+            id: TypeId::of::<T>(),  // @req #![feature(const_type_id)] v0
+            name: type_name::<T>(), // @req #![feature(const_type_name)] v0
         }
     }
 

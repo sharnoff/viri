@@ -22,6 +22,7 @@ impl<T, const CAP: usize> Drop for MaxVec<T, CAP> {
     fn drop(&mut self) {
         let len = self.len();
         for v in &mut self.values[..len] {
+            // @req #![feature(maybe_uninit_extra)] v0
             unsafe { MaybeUninit::assume_init_drop(v) }
         }
     }
@@ -32,6 +33,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
     pub const fn new() -> Self {
         MaxVec {
             len: 0,
+            // @req #![feature(maybe_uninit_uninit_array)] v0
             values: MaybeUninit::uninit_array(),
         }
     }
@@ -63,6 +65,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
             panic!("length equal to capacity {}", self.capacity());
         }
 
+        // @req #![feature(maybe_uninit_extra)] v0
         self.values[self.len].write(elem);
         self.len += 1;
     }
@@ -71,6 +74,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
     pub fn iter<'a>(&'a self) -> Iter<'a, T> {
         Iter {
             len: self.len,
+            // @req #![feature(maybe_uninit_slice)] v0
             values: MaybeUninit::slice_as_ptr(&self.values),
             marker: PhantomData,
         }
@@ -138,6 +142,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
             fn drop(&mut self) {
                 for idx in self.next_idx + 1..CAP {
                     unsafe {
+                        // @req #![feature(maybe_uninit_extra)] v0
                         self.values[idx].assume_init_drop();
                     }
                 }
@@ -148,6 +153,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
 
         let mut rev: RevMaxVec<_, CAP> = RevMaxVec {
             next_idx: CAP - 1,
+            // @req #![feature(maybe_uninit_uninit_array)] v0
             values: MaybeUninit::uninit_array(),
         };
 
@@ -155,6 +161,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
         while let Some(item) = iter.next() {
             len += 1;
 
+            // @req #![feature(maybe_uninit_extra)] v0
             rev.values[rev.next_idx].write(item);
             rev.next_idx = rev.next_idx.wrapping_sub(1);
             if rev.next_idx == usize::MAX {
@@ -170,6 +177,7 @@ impl<T, const CAP: usize> MaxVec<T, CAP> {
         // If we got here, we ran out of items early; we need to shift everything back so that we
         // start at zero, instead of `next_idx + 1`
 
+        // @req #![feature(maybe_uninit_uninit_array)] v0
         let mut new_values: [_; CAP] = MaybeUninit::uninit_array();
         let values_start = rev.next_idx.wrapping_add(1);
 
@@ -218,9 +226,11 @@ impl<T: Copy, const CAP: usize> MaxVec<T, CAP> {
     /// This uses `std::ptr::copy_nonoverlapping` internally, and so is typically very cheap,
     /// operating entirely on the stack.
     pub fn from_slice_prefix(slice: &[T]) -> Self {
+        // @req #![feature(maybe_uninit_uninit_array)] v0
         let mut values: [MaybeUninit<T>; CAP] = MaybeUninit::uninit_array();
 
         let len = slice.len().min(CAP);
+        // @req #![feature(maybe_uninit_slice)] v0
         let values_ptr = MaybeUninit::slice_as_mut_ptr(&mut values);
         unsafe { copy_nonoverlapping(slice.as_ptr(), values_ptr, len) };
 
@@ -232,9 +242,11 @@ impl<T: Copy, const CAP: usize> MaxVec<T, CAP> {
     /// This uses `std::ptr::copy_nonoverlapping` internally, and so is typically very cheap,
     /// operating entirely on the stack.
     pub fn from_slice_suffix(slice: &[T]) -> Self {
+        // @req #![feature(maybe_uninit_uninit_array)] v0
         let mut values: [MaybeUninit<T>; CAP] = MaybeUninit::uninit_array();
 
         let len = slice.len().min(CAP);
+        // @req #![feature(maybe_uninit_slice)] v0
         let values_ptr = MaybeUninit::slice_as_mut_ptr(&mut values);
 
         // Extract the suffix of the slice. We know this won't panic here because
@@ -260,6 +272,7 @@ impl<T: Copy, const CAP: usize> MaxVec<T, CAP> {
             )
         }
 
+        // @req #![feature(maybe_uninit_slice)] v0
         let values_ptr = MaybeUninit::slice_as_mut_ptr(&mut self.values);
         let values_end_ptr = unsafe { values_ptr.add(self.len) };
 
@@ -281,6 +294,7 @@ impl<T, const CAP: usize> Deref for MaxVec<T, CAP> {
         // SAFETY: We know that the values 0..self.len() are initialized,
         // so it's safe to convert here.
         let len = self.len();
+        // @req #![feature(maybe_uninit_slice)] v0
         unsafe { MaybeUninit::slice_assume_init_ref(&self.values[..len]) }
     }
 }
@@ -290,6 +304,7 @@ impl<T, const CAP: usize> DerefMut for MaxVec<T, CAP> {
         // SAFETY: We know that the values 0..self.len() are initialized,
         // so it's safe to convert here.
         let len = self.len();
+        // @req #![feature(maybe_uninit_slice)] v0
         unsafe { MaybeUninit::slice_assume_init_mut(&mut self.values[..len]) }
     }
 }

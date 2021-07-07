@@ -5,8 +5,7 @@
 //! all-or-nothing approach would be much more inefficient here.
 
 use super::{ByteSlice, DecodedStr, Encoding, Range};
-// @def "utf8 intrinsics::{likely, unlikely}" v0
-use std::intrinsics::{likely, unlikely};
+use std::intrinsics::{likely, unlikely}; // @req #![feature(core_intrinsics)] v0
 
 /// Dummy type with an implementation of [`Encoding`] compliant with the UTF-8 spec
 pub struct Utf8;

@@ -11,26 +11,27 @@
 //  * TODO-API: Where an API may need to be adjusted or reconsidered
 //  * TODO-RFC#2229: Mess that can be fixed once RFC #2229 lands
 
-// Feature sets
+// Nightly features enabled
+//
+// In general, features are each given a mark along the lines of:
+//    "@def" #![feature(<feature name>)] v0
+// (quotes around "@def" to prevent matching) This is then replicated at each location that uses
+// the feature. Removal of the feature is made simple: we remove it when there's no corresponding
+// "@req" marks, or once it becomes stable (for nightly, at least).
 #![allow(incomplete_features)]
 #![feature(
-    // generic_associated_types,
-    const_type_name, // Allows `any::type_name` in a const context
-    const_type_id, // Allows `TypeId::of` in a const context
-    rustc_attrs,   // Allows config! and init! trickery
-    const_fn_trait_bound, // Allows trait bounds in const fns -- `any::Type::new`
-    const_generics, // Needed for a whole bunch of things.
-    specialization,     // required for dynamic deserialization
-    // required for `text::diff::MaxVec`:
-    maybe_uninit_extra,
-    maybe_uninit_slice,
-    maybe_uninit_uninit_array,
-    // @req "KeyParser notable_trait" v0
-    doc_notable_trait,
-    // Used in utf8 decoding -- @req "utf8 intrinsics::{likely, unlikely}" v0
-    core_intrinsics,
-    // Used anywhere with the corresponding mark. @def "uses #[may_dangle]" v0
-    dropck_eyepatch,
+    const_fn_trait_bound,       // @def #![feature(const_fn_trait_bound)] v0
+    const_type_id,              // @def #![feature(const_type_id)] v0
+    const_type_name,            // @def #![feature(const_type_name)] v0
+    rustc_attrs,                // @def #![feature(rustc_attrs)] v0
+    const_generics,             // @def #![feature(const_generics)] v0
+    specialization,             // @def #![feature(specialization)] v0
+    maybe_uninit_extra,         // @def #![feature(maybe_uninit_extra)] v0
+    maybe_uninit_slice,         // @def #![feature(maybe_uninit_slice)] v0
+    maybe_uninit_uninit_array,  // @def #![feature(maybe_uninit_uninit_array)] v0
+    doc_notable_trait,          // @def #![feature(doc_notable_trait)] v0
+    core_intrinsics,            // @def #![feature(core_intrinsics)] v0
+    dropck_eyepatch,            // @def #![feature(dropck_eyepatch)] v0
 )]
 // Lint flags:
 #![deny(

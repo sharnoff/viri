@@ -34,7 +34,7 @@ pub struct ModeBindings<Cmd> {
 }
 
 /// A parser taking key events as input and possibly produces an `Output`
-#[doc(notable_trait)] // @def "KeyParser notable_trait" v0
+#[doc(notable_trait)] // @req #![feature(doc_notable_trait)] v0
 pub trait KeyParser {
     /// The type of a successful parse
     type Output;

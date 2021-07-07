@@ -191,6 +191,7 @@ pub trait GetAttr: GetAttrAny {
     /// Returns the value of an attribute provided by the given type
     #[async_method]
     #[allow(non_upper_case_globals)]
+    // @req #![feature(const_generics)] v0
     async fn get_attr<const Attr: Attribute>(&self) -> Option<AttrType![Attr]>
     where
         AttrToken<Attr>: TypedAttr;
@@ -325,7 +326,7 @@ impl GetAttrAny for Nothing {
 /// For more information, please refer to the [`TypedAttr`] trait and the [module-level
 /// documentation](self).
 #[allow(non_upper_case_globals, dead_code)]
-pub struct AttrToken<const Attr: Attribute>;
+pub struct AttrToken<const Attr: Attribute>; // @req #![feature(const_generics)] v0
 
 /// (*Internal*) A marker trait for giving the types of an attribute
 ///

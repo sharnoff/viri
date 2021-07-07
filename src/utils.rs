@@ -175,6 +175,7 @@ pub trait MaybeDbg {
 }
 
 impl<T> MaybeDbg for T {
+    // @req #![feature(specialization)] v0
     default fn maybe_dbg(&self) -> Option<String> {
         None
     }

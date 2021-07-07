@@ -141,6 +141,7 @@ impl<T: Default + Serialize + for<'a> Deserialize<'a>> Builder for T {}
 /// ```
 ///
 /// For more information, please refer to the documentation for the [`config`] macro.
+// @req #![feature(rustc_attrs)] v0
 #[rustc_on_unimplemented(
     label = "note: if this is from the `config!` macro, functions to convert to/from the builder may be provided manually"
 )]

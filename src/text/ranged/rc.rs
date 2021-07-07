@@ -362,7 +362,7 @@ impl<T> AsRef<T> for OwnedCell<T> {
     }
 }
 
-// @req "uses #[may_dangle]" v0
+// @req #![feature(dropck_eyepatch)] v0
 unsafe impl<#[may_dangle] T> Drop for OwnedCell<T> {
     fn drop(&mut self) {
         // General safety note: Because this type is still alive, we know that `ptr` is valid. For
@@ -762,7 +762,7 @@ impl<T> Clone for Weak<T> {
     }
 }
 
-// @req "uses #[may_dangle]" v0
+// @req #![feature(dropck_eyepatch)] v0
 unsafe impl<#[may_dangle] T> Drop for Weak<T> {
     fn drop(&mut self) {
         // When dropping a weak pointer, there's a couple things that could happen.
