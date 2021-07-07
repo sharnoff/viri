@@ -184,10 +184,6 @@ where
 //
 // We always guarantee that either the `OwnedCell` corresponding to the weak pointer is still held,
 // or ownership has been transferred to all weak pointers.
-//
-// We always guarantee that - if a `NodeRef` is still valid - the node it points to will contain
-// the address of reference in its `RefSet`. This means we can always confidently remove the
-// reference from a redirected node when we update.
 pub struct NodeRef<Acc, Idx, Delta, S> {
     inner: Weak<MaybeNode<Acc, Idx, Delta, S>>,
 }
