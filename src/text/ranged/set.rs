@@ -335,7 +335,7 @@ impl<Idx: Debug + RangedIndex, T: Clone + Hash + Eq> RelativeSet<Idx, T> {
     /// assert_eq!(set.index_of("Vim"), Some(1));
     /// assert_eq!(set.index_of("vi"), None);
     /// ```
-    fn index_of<S: ?Sized>(&mut self, item: &S) -> Option<Idx>
+    pub fn index_of<S: ?Sized>(&mut self, item: &S) -> Option<Idx>
     where
         T: Borrow<S>,
         S: Hash + Eq,
@@ -362,7 +362,7 @@ impl<Idx: Debug + RangedIndex, T: Clone + Hash + Eq> RelativeSet<Idx, T> {
     /// assert_eq!(set.remove("Emacs"), Some(1));
     /// assert_eq!(set.remove("Nano"), None);
     /// ```
-    fn remove<S: ?Sized>(&mut self, item: &S) -> Option<Idx>
+    pub fn remove<S: ?Sized>(&mut self, item: &S) -> Option<Idx>
     where
         T: Borrow<S>,
         S: Hash + Eq,
